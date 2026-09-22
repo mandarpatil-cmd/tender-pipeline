@@ -65,7 +65,7 @@ DELAY = 1.0
 
 # True  -> print the queue and stop. Spends nothing.
 # False -> research the vendors, up to LIMIT.
-DRY_RUN = True
+DRY_RUN = False
 
 # Restrict the queue to one origin:
 #   "scrape"  -> only vendors the portal scraper found
@@ -86,7 +86,7 @@ RETRY_FAILED = True
 #         search, switching model, adding evidence to the prompt --
 #         because those verdicts were reached without the thing that
 #         makes an answer possible.
-RETRY_NOT_FOUND = False
+RETRY_NOT_FOUND = True
 # ====================================================================
 
 

@@ -188,3 +188,28 @@ cd ..\01-scrape  ; uv run python -m pytest -q
 cd ..\02-enrich  ; uv run python -m pytest -q
 cd ..\03-outreach; uv run python -m pytest -q
 ```
+
+---
+
+## Setup troubleshooting
+
+Two mistakes that are easy to make right after cloning:
+
+- **Don't run `uv init`**, here or in any folder above this one. The repo is already set
+  up. This folder has no `pyproject.toml`, so `uv run` searches the parent folders. If it
+  finds the one `uv init` made, it runs that empty project in its own `.venv` and skips
+  the shared one here.
+- **Don't use `uv add -r requirements.txt`.** That writes the pins into a `pyproject.toml`.
+  Install the shared venv with `uv pip install -r requirements.txt`, as in **1. Setup**.
+
+If you already ran `uv init`, delete everything it made in that folder: `pyproject.toml`,
+`.python-version`, `README.md`, `.gitignore`, `src\` and `.git\`. Keep the `.git\` inside
+`tender-pipeline\`, because that one is the repo. Then redo **1. Setup**.
+
+To check that `uv run` finds the shared venv, run this in any stage folder:
+
+```powershell
+uv run python -c "import sys; print(sys.prefix)"
+```
+
+It should print a path ending in `tender-pipeline\.venv`.
