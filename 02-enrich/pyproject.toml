@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stage2-enrich"
+version = "0.1.0"
+description = "Look up public company email and phone for pipeline vendors (stage 2)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.3.18",
+    "langchain-openai>=1.6.0",
+    "pydantic>=2.13.5",
+    "python-dotenv>=1.2.3",
+    # the shared schema: every stage installs this
+    "pipeline-core",
+]
+
+[tool.uv.sources]
+pipeline-core = { path = "../core", editable = true }
+
+# The whole pipeline shares one environment at the repo root (../requirements.txt).
+# This keeps `uv run` / `uv sync` from building a separate .venv in this folder.
+[tool.uv]
+managed = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

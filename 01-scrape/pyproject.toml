@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stage1-scrape"
+version = "0.1.0"
+description = "Scrape Award of Contract records from eprocure.gov.in (pipeline stage 1)"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.15",
+    "lxml>=6.1",
+    "requests>=2.34",
+    "pypdf>=6.16",
+    # settings.py reads .env on every lookup, and the vendor sheet is always written
+    "python-dotenv>=1.2",
+    "pandas>=3.0",
+    "openpyxl>=3.1",
+    # the shared schema: every stage installs this
+    "pipeline-core",
+]
+
+[tool.uv.sources]
+pipeline-core = { path = "../core", editable = true }
+
+# The whole pipeline shares one environment at the repo root (../requirements.txt).
+# This keeps `uv run` / `uv sync` from building a separate .venv in this folder.
+[tool.uv]
+managed = false
+
+[project.scripts]
+stage1-scrape = "stage1_scrape.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

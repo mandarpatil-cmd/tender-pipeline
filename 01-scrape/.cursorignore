@@ -1,0 +1,9 @@
+﻿.venv/
+data/
+*.pdf
+*.pkl
+*.sqlite3
+.pytest_cache/
+src/stage1_scrape.egg-info/
+.env
+

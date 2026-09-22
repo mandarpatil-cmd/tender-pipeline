@@ -1,0 +1,32 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+src/*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/
+.claudeignore
+
+# Runtime scrape / enrich output (never push)
+data/
+debug/
+cookies.txt
+search_page.html
+captcha.png
+*.session
+*.pkl
+output.txt
+
+# Secrets — keep .env.example
+.env
+.env.*
+!.env.example

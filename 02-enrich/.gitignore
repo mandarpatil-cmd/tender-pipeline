@@ -1,0 +1,34 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated contact sheets (inputs BidEasy_*.xlsx are committed)
+outputs/
+*-*-name1.xlsx
+*-*-name2.xlsx
+output*.xlsx
+3.1*.xlsx
+
+# Tooling / OS
+.claude/
+.ipynb_checkpoints/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

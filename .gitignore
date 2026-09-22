@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------
+# Secrets — keep the .env.example files
+# ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+.msal_token_cache.json
+
+# ---------------------------------------------------------------
+# Data -- code only in git. The database, the scraped pages and PDFs,
+# and every spreadsheet or CSV hold real company contact details.
+# ---------------------------------------------------------------
+data/
+debug/
+archive/
+outputs/
+exports/
+previews/
+*.sqlite3*
+*.xlsx
+*.xls
+*.csv
+
+# ---------------------------------------------------------------
+# Stage 1 -- scrape artefacts
+# ---------------------------------------------------------------
+cookies.txt
+search_page.html
+captcha*.png
+*.session
+*.pkl
+output.txt
+
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+src/*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------------------------------------------------------------
+# Tooling / OS
+# ---------------------------------------------------------------
+.claude/
+.claudeignore
+.ipynb_checkpoints/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

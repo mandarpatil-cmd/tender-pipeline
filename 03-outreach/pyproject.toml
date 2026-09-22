@@ -1,0 +1,26 @@
+[project]
+name = "stage3-outreach"
+version = "0.1.0"
+description = "Mail the vendors the pipeline found an address for (stage 3)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "msal>=1.31",
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+    # get_data.py writes the send queue to .xlsx
+    "openpyxl>=3.1",
+    # the shared schema: every stage installs this
+    "pipeline-core",
+]
+
+# Scripts at the project root (main.py, campaign.py, transport.py, gmail/, graph/),
+# not an installable package. The whole pipeline shares one environment at the
+# repo root (../requirements.txt); this keeps `uv run` / `uv sync` from building
+# a separate .venv in this folder.
+[tool.uv]
+managed = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

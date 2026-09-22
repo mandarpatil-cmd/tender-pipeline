@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipeline-core"
+version = "0.1.0"
+description = "Shared schema and database access for the tender pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "SQLAlchemy>=2.0",
+]
+
+[project.optional-dependencies]
+xlsx = ["pandas>=2.0", "openpyxl>=3.1"]
+
+[project.scripts]
+pipeline-db = "pipeline_core.cli:main"
+
+# The whole pipeline shares one environment at the repo root (../requirements.txt).
+# This keeps `uv run` / `uv sync` from building a separate .venv in this folder.
+[tool.uv]
+managed = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

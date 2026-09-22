@@ -1,0 +1,29 @@
+---
+description: stage1-scrape layers, commands, and where new code goes
+alwaysApply: true
+---
+
+# Project map
+
+Stage 1 of a three-stage pipeline. Python package `stage1_scrape` under `src/`.
+Layers do not mix jobs.
+
+- `main.py` (project root) — one-command runner. Constants block, no argparse.
+  Scrapes, then writes `data/exports/vendors.csv` / `.xlsx`.
+  It calls `app/` and `export/`; new orchestration belongs in `app/`, not here.
+- `cli.py` — argparse only (`probe`, `scrape`, `run`, `index`)
+- `app/` — scrape/reindex order
+- `scraping/` — HTTP to eprocure.gov.in (and captcha OCR, the only model call here)
+- `parse/` — HTML → dataclasses
+- `persist/` — JSON, SQLite, PDFs
+- `export/` — read-only: vendor facts → CSV/Excel
+- `domain/` — models, name helpers, errors
+
+Output lives in `data/` (gitignored). Vendors, tenders and awards go to the pipeline's
+shared database, defined once in `../core/` (`pipeline_core`).
+
+Finding a vendor's email or phone is **stage 2's job** (`../02-enrich`), not this
+project's. Stage 1 leaves every new vendor `enrichment_status = 'pending'` and never
+writes the contact columns.
+
+Do not put secrets in source. Load them via `stage1_scrape.settings`.
