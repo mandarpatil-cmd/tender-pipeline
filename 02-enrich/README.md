@@ -126,9 +126,10 @@ A `failed` vendor keeps its blank contact columns, so a retry can fill them.
   reads.
 - **It does not cache per company.** It cannot need to: the queue comes from `vendors`,
   which is unique on `name_norm`, so a company cannot appear twice.
-- **It does not trust `pdf_email`.** Stage 1 lifts contacts out of scanned work orders,
-  and OCR mangles them — `acmctechworks0l@` for `acmetechworks01@`. They go into the
-  prompt as a lead to confirm or correct, never straight into `vendors.email`.
+- **It does not trust `pdf_email`.** Stage 1 reads contacts out of the work order's
+  embedded text layer, not by OCR, and those characters are often already wrong —
+  `acmctechworks0l@` for `acmetechworks01@`. They go into the prompt as a lead to
+  confirm or correct, never straight into `vendors.email`.
 
 ---
 

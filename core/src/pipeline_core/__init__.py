@@ -29,6 +29,7 @@ from .models import (
     LlmRun,
     Outreach,
     Tender,
+    UiJob,
     Vendor,
 )
 from .naming import buyer_tail, infer_city_state, infer_legal_form, normalize_name
@@ -50,6 +51,7 @@ __all__ = [
     "LlmRun",
     "Outreach",
     "Tender",
+    "UiJob",
     "Vendor",
     "buyer_tail",
     "create_all",

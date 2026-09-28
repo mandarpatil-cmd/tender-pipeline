@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Runs</title>
+  <script src="/static/htmx.min.js"></script>
+  <style>
+    :root { --ink: #f3ecdf; --muted: #a89880; --line: #3c3428; --desk: #12100e; --card: #1c1915; --amber: #e2a15a; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; color: var(--ink);
+      background: linear-gradient(180deg, #181510 0%, var(--desk) 40%);
+      font-family: "Iowan Old Style", Palatino, Georgia, serif;
+    }
+    main { max-width: 820px; margin: 0 auto; padding: 2.5rem 1.25rem 3rem; }
+    a { color: var(--amber); }
+    h1 { font-weight: 500; font-size: 2rem; margin: 0.3rem 0 0; }
+    h2 { font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--amber); font-family: Consolas, ui-monospace, monospace; }
+    .kicker, label, button, .cost, table, footer { font-family: Consolas, ui-monospace, monospace; }
+    .kicker { letter-spacing: 0.18em; text-transform: uppercase; font-size: 0.72rem; color: var(--amber); margin: 0; }
+    form, .panel { margin: 0 0 1.4rem; padding: 1rem; border: 1px solid var(--line); background: var(--card); }
+    label { display: flex; flex-direction: column; gap: 0.25rem; color: var(--muted); font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.7rem; }
+    .check { flex-direction: row; align-items: center; text-transform: none; letter-spacing: 0; font-size: 0.95rem; color: var(--ink); }
+    input, select, button { background: var(--desk); color: var(--ink); border: 1px solid var(--line); padding: 0.45rem 0.5rem; }
+    button { cursor: pointer; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.8rem; }
+    .cost { color: var(--amber); margin: 0.8rem 0 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    th, td { border-bottom: 1px solid var(--line); padding: 0.4rem 0.3rem; text-align: left; }
+    th { color: var(--muted); font-weight: 500; }
+    .empty { padding: 1rem; border: 1px solid var(--line); }
+    footer { margin-top: 2rem; color: var(--muted); font-size: 0.82rem; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="kicker">Operations</p>
+    <p><a href="/">Back to the table</a></p>
+    <h1>Runs</h1>
+    {% if not snapshot.ready %}
+    <div class="empty"><p>{{ snapshot.message }}</p></div>
+    {% else %}
+    <section class="panel">
+      <h2>Database status</h2>
+      <p class="cost">{{ status_cost }}</p>
+      <form method="post" action="/jobs/status">
+        <button type="submit">Show status</button>
+      </form>
+    </section>
+
+    <form id="enrich-form" class="panel" method="post" action="/jobs/enrich">
+      <h2>Find contacts</h2>
+      <div class="grid">
+        <label>Limit
+          <input name="limit" type="number" min="1" value="1">
+        </label>
+        <label>Delay seconds
+          <input name="delay" type="number" min="0" step="0.1" value="1">
+        </label>
+        <label>Source
+          <select name="source">
+            <option value="scrape" selected>scrape</option>
+            <option value="all">all</option>
+          </select>
+        </label>
+      </div>
+      <label class="check"><input type="checkbox" name="dry_run" checked> Dry run — list the queue and spend nothing</label>
+      <label class="check"><input type="checkbox" name="retry_failed"> Put failed companies back on the queue</label>
+      <label class="check"><input type="checkbox" name="retry_not_found"> Put not_found companies back on the queue</label>
+      <p class="cost" id="enrich-cost" hx-get="/jobs/enrich-cost" hx-trigger="change from:#enrich-form" hx-include="#enrich-form" hx-swap="innerHTML">{{ enrich_cost_text }}</p>
+      <button type="submit">Find contacts</button>
+    </form>
+
+    <form class="panel" method="post" action="/jobs/scrape">
+      <h2>Scrape portal</h2>
+      <div class="grid">
+        <label>Max new tenders
+          <input name="max_tenders" type="number" min="1" value="1">
+        </label>
+        <label>Max pages
+          <input name="max_pages" type="number" min="1" value="1">
+        </label>
+        <label>Delay seconds
+          <input name="delay" type="number" min="1.5" step="0.1" value="1.5">
+        </label>
+        <label>Date field
+          <select name="date_field">
+            <option value="contract" selected>contract</option>
+            <option value="published">published</option>
+          </select>
+        </label>
+        <label>From date
+          <input name="from_date" placeholder="dd/MM/yyyy">
+        </label>
+        <label>To date
+          <input name="to_date" placeholder="dd/MM/yyyy">
+        </label>
+      </div>
+      <label class="check"><input type="checkbox" name="download_pdfs" checked> Download PDFs</label>
+      <label class="check"><input type="checkbox" name="refresh"> Re-fetch tenders already saved</label>
+      <label class="check"><input type="checkbox" name="probe"> Probe only — one listing page, no tenders stored</label>
+      <p class="cost">{{ scrape_cost_text }} A live scrape never waits for a typed captcha.</p>
+      <button type="submit">Scrape</button>
+    </form>
+
+    <h2>Recent runs</h2>
+    {% if jobs %}
+    <table>
+      <thead><tr><th>Id</th><th>Stage</th><th>State</th><th>Started</th></tr></thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td><a href="/jobs/{{ job.job_id }}">{{ job.job_id }}</a></td>
+          <td>{{ job.stage }}</td>
+          <td>{{ job.state }}</td>
+          <td>{{ job.started_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="cost">No runs yet.</p>
+    {% endif %}
+    {% endif %}
+    <footer>database {{ snapshot.path }}</footer>
+  </main>
+</body>
+</html>

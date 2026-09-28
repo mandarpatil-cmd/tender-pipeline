@@ -39,12 +39,16 @@ def engine(path: Path | str | None = None, *, foreign_keys: bool = True) -> Engi
 
     @event.listens_for(eng, "connect")
     def _on_connect(dbapi_connection: sqlite3.Connection, _record) -> None:
+        from .loose import loose_date, loose_number
+
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
             if foreign_keys:
                 cursor.execute("PRAGMA foreign_keys=ON")
+            dbapi_connection.create_function("loose_date", 1, loose_date)
+            dbapi_connection.create_function("loose_number", 1, loose_number)
         finally:
             cursor.close()
 

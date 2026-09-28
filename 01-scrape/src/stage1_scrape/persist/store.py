@@ -185,8 +185,9 @@ class Store:
         """Hand the winner whatever contact details the work order carried.
 
         These are free and come straight from the awarding document, so they beat
-        anything a model can guess -- but they are OCR'd off a scan, so stage 2
-        treats them as evidence to confirm rather than as an answer.
+        anything a model can guess -- but they are read from its embedded text
+        layer rather than verified, and those characters are often already wrong,
+        so stage 2 treats them as evidence to confirm rather than as an answer.
 
         Only attributed when the tender had exactly one winner. A work order names
         one firm; with several winners on one document there is no way to tell

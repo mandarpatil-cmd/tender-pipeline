@@ -23,6 +23,7 @@ them. Three stages share one database.
 | [`02-enrich/`](02-enrich/) | Asks a model (with web search) for each company's public email and phone |
 | [`03-outreach/`](03-outreach/) | Emails every company that has an address, once |
 | [`core/`](core/) | The shared database schema and the `pipeline-db` command |
+| [`ui/`](ui/) | Local browser window. Reads the database; does not run a stage |
 | `data/` | Created by setup: `pipeline.sqlite3`, the shared database (never committed) |
 | `requirements.txt` | Every dependency, for the one shared virtualenv |
 
@@ -80,6 +81,20 @@ Check the database at any point, from any folder:
 ```powershell
 uv run pipeline-db status
 ```
+
+### Operations window
+
+The same counts, in a browser on this machine, plus one row per award. The tender
+id opens that tender, its awards, the PDF clues, the model calls, and every mail
+attempt. Search and the filters run in the database. Excel and CSV download that
+filtered set; a blank cell in the file is `NA`. The page only reads. It does not
+scrape, look up contacts, or send mail.
+
+```powershell
+uv run ops-ui
+```
+
+Then open <http://127.0.0.1:8000>. It listens on this computer only.
 
 ### What the first run does
 
@@ -149,8 +164,11 @@ touch different columns:
   PDFs (`pdf_email`, `pdf_phone`).
 - **Stage 2 owns the contact block** (`email`, `phone`, `enrichment_status`,
   `enriched_at`). Re-scraping a tender can never wipe a contact that cost money to find.
-- **Evidence is not an answer.** Work orders are scans, and OCR mangles characters. A
-  PDF can read `acmctechworks0l@example.com` when the real address is
+- **Evidence is not an answer.** Contacts are read from the work order's embedded text
+  layer with `pypdf`. That is not OCR: a page which is purely a scanned image yields
+  nothing at all, which is the usual outcome. When text *is* present it is often a layer
+  the issuing department's own scanner produced before publishing, so the characters can
+  already be wrong — a PDF can read `acmctechworks0l@example.com` when the address is
   `acmetechworks01@example.com`. So stage 2 hands PDF contacts to the model as a lead to
   confirm, and stage 3 only ever mails `vendors.email`.
 - **`name_norm` is the unique key**, from `pipeline_core.naming.normalize_name`. Every
@@ -187,6 +205,7 @@ cd core          ; uv run python -m pytest -q
 cd ..\01-scrape  ; uv run python -m pytest -q
 cd ..\02-enrich  ; uv run python -m pytest -q
 cd ..\03-outreach; uv run python -m pytest -q
+cd ..\ui          ; uv run python -m pytest -q
 ```
 
 ---

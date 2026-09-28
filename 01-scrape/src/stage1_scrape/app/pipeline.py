@@ -139,6 +139,7 @@ def scrape_aoc(
     extra_fields: dict[str, str] | None = None,
     from_probe: bool = False,
     captcha_solver: str = "manual",
+    should_stop: "Callable[[], bool] | None" = None,
 ) -> list[TenderRecord]:
     store = Store(out_dir)
     client = GePNICClient(delay=delay)
@@ -155,6 +156,9 @@ def scrape_aoc(
     known = store.known_ids() if skip_known else set()
     records: list[TenderRecord] = []
     for listing in listings:
+        if should_stop and should_stop():
+            log.info("Stop requested. Tenders already saved are kept.")
+            break
         if max_tenders is not None and len(records) >= max_tenders:
             break
         if skip_known and listing.tender_id in known:

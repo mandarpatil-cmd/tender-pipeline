@@ -174,8 +174,9 @@ class PendingVendor:
     state: str | None
     #: One `awards.work_title` — fills the `{title}` slot in the prompt.
     context: str | None
-    #: Straight from a scanned work order, so possibly OCR-mangled. Evidence for
-    #: the model to confirm or correct, never an answer in itself.
+    #: Read from the work order's embedded text layer, not by OCR, so characters
+    #: may already be wrong. Evidence for the model to confirm or correct, never
+    #: an answer in itself.
     pdf_email: str | None = None
     pdf_phone: str | None = None
 

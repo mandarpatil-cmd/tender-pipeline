@@ -25,6 +25,7 @@ def run_scrape(
     captcha_retries: int = 5,
     extra_fields: dict[str, str] | None = None,
     from_probe: bool = False,
+    should_stop: "Callable[[], bool] | None" = None,
 ) -> dict[str, Any]:
     """Scrape AOC records, then export every stored vendor to CSV and Excel.
 
@@ -43,6 +44,7 @@ def run_scrape(
         extra_fields=extra_fields,
         from_probe=from_probe,
         captcha_solver=captcha_solver,
+        should_stop=should_stop,
     )
     store = Store(out_dir)
     csv_path, xlsx_path = write_vendor_sheet(store, out_dir)

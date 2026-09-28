@@ -83,10 +83,12 @@ class Vendor(Base):
     source: Mapped[str | None] = mapped_column(Text)
 
     # --- evidence block: written only by stage 1 ---
-    # Lifted verbatim out of the tender's work-order PDF, which is often scanned.
-    # This is *evidence*, not truth: OCR mangles characters (a real example read
-    # "acmctechworks0l@" for "acmetechworks01@"). Stage 2 passes it to the model
-    # to confirm or correct. Never mail one of these directly.
+    # Read out of the tender's work-order PDF via pypdf's text layer, not by OCR:
+    # a purely scanned page yields nothing at all. What does come back is often a
+    # layer the issuing department's own scanner produced, so characters can
+    # already be wrong -- e.g. "acmctechworks0l@" for "acmetechworks01@". This is
+    # *evidence*, not truth. Stage 2 passes it to the model to confirm or correct.
+    # Never mail one of these directly.
     pdf_email: Mapped[str | None] = mapped_column(Text)
     pdf_phone: Mapped[str | None] = mapped_column(Text)
 
@@ -183,5 +185,25 @@ class Outreach(Base):
         return f"<Outreach {self.outreach_id} vendor={self.vendor_id} {self.status}>"
 
 
+class UiJob(Base):
+    """One run started from the operations window."""
+
+    __tablename__ = "ui_jobs"
+
+    job_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stage: Mapped[str] = mapped_column(Text, nullable=False)
+    #: running | done | failed | stopped
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    operator: Mapped[str] = mapped_column(Text, nullable=False, default="local")
+    params_json: Mapped[str | None] = mapped_column(Text)
+    log: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[str] = mapped_column(Text, nullable=False)
+    finished_at: Mapped[str | None] = mapped_column(Text)
+
+    def __repr__(self) -> str:
+        return f"<UiJob {self.job_id} {self.stage} {self.state}>"
+
+
 #: Printed by `pipeline-db status`, in pipeline order.
-TABLES = (Tender, Vendor, Award, LlmRun, Outreach)
+TABLES = (Tender, Vendor, Award, LlmRun, Outreach, UiJob)

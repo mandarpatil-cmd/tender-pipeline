@@ -63,8 +63,13 @@ PROMPT = ChatPromptTemplate.from_messages(
 )
 
 #: Shown when stage 1 pulled contact details out of the tender's work order.
-#: These come off a scan, so they are a lead to verify rather than an answer --
-#: the garbled example is real, from vendor 7 in this database.
+#: Those come from the PDF's embedded text layer, not from OCR run here, and the
+#: characters are often already wrong -- so they are a lead to verify, not an
+#: answer. The address pair below is illustrative of that failure mode.
+#:
+#: The template still tells the model "OCR". That wording is deliberate: it
+#: conveys "expect character errors" in one word, and changing it would need a
+#: PROMPT_VERSION bump and would break test_runner.py's "OCR" assertion.
 EVIDENCE_TEMPLATE = (
     "\nA scanned work order for that tender lists:\n"
     "{lines}"

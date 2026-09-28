@@ -30,7 +30,10 @@ _BUYER_GSTIN = ("27AAATV9885C1Z2", "27AAATV9885C1ZZ")
 
 
 def extract_pdf(path: Path) -> dict[str, Any]:
-    """Pull text from a downloaded AOC/work-order PDF. Scanned pages yield empty text."""
+    """Pull text from a work-order PDF's embedded text layer.
+
+    Not OCR: a page that is purely a scanned image yields empty text.
+    """
     path = Path(path)
     payload: dict[str, Any] = {
         "path": str(path),

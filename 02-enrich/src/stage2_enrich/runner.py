@@ -123,6 +123,7 @@ def enrich_pending(
     vendors: Iterable[PendingVendor] | None = None,
     source: str | None = None,
     report: Reporter | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> Summary:
     """Work the whole queue. `chain` and `vendors` are injectable for tests."""
     work = list(vendors) if vendors is not None else queue(limit, source=source)
@@ -134,6 +135,8 @@ def enrich_pending(
 
     try:
         for index, vendor in enumerate(work, start=1):
+            if should_stop and should_stop():
+                break
             status, detail = enrich_one(vendor, active)
             summary.attempted += 1
             if status == STATUS_DONE:
@@ -146,7 +149,13 @@ def enrich_pending(
             if report:
                 report(vendor, status, detail)
             if delay and index < len(work):
-                time.sleep(delay)
+                remaining = delay
+                while remaining > 0:
+                    if should_stop and should_stop():
+                        return summary
+                    step = min(0.2, remaining)
+                    time.sleep(step)
+                    remaining -= step
     except KeyboardInterrupt:
         # Everything already answered is committed. Re-running resumes here.
         pass

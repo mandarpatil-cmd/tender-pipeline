@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if detail %}{{ detail.tender.tender_id }}{% else %}Tender pipeline{% endif %}</title>
+  <style>
+    :root {
+      --ink: #f3ecdf;
+      --muted: #a89880;
+      --line: #3c3428;
+      --desk: #12100e;
+      --card: #1c1915;
+      --amber: #e2a15a;
+      --amber-dim: rgba(226, 161, 90, 0.14);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse 80% 50% at 10% -10%, rgba(226, 161, 90, 0.08), transparent 50%),
+        linear-gradient(180deg, #181510 0%, var(--desk) 40%);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    }
+    main { max-width: 920px; margin: 0 auto; padding: 2.5rem 1.25rem 3rem; }
+    a { color: var(--amber); }
+    .kicker, h2, dt, .muted, footer {
+      font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
+    }
+    .kicker {
+      margin: 0 0 0.4rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      color: var(--amber);
+    }
+    h1 { margin: 0.4rem 0 0; font-weight: 500; font-size: 2rem; }
+    h2 {
+      margin: 2rem 0 0.6rem;
+      font-size: 0.78rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--amber);
+      font-weight: 500;
+    }
+    .back { font-size: 0.85rem; }
+    dl { margin: 0.6rem 0 0; }
+    .pair { display: grid; grid-template-columns: 9rem 1fr; gap: 0.35rem 1rem; padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
+    dt { color: var(--muted); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; }
+    dd { margin: 0; }
+    table { width: 100%; border-collapse: collapse; font-family: Consolas, "Cascadia Mono", ui-monospace, monospace; font-size: 0.82rem; }
+    th, td { border-bottom: 1px solid var(--line); padding: 0.45rem 0.5rem; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; }
+    tr.focus td { background: var(--amber-dim); }
+    .evidence { color: var(--amber); }
+    .card { margin-top: 0.7rem; padding: 0.9rem 1rem; border: 1px solid var(--line); background: var(--card); }
+    .card p { margin: 0.25rem 0; }
+    pre {
+      margin: 0.4rem 0 0;
+      max-height: 12rem;
+      overflow: auto;
+      white-space: pre-wrap;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    .muted { color: var(--muted); }
+    .empty { margin-top: 1.6rem; padding: 1.25rem; border: 1px solid var(--line); background: var(--card); max-width: 40rem; }
+    footer { margin-top: 2rem; color: var(--muted); font-size: 0.82rem; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="back"><a href="{{ back }}">Back to the table</a></p>
+    {% if not snapshot.ready %}
+    <div class="empty"><p>{{ snapshot.message }}</p></div>
+    {% elif detail is none %}
+    <div class="empty"><p>No award is stored for that tender and bid.</p></div>
+    {% else %}
+    <p class="kicker">Award</p>
+    <h1>{{ detail.tender.tender_id }}</h1>
+    <p class="muted">{{ detail.vendor.name_raw }} · bid {{ detail.focus_bid }}</p>
+
+    <h2>Tender</h2>
+    <dl>
+      {% for label, key in [
+        ("Title", "title"),
+        ("Organisation", "organisation"),
+        ("Status", "status"),
+        ("Contract date", "contract_date"),
+        ("Contract value", "contract_value"),
+        ("Scraped", "scraped_at")
+      ] %}
+      <div class="pair">
+        <dt>{{ label }}</dt>
+        <dd>{{ detail.tender[key] or "" }}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+
+    <h2>Awards on this tender</h2>
+    <table>
+      <thead>
+        <tr><th>Bid</th><th>Company</th><th>Rank</th><th>Quoted</th><th>Awarded</th><th>Work title</th></tr>
+      </thead>
+      <tbody>
+        {% for row in detail.awards %}
+        <tr class="{{ 'focus' if row.bid_number == detail.focus_bid else '' }}">
+          <td>{{ row.bid_number }}</td>
+          <td>{{ row.name_raw }}</td>
+          <td>{{ row.rank or "" }}</td>
+          <td>{{ row.quoted_value or "" }}</td>
+          <td>{{ row.awarded_value or "" }} {{ row.awarded_currency or "" }}</td>
+          <td>{{ row.work_title or "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>PDF evidence</h2>
+    <p class="evidence">These are clues from a document. They are not an address to mail.</p>
+    <dl>
+      <div class="pair"><dt>PDF email</dt><dd class="evidence">{{ detail.vendor.pdf_email or "" }}</dd></div>
+      <div class="pair"><dt>PDF phone</dt><dd class="evidence">{{ detail.vendor.pdf_phone or "" }}</dd></div>
+    </dl>
+    {% if documents %}
+      {% for doc in documents %}
+      <div class="card">
+        <p>{{ doc.filename or "Unnamed file" }}</p>
+        <p class="muted">Email {{ doc.emails or "—" }} · Phone {{ doc.phones or "—" }} · GSTIN {{ doc.gstins or "—" }}</p>
+      </div>
+      {% endfor %}
+    {% else %}
+    <p class="muted">No saved PDF extract for this tender.</p>
+    {% endif %}
+
+    <h2>Contact on the company</h2>
+    <dl>
+      {% for label, key in [
+        ("Email", "email"),
+        ("Phone", "phone"),
+        ("Enrichment", "enrichment_status"),
+        ("Enriched", "enriched_at")
+      ] %}
+      <div class="pair">
+        <dt>{{ label }}</dt>
+        <dd>{{ detail.vendor[key] or "" }}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+
+    <h2>Model calls</h2>
+    {% if detail.runs %}
+      {% for run in detail.runs %}
+      <div class="card">
+        <p>{{ run.created_at }} · {{ run.status }}{% if run.model %} · {{ run.model }}{% endif %}</p>
+        {% if run.error %}<p>{{ run.error }}</p>{% endif %}
+        {% if run.output_json %}<pre>{{ run.output_json }}</pre>{% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+    <p class="muted">No model call for this company.</p>
+    {% endif %}
+
+    <h2>Mail attempts</h2>
+    {% if detail.attempts %}
+    <table>
+      <thead>
+        <tr><th>When</th><th>Address used</th><th>Subject</th><th>Transport</th><th>Status</th><th>Error</th></tr>
+      </thead>
+      <tbody>
+        {% for attempt in detail.attempts %}
+        <tr>
+          <td>{{ attempt.sent_at or "" }}</td>
+          <td>{{ attempt.email or "" }}</td>
+          <td>{{ attempt.subject or "" }}</td>
+          <td>{{ attempt.transport or "" }}</td>
+          <td>{{ attempt.status or "" }}</td>
+          <td>{{ attempt.error or "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No mail attempt for this company.</p>
+    {% endif %}
+    {% endif %}
+
+    <footer>database {{ snapshot.path }}</footer>
+  </main>
+</body>
+</html>

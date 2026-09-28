@@ -39,6 +39,26 @@ def _seed(*names: str) -> list[int]:
         return [upsert_vendor(current, name_raw=name) for name in names]
 
 
+def test_stop_keeps_the_vendor_already_done_and_skips_the_rest():
+    _seed("First Ltd", "Second Ltd")
+    chain = FakeChain(
+        ContactInfo(email="a@first.example"),
+        ContactInfo(email="b@second.example"),
+    )
+    answered = {"n": 0}
+
+    def stop() -> bool:
+        return answered["n"] >= 1
+
+    def report(vendor, status, detail) -> None:
+        answered["n"] += 1
+
+    summary = enrich_pending(chain=chain, should_stop=stop, report=report)
+
+    assert summary.done == 1
+    assert queue() != []
+
+
 def test_a_found_contact_is_written_back_to_the_vendor():
     (vendor_id,) = _seed("Kanta Enterprises")
     chain = FakeChain(ContactInfo(email="hi@kanta.example", phone="+91 712 111"))
