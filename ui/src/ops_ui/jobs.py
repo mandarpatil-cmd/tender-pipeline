@@ -38,8 +38,17 @@ class Log:
                     job.log = (job.log or "") + line
 
 
+class CaptchaWait:
+    def __init__(self, image: Path) -> None:
+        self.image = image
+        self.answer: str | None = None
+        self.event = threading.Event()
+
+
 _GUARD = threading.Lock()
 _STOPS: dict[int, threading.Event] = {}
+_CAPTCHA: dict[int, CaptchaWait] = {}
+CAPTCHA_TIMEOUT_SECONDS = 180
 
 
 def start_job(
@@ -53,7 +62,9 @@ def start_job(
     with _GUARD:
         with session(engine(database)) as current:
             running = current.scalar(
-                select(UiJob.job_id).where(UiJob.stage == stage, UiJob.state == "running")
+                select(UiJob.job_id).where(
+                    UiJob.stage == stage, UiJob.state.in_(("running", "waiting"))
+                )
             )
             if running is not None:
                 raise Busy(int(running))
@@ -83,10 +94,73 @@ def request_stop(database: Path, job_id: int) -> None:
     stop = _STOPS.get(job_id)
     if stop is not None:
         stop.set()
+    waiting = _CAPTCHA.get(job_id)
+    if waiting is not None:
+        waiting.event.set()
     with session(engine(database)) as current:
         job = current.get(UiJob, job_id)
-        if job is not None and job.state == "running":
+        if job is not None and job.state in {"running", "waiting"}:
             job.log = (job.log or "") + "Stop requested. Work already saved is kept.\n"
+
+
+def begin_captcha(database: Path, job_id: int, image: Path) -> CaptchaWait:
+    """Mark the run as waiting and hold the image until six characters arrive."""
+    wait = CaptchaWait(image)
+    _CAPTCHA[job_id] = wait
+    _set_state(database, job_id, "waiting")
+    return wait
+
+
+def submit_captcha(job_id: int, code: str) -> bool:
+    wait = _CAPTCHA.get(job_id)
+    text = (code or "").strip()
+    if wait is None or len(text) != 6:
+        return False
+    wait.answer = text
+    wait.event.set()
+    return True
+
+
+def captcha_image(job_id: int) -> Path | None:
+    wait = _CAPTCHA.get(job_id)
+    if wait is None or not wait.image.is_file():
+        return None
+    return wait.image
+
+
+def finish_captcha(job_id: int) -> None:
+    _CAPTCHA.pop(job_id, None)
+
+
+class CaptchaTimedOut(Exception):
+    """Nobody typed the six characters before the wait ended."""
+
+
+def wait_for_captcha(log: Log, stop: threading.Event, image: Path) -> str:
+    """Pause this run until the page submits six characters, or the time runs out."""
+    log.write(
+        "The automatic reader gave up. Type the 6 characters shown on this page. "
+        f"You have {CAPTCHA_TIMEOUT_SECONDS // 60} minutes."
+    )
+    wait = begin_captcha(log.database, log.job_id, image)
+    try:
+        wait.event.wait(CAPTCHA_TIMEOUT_SECONDS)
+    finally:
+        finish_captcha(log.job_id)
+    if stop.is_set():
+        raise CaptchaTimedOut("Stopped while waiting for the captcha.")
+    if not wait.answer:
+        raise CaptchaTimedOut("Nobody typed the captcha in time. The run ended.")
+    _set_state(log.database, log.job_id, "running")
+    log.write("Captcha received. The scrape continues.")
+    return wait.answer
+
+
+def _set_state(database: Path, job_id: int, state: str) -> None:
+    with session(engine(database)) as current:
+        job = current.get(UiJob, job_id)
+        if job is not None and job.state in {"running", "waiting"}:
+            job.state = state
 
 
 def get_job(database: Path, job_id: int) -> UiJob | None:

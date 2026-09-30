@@ -21,6 +21,13 @@ from stage1_scrape.domain.errors import ScraperError
 
 log = logging.getLogger(__name__)
 
+#: A dropped DNS lookup or a stalled socket is retried. An HTTP error is not.
+_TRANSIENT_ATTEMPTS = 3
+
+
+def _is_transient(exc: BaseException) -> bool:
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout))
+
 
 class GePNICClient:
     """Cookie-aware HTTP client for the Tapestry GePNIC front-end."""
@@ -42,14 +49,37 @@ class GePNICClient:
         jitter = random.uniform(0, min(0.6, self.delay * 0.3))
         time.sleep(self.delay + jitter)
 
+    def _send(self, verb: str, url: str, call):
+        """Run one HTTP call. A connection or DNS failure is tried again."""
+        last: Exception | None = None
+        for attempt in range(1, _TRANSIENT_ATTEMPTS + 1):
+            try:
+                return call()
+            except requests.RequestException as exc:
+                last = exc
+                if attempt >= _TRANSIENT_ATTEMPTS or not _is_transient(exc):
+                    raise ScraperError(f"{verb} failed for {url}: {exc}") from exc
+                wait = 2 * attempt
+                log.warning(
+                    "%s failed (%s/%s). Waiting %ss, then retrying. %s",
+                    verb,
+                    attempt,
+                    _TRANSIENT_ATTEMPTS,
+                    wait,
+                    exc,
+                )
+                time.sleep(wait)
+        raise ScraperError(f"{verb} failed for {url}: {last}")
+
     def get(self, url: str, referer: str | None = None) -> requests.Response:
         self._pause()
         headers = {"Referer": referer or self._last_url}
         log.debug("GET %s", url)
-        try:
-            response = self.session.get(url, headers=headers, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise ScraperError(f"GET failed for {url}: {exc}") from exc
+        response = self._send(
+            "GET",
+            url,
+            lambda: self.session.get(url, headers=headers, timeout=self.timeout),
+        )
         response.raise_for_status()
         self._last_url = response.url
         return response
@@ -68,15 +98,16 @@ class GePNICClient:
             "Content-Type": "application/x-www-form-urlencoded",
         }
         log.debug("POST %s (%s fields)", url, len(payload))
-        try:
-            response = self.session.post(
+        response = self._send(
+            "POST",
+            url,
+            lambda: self.session.post(
                 url,
                 data=payload,
                 headers=headers,
                 timeout=self.timeout,
-            )
-        except requests.RequestException as exc:
-            raise ScraperError(f"POST failed for {url}: {exc}") from exc
+            ),
+        )
         response.raise_for_status()
         self._last_url = response.url
         return response

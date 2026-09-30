@@ -23,6 +23,7 @@ _FIELDS = (
     ("date_to", "date_to"),
     ("value_min", "value_min"),
     ("value_max", "value_max"),
+    ("mailable", "mailable"),
 )
 
 
@@ -61,6 +62,7 @@ def href(query: AwardQuery, **overrides: str) -> str:
         "date_to": query.date_to,
         "value_min": query.value_min,
         "value_max": query.value_max,
+        "mailable": query.mailable,
         "sort": query.sort,
         "dir": query.direction,
         "page": str(query.page),
@@ -74,6 +76,26 @@ def href(query: AwardQuery, **overrides: str) -> str:
     ]
     encoded = urlencode(pairs)
     return f"/?{encoded}" if encoded else "/"
+
+
+def form_fields(query: AwardQuery) -> list[tuple[str, str]]:
+    """The filter the table is showing, so a later POST selects that same set."""
+    return [
+        ("q", query.text),
+        ("tender_status", query.tender_status),
+        ("enrichment_status", query.enrichment_status),
+        ("outreach_status", query.outreach_status),
+        ("source", query.source),
+        ("state", query.state),
+        ("organisation", query.organisation),
+        ("date_from", query.date_from),
+        ("date_to", query.date_to),
+        ("value_min", query.value_min),
+        ("value_max", query.value_max),
+        ("mailable", query.mailable),
+        ("sort", query.sort),
+        ("dir", query.direction),
+    ]
 
 
 def sort_href(query: AwardQuery, key: str) -> str:

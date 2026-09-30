@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Mail{% endblock %}
+{% block body %}
+<p class="kicker">Mail</p>
+<h1>Mail</h1>
+<p class="lede">Stage 3 mails <code>vendors.email</code> only. A company already sent to is left out. Preview writes files and sends nothing.</p>
+{% if not snapshot.ready %}
+<div class="empty"><p>{{ snapshot.message }}</p></div>
+{% else %}
+{% if error %}<p class="warn">{{ error }}</p>{% endif %}
+<p class="cost">{{ waiting }} waiting with an address that has not been sent to.</p>
+{% if selected is not none %}
+<p class="cost">{{ selected|length }} came from the table. {{ mailable|length }} can be mailed. The rest have no email or were already sent.</p>
+{% endif %}
+<h2>Message</h2>
+<p class="cost">Subject: {{ subject }}</p>
+<pre>{{ body }}</pre>
+<form class="panel" method="post" action="/mail">
+  {% if selected is not none %}
+  {% for vendor_id in selected %}
+  <input type="hidden" name="vendor_id" value="{{ vendor_id }}">
+  {% endfor %}
+  {% endif %}
+  <div class="grid">
+    <label>Transport
+      <select name="transport">
+        <option value="gmail" {% if transport == 'gmail' %}selected{% endif %}>Gmail</option>
+        <option value="graph" {% if transport == 'graph' %}selected{% endif %}>Microsoft Graph</option>
+      </select>
+    </label>
+    <label>Delay seconds
+      <input name="delay" type="number" min="5" step="0.1" value="{{ delay }}">
+    </label>
+    <label>Send every message to
+      <input name="redirect_to" value="{{ redirect_to }}" placeholder="leave blank to use each address">
+    </label>
+  </div>
+  <p class="warn">If that address is filled in, every message goes there, and each company is still marked sent.</p>
+  <label class="check"><input type="checkbox" name="send" value="1"> Send for real</label>
+  <p class="meta">
+    <button type="submit" name="mode" value="preview">Preview</button>
+    <button type="submit" name="mode" value="preflight">Send preflight to me</button>
+    <button type="submit" name="mode" value="send">Send</button>
+  </p>
+</form>
+{% endif %}
+{% endblock %}

@@ -110,6 +110,7 @@ def _vendor_dict(vendor: Vendor) -> dict[str, Any]:
         "phone": vendor.phone,
         "enrichment_status": vendor.enrichment_status,
         "enriched_at": vendor.enriched_at,
+        "contact_origin": vendor.contact_origin,
         "pdf_email": vendor.pdf_email,
         "pdf_phone": vendor.pdf_phone,
     }

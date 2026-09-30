@@ -147,6 +147,23 @@ def test_the_transport_is_closed_even_when_a_send_fails(monkeypatch, written_pit
     assert transport.closed
 
 
+def test_stop_keeps_the_sends_already_made(fake_transport):
+    _vendor("One Ltd", "one@x.example")
+    _vendor("Two Ltd", "two@x.example")
+    people = campaign.load_recipients()
+
+    def stop() -> bool:
+        return len(fake_transport["transport"].sent) >= 1
+
+    campaign.send_all(people, 0, None, should_stop=stop)
+
+    assert [address for address, _subject in fake_transport["transport"].sent] == [
+        "one@x.example"
+    ]
+    with session() as current:
+        assert current.query(Outreach).count() == 1
+
+
 def test_redirecting_still_records_the_real_vendor(fake_transport):
     """TO= sends everything to you, but the vendor is still marked as done."""
     vendor_id = _vendor("Kanta Enterprises", "hi@kanta.example")

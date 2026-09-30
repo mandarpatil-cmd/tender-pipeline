@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Look up contacts{% endblock %}
+{% block body %}
+<p class="kicker">Awards</p>
+<h1>Look up these companies</h1>
+{% if skipped_done %}<p>{{ skipped_done }} already answered and will not be looked up again.</p>{% endif %}
+{% if names %}
+<ul>{% for name in names %}<li>{{ name }}</li>{% endfor %}</ul>
+<p class="cost">{{ cost }}</p>
+<p class="cost">Unchecked dry run: {{ live_cost }}</p>
+<form class="panel" method="post" action="/selection/lookup">
+  {% for vendor_id in ids %}
+  <input type="hidden" name="vendor_id" value="{{ vendor_id }}">
+  {% endfor %}
+  <label class="check"><input type="checkbox" name="dry_run" checked> Dry run — list them and spend nothing</label>
+  <button type="submit">Start</button>
+</form>
+{% else %}
+<p>None of the ticked companies are still waiting. Answered companies are not looked up again.</p>
+{% endif %}
+{% endblock %}

@@ -13,10 +13,12 @@ import os
 import re
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from dotenv import load_dotenv
 from pipeline_core.db import session
+from pipeline_core.emailcheck import EMAIL_RE
 from pipeline_core.models import OUTREACH_FAILED, OUTREACH_SENT
 from pipeline_core.queries import OutreachTarget, outreach_targets, record_outreach
 
@@ -24,8 +26,6 @@ from transport import TransportError, build_transport
 
 BASE = Path(__file__).resolve().parent
 PREVIEW_DIR = BASE / "previews"
-
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 load_dotenv(BASE / ".env")
 
@@ -91,9 +91,10 @@ def log_result(
     transport_name: str,
     status: str,
     error: str = "",
+    bind=None,
 ) -> None:
     """Record one attempt. Committed immediately, so a crash cannot re-mail anyone."""
-    with session() as current:
+    with session(bind) as current:
         record_outreach(
             current,
             vendor_id=target.vendor_id,
@@ -164,11 +165,27 @@ def dry_run(people: list[OutreachTarget], override_to: str | None) -> None:
     print("Nothing was sent. Set SEND = True in main.py to transmit.")
 
 
+def _pause(delay: float, should_stop: Callable[[], bool] | None) -> bool:
+    """Wait between sends. True means the run was asked to stop."""
+    remaining = delay
+    while True:
+        if should_stop and should_stop():
+            return True
+        if remaining <= 0:
+            return False
+        step = min(0.2, remaining)
+        time.sleep(step)
+        remaining -= step
+
+
 def send_all(
     people: list[OutreachTarget],
     delay: float,
     override_to: str | None,
     transport_name: str = "gmail",
+    *,
+    should_stop: Callable[[], bool] | None = None,
+    bind=None,
 ) -> None:
     if PLACEHOLDER in build_body("Test"):
         raise SystemExit(
@@ -188,8 +205,12 @@ def send_all(
     print(f"Sending {len(people)} message(s){target_note}, {delay}s apart ...")
     transport = build_transport(transport_name)
     sent = failed = 0
+    stopped = False
     try:
         for i, person in enumerate(people, start=1):
+            if should_stop and should_stop():
+                stopped = True
+                break
             to = override_to or person.email
             subject = SUBJECT_TEMPLATE.format(company=person.company)
             body = build_body(person.company)
@@ -197,20 +218,25 @@ def send_all(
                 transport.send(to, subject, body)
             except TransportError as err:
                 failed += 1
-                log_result(person, to, subject, transport_name, OUTREACH_FAILED, str(err))
+                log_result(
+                    person, to, subject, transport_name, OUTREACH_FAILED, str(err), bind=bind
+                )
                 print(f"  [{i}/{len(people)}] FAILED {person.email}: {err}")
                 continue
 
             sent += 1
-            log_result(person, to, subject, transport_name, OUTREACH_SENT)
+            log_result(person, to, subject, transport_name, OUTREACH_SENT, bind=bind)
             print(f"  [{i}/{len(people)}] sent to {person.company} <{to}>")
-            if i < len(people):
-                time.sleep(delay)
+            if i < len(people) and _pause(delay, should_stop):
+                stopped = True
+                break
     except KeyboardInterrupt:
         print("\ninterrupted - progress is saved, re-run to resume")
     finally:
         transport.close()
 
+    if stopped:
+        print("Stopped. Messages already sent are saved.")
     print(f"\ndone: {sent} sent, {failed} failed. Logged to the outreach table.")
 
 

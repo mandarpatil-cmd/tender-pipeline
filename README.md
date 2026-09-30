@@ -23,7 +23,7 @@ them. Three stages share one database.
 | [`02-enrich/`](02-enrich/) | Asks a model (with web search) for each company's public email and phone |
 | [`03-outreach/`](03-outreach/) | Emails every company that has an address, once |
 | [`core/`](core/) | The shared database schema and the `pipeline-db` command |
-| [`ui/`](ui/) | Local browser window. Reads the database; does not run a stage |
+| [`ui/`](ui/) | Local browser window. Reads the database and can start a scrape or a contact lookup |
 | `data/` | Created by setup: `pipeline.sqlite3`, the shared database (never committed) |
 | `requirements.txt` | Every dependency, for the one shared virtualenv |
 
@@ -87,8 +87,8 @@ uv run pipeline-db status
 The same counts, in a browser on this machine, plus one row per award. The tender
 id opens that tender, its awards, the PDF clues, the model calls, and every mail
 attempt. Search and the filters run in the database. Excel and CSV download that
-filtered set; a blank cell in the file is `NA`. The page only reads. It does not
-scrape, look up contacts, or send mail.
+filtered set; a blank cell in the file is `NA`. Awards is that table. Runs starts
+a scrape or a contact lookup. The window does not send mail.
 
 ```powershell
 uv run ops-ui

@@ -17,6 +17,10 @@
 </div>
 
 <div class="scroll">
+  <form method="post" action="/selection">
+  {% for name, value in form_fields %}
+  <input type="hidden" name="{{ name }}" value="{{ value }}">
+  {% endfor %}
   <table>
     <thead>
       <tr>
@@ -27,6 +31,9 @@
       <tr>
         {% for header in headers %}
         <th class="{{ 'evidence' if header.evidence else '' }}">
+          {% if loop.first %}
+          <input type="checkbox" aria-label="Select rows on this page" onchange="document.querySelectorAll('input[name=vendor_id]').forEach(function (box) { box.checked = this.checked; }, this)">
+          {% endif %}
           {% if header.href %}
           <a href="{{ header.href }}">{{ header.label }}{% if header.mark %} {{ header.mark }}{% endif %}</a>
           {% else %}
@@ -40,7 +47,7 @@
       {% for row in view.rows %}
       <tr>
         {% for col in columns %}
-        <td class="{{ 'evidence' if col.evidence else '' }}" data-col="{{ col.key }}">{% if col.key == 'tender_id' %}<a class="open" href="/award?tender_id={{ row.tender_id|urlencode }}&bid={{ row.bid_number|urlencode }}&back={{ request.url.query|urlencode }}">{{ row.tender_id }}</a>{% else %}{{ "" if row[col.key] is none else row[col.key] }}{% endif %}</td>
+        <td class="{{ 'evidence' if col.evidence else '' }}" data-col="{{ col.key }}">{% if col.key == 'tender_id' %}<input type="checkbox" name="vendor_id" value="{{ row.vendor_id }}"> <a class="open" href="/award?tender_id={{ row.tender_id|urlencode }}&bid={{ row.bid_number|urlencode }}&back={{ request.url.query|urlencode }}">{{ row.tender_id }}</a>{% else %}{{ "" if row[col.key] is none else row[col.key] }}{% endif %}</td>
         {% endfor %}
       </tr>
       {% else %}
@@ -48,6 +55,14 @@
       {% endfor %}
     </tbody>
   </table>
+  <p class="meta">
+    <label class="choice"><input type="checkbox" name="select_all" value="1"> All companies in this filter ({{ view.counts.vendors }})</label>
+    <button type="submit" name="action" value="lookup">Look up contacts</button>
+    <button type="submit" name="action" value="requeue_failed">Put failed back on the queue</button>
+    <button type="submit" name="action" value="requeue_not_found">Put not_found back on the queue</button>
+    <button type="submit" name="action" value="mail" formaction="/mail/from-table">Mail these</button>
+  </p>
+  </form>
 </div>
 
 {% if previous or following %}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pipeline_core.db import engine, ensure_schema, session
-from pipeline_core.grid import AwardQuery, award_view
+from pipeline_core.grid import AwardQuery, award_view, choices, filtered_vendor_ids
 from pipeline_core.loose import loose_date, loose_number
 from pipeline_core.models import OUTREACH_SENT, STATUS_DONE
 from pipeline_core.queries import (
@@ -144,3 +144,32 @@ def test_latest_outreach_does_not_duplicate_the_award(bind):
     assert row["attempts"] == 2
     assert row["enrichment_status"] == STATUS_DONE
     assert view.counts.sent == 1
+
+
+def test_mailable_and_state_match_the_stored_values(bind):
+    _seed(bind)
+    with session(bind) as current:
+        mailed = award_view(current, AwardQuery(mailable="yes"), page_size=50)
+        unmailed = award_view(current, AwardQuery(mailable="no"), page_size=50)
+        state = award_view(current, AwardQuery(state="bihar"), page_size=50)
+        partial = award_view(current, AwardQuery(state="Bih"), page_size=50)
+        picked = choices(current)
+        ids = filtered_vendor_ids(current, AwardQuery(state="Bihar"))
+
+    assert {row["tender_id"] for row in mailed.rows} == {"NEW"}
+    assert {row["tender_id"] for row in unmailed.rows} == {"OLD", "ODD"}
+    assert [row["tender_id"] for row in state.rows] == ["OLD"]
+    assert partial.total == 0
+    assert "Maharashtra" in picked["state"]
+    assert "Bihar" in picked["state"]
+    assert ids and len(ids) == 1
+
+
+def test_direction_reverses_the_same_column(bind):
+    _seed(bind)
+    with session(bind) as current:
+        view = award_view(
+            current, AwardQuery(sort="tender_id", direction="desc"), page_size=50
+        )
+
+    assert [row["tender_id"] for row in view.rows] == ["OLD", "ODD", "NEW"]

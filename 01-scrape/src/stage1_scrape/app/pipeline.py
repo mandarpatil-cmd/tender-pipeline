@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from stage1_scrape.config import APP_URL, DEFAULT_DELAY_SECONDS, TENDER_STATUS_AOC
-from stage1_scrape.domain.errors import CaptchaError, ParseError
+from stage1_scrape.domain.errors import CaptchaError, ParseError, ScraperError
 from stage1_scrape.domain.models import TenderRecord
 from stage1_scrape.parse import (
     find_next_page,
@@ -49,16 +49,18 @@ def submit_search(
     return client.post(payload, url=APP_URL, referer=client._last_url).text
 
 
-def scrape_listing_pages(
-    client: GePNICClient,
-    first_html: str,
-    store: Store,
-    max_pages: int,
-) -> list:
-    """Walk listing pages via Next. Captures unmatched pager HTML for Step 2b."""
+def iter_listing_pages(
+    client: GePNICClient, first_html: str, store: Store, max_pages: int | None
+):
+    """Yield one listing page, then fetch the next.
+
+    The caller saves that page's tenders before asking for another page. A failed
+    Next request stops the walk and leaves those saves in place. ``max_pages``
+    of None walks until the portal has no Next link.
+    """
     html = first_html
-    listings = []
-    for page_no in range(1, max_pages + 1):
+    page_no = 1
+    while True:
         rows = parse_results_table(html)
         count = parse_result_count(html)
         log.info(
@@ -69,11 +71,11 @@ def scrape_listing_pages(
         )
         if not rows:
             store.write_debug(f"listing_page_{page_no}_empty.html", html)
-            break
+            return
         store.write_debug(f"listing_page_{page_no}.html", html)
-        listings.extend(rows)
-        if page_no >= max_pages:
-            break
+        yield page_no, rows
+        if max_pages is not None and page_no >= max_pages:
+            return
         nxt = find_next_page(html)
         if nxt is None or not nxt.url:
             debug = pager_debug_html(html)
@@ -83,10 +85,18 @@ def scrape_listing_pages(
                 "Saved pager markup to %s",
                 path,
             )
-            break
+            return
         log.info("Following Next (%s): %s", nxt.note, nxt.url)
-        html = client.get(nxt.url).text
-    return listings
+        try:
+            html = client.get(nxt.url).text
+        except ScraperError as exc:
+            log.warning(
+                "Listing stopped after page %s. Tenders already saved are kept. %s",
+                page_no,
+                exc,
+            )
+            return
+        page_no += 1
 
 
 def scrape_one_tender(
@@ -130,7 +140,7 @@ def scrape_one_tender(
 def scrape_aoc(
     out_dir: Path,
     captcha_text: str | None = None,
-    max_pages: int = 1,
+    max_pages: int | None = 1,
     max_tenders: int | None = None,
     delay: float = DEFAULT_DELAY_SECONDS,
     download_pdfs: bool = True,
@@ -140,6 +150,7 @@ def scrape_aoc(
     from_probe: bool = False,
     captcha_solver: str = "manual",
     should_stop: "Callable[[], bool] | None" = None,
+    ask: "Callable[[Path], str] | None" = None,
 ) -> list[TenderRecord]:
     store = Store(out_dir)
     client = GePNICClient(delay=delay)
@@ -151,33 +162,41 @@ def scrape_aoc(
         extra_fields=extra_fields,
         from_probe=from_probe,
         captcha_solver=captcha_solver,
+        ask=ask,
     )
-    listings = scrape_listing_pages(client, results_html, store, max_pages=max_pages)
     known = store.known_ids() if skip_known else set()
     records: list[TenderRecord] = []
-    for listing in listings:
-        if should_stop and should_stop():
-            log.info("Stop requested. Tenders already saved are kept.")
-            break
-        if max_tenders is not None and len(records) >= max_tenders:
-            break
-        if skip_known and listing.tender_id in known:
-            log.info("Skipping already-saved %s", listing.tender_id)
-            continue
-        try:
-            record = scrape_one_tender(client, listing, store, download_pdfs=download_pdfs)
-        except ParseError as exc:
-            log.warning("Tender %s skipped: %s", listing.tender_id, exc)
-            continue
-        records.append(record)
-        known.add(listing.tender_id)
-        log.info(
-            "Saved %s — %s bid(s), %s awarded, %s pdf(s)",
-            listing.tender_id,
-            len(record.bids),
-            len(record.awarded_bids),
-            len(record.downloaded_files),
-        )
+    for _page_no, rows in iter_listing_pages(client, results_html, store, max_pages):
+        for listing in rows:
+            if should_stop and should_stop():
+                log.info("Stop requested. Tenders already saved are kept.")
+                return records
+            if max_tenders is not None and len(records) >= max_tenders:
+                return records
+            if skip_known and listing.tender_id in known:
+                log.info("Skipping already-saved %s", listing.tender_id)
+                continue
+            try:
+                record = scrape_one_tender(client, listing, store, download_pdfs=download_pdfs)
+            except ParseError as exc:
+                log.warning("Tender %s skipped: %s", listing.tender_id, exc)
+                continue
+            except ScraperError as exc:
+                log.warning(
+                    "Stopped on %s. Tenders already saved are kept. %s",
+                    listing.tender_id,
+                    exc,
+                )
+                return records
+            records.append(record)
+            known.add(listing.tender_id)
+            log.info(
+                "Saved %s — %s bid(s), %s awarded, %s pdf(s)",
+                listing.tender_id,
+                len(record.bids),
+                len(record.awarded_bids),
+                len(record.downloaded_files),
+            )
     return records
 
 
@@ -189,6 +208,7 @@ def _search_with_captcha(
     extra_fields: dict[str, str] | None = None,
     from_probe: bool = False,
     captcha_solver: str = "manual",
+    ask: "Callable[[Path], str] | None" = None,
 ) -> str:
     last_error: Exception | None = None
     session_path = store.root / "session.pkl"
@@ -215,6 +235,7 @@ def _search_with_captcha(
                 image_path,
                 captcha_text if attempt == 1 else None,
                 solver=captcha_solver,
+                ask=ask if attempt == attempts else None,
             )
         except CaptchaError as exc:
             last_error = exc

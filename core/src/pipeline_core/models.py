@@ -32,6 +32,11 @@ ENRICHMENT_STATUSES = (STATUS_PENDING, STATUS_DONE, STATUS_NOT_FOUND, STATUS_FAI
 # --- vendors.source ----------------------------------------------------------
 SOURCE_SCRAPE = "scrape"
 SOURCE_BIDEASY = "bideasy"
+SOURCE_MANUAL = "manual"
+
+# --- vendors.contact_origin: who wrote the contact block ---------------------
+CONTACT_TYPED = "typed"
+CONTACT_MODEL = "model"
 
 # --- outreach.status ---------------------------------------------------------
 OUTREACH_SENT = "sent"
@@ -79,7 +84,7 @@ class Vendor(Base):
     city: Mapped[str | None] = mapped_column(Text)
     state: Mapped[str | None] = mapped_column(Text)
     buyer_hint: Mapped[str | None] = mapped_column(Text)
-    #: 'scrape' | 'bideasy' — where the row came from.
+    #: 'scrape' | 'bideasy' | 'manual' — where the row came from.
     source: Mapped[str | None] = mapped_column(Text)
 
     # --- evidence block: written only by stage 1 ---
@@ -99,6 +104,8 @@ class Vendor(Base):
         Text, nullable=False, server_default=STATUS_PENDING, default=STATUS_PENDING
     )
     enriched_at: Mapped[str | None] = mapped_column(Text)
+    #: 'typed' when a person entered the contact, 'model' when stage 2 did.
+    contact_origin: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (Index("idx_vendors_status", "enrichment_status"),)
 

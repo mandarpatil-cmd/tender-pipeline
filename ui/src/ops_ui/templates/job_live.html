@@ -1,6 +1,13 @@
-<div id="live" {% if job.state == 'running' %}hx-get="/jobs/{{ job.job_id }}/live" hx-trigger="every 1s" hx-swap="outerHTML"{% endif %}>
+<div id="live" {% if job.state == 'running' or job.state == 'waiting' %}hx-get="/jobs/{{ job.job_id }}/live" hx-trigger="every 1s" hx-swap="outerHTML"{% endif %}>
   <p class="meta">{{ job.state }}{% if job.finished_at %} · {{ job.finished_at }}{% endif %}</p>
-  {% if job.state == 'running' %}
+  {% if job.state == 'waiting' %}
+  <img class="captcha" src="/jobs/{{ job.job_id }}/captcha" alt="Captcha: type these 6 characters">
+  <form method="post" action="/jobs/{{ job.job_id }}/captcha">
+    <input name="code" maxlength="6" minlength="6" pattern=".{6}" required autocomplete="off" placeholder="6 characters">
+    <button type="submit">Continue</button>
+  </form>
+  {% endif %}
+  {% if job.state == 'running' or job.state == 'waiting' %}
   <form method="post" action="/jobs/{{ job.job_id }}/stop">
     <button type="submit">Stop</button>
   </form>

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Put not_found back{% endblock %}
+{% block body %}
+<p class="kicker">Awards</p>
+<h1>Put not_found back on the queue</h1>
+<p class="lede">This only makes sense after the lookup method itself has changed. Otherwise it pays again for the same answer.</p>
+<form class="panel" method="post" action="/selection">
+  <input type="hidden" name="action" value="requeue_not_found">
+  <input type="hidden" name="confirm" value="yes">
+  {% for vendor_id in ids %}
+  <input type="hidden" name="vendor_id" value="{{ vendor_id }}">
+  {% endfor %}
+  <button type="submit">Put them back</button>
+</form>
+{% endblock %}

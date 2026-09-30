@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Tender pipeline{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+  {% set here = request.url.path %}
+  <header class="top">
+    <a class="brand" href="/">Tender pipeline</a>
+    <nav class="nav">
+      <a href="/" {% if here == '/' or here == '/award' or here == '/selection' %}class="current" aria-current="page"{% endif %}>Awards</a>
+      <a href="/jobs" {% if here.startswith('/jobs') %}class="current" aria-current="page"{% endif %}>Runs</a>
+      <a href="/mail" {% if here.startswith('/mail') %}class="current" aria-current="page"{% endif %}>Mail</a>
+      <a href="/tender/new" {% if here.startswith('/tender') %}class="current" aria-current="page"{% endif %}>Add a tender</a>
+    </nav>
+  </header>
+  <main class="{% block main_class %}narrow{% endblock %}">
+    {% block body %}{% endblock %}
+    {% if snapshot is defined %}
+    <footer>database {{ snapshot.path }}</footer>
+    {% endif %}
+  </main>
+</body>
+</html>

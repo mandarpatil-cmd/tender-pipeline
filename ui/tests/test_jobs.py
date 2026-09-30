@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 
 import pytest
@@ -91,6 +92,78 @@ def test_enrich_dry_run_lists_the_company_and_does_not_spend(tmp_path):
         assert vendor.enrichment_status == "pending"
 
 
+def test_typed_captcha_reaches_the_same_run(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    image = tmp_path / "captcha.png"
+    image.write_bytes(b"\x89PNG\r\n")
+    started = threading.Event()
+    received: list[str] = []
+
+    def work(log, stop):
+        from ops_ui.jobs import wait_for_captcha
+
+        started.set()
+        received.append(wait_for_captcha(log, stop, image))
+        log.write("continued")
+        return 0
+
+    job_id = start_job(path, "scrape", {}, work)
+    assert started.wait(2)
+    client = TestClient(create_app(path))
+    page = ""
+    for _ in range(50):
+        page = client.get(f"/jobs/{job_id}").text
+        if "6 characters" in page:
+            break
+        threading.Event().wait(0.05)
+    assert "6 characters" in page
+    assert client.get(f"/jobs/{job_id}/captcha").content.startswith(b"\x89PNG")
+    posted = client.post(
+        f"/jobs/{job_id}/captcha",
+        data={"code": "Ab12Xy"},
+        follow_redirects=False,
+    )
+    assert posted.status_code == 303
+    for _ in range(50):
+        if received:
+            break
+        threading.Event().wait(0.05)
+    assert received == ["Ab12Xy"]
+    job = get_job(path, job_id)
+    assert job is not None and job.state == "done"
+    assert "continued" in (job.log or "")
+
+
+def test_captcha_wait_ends_when_nobody_types(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    image = tmp_path / "captcha.png"
+    image.write_bytes(b"\x89PNG\r\n")
+    monkeypatch.setattr("ops_ui.jobs.CAPTCHA_TIMEOUT_SECONDS", 0.05)
+
+    def work(log, stop):
+        from ops_ui.jobs import CaptchaTimedOut, wait_for_captcha
+
+        try:
+            wait_for_captcha(log, stop, image)
+        except CaptchaTimedOut as exc:
+            log.write(str(exc))
+            return 1
+        return 0
+
+    job_id = start_job(path, "scrape", {}, work)
+    job = None
+    for _ in range(50):
+        job = get_job(path, job_id)
+        if job is not None and job.state == "failed":
+            break
+        threading.Event().wait(0.05)
+    assert job is not None
+    assert job.state == "failed"
+    assert "Nobody typed the captcha in time" in (job.log or "")
+
+
 def test_stop_marks_the_run_stopped(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     ensure_schema(engine(path))
@@ -115,3 +188,55 @@ def test_stop_marks_the_run_stopped(tmp_path):
             break
         threading.Event().wait(0.05)
     assert state == "stopped"
+
+
+def test_no_cap_requires_both_dates(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    client = TestClient(create_app(path))
+
+    missing = client.post(
+        "/jobs/scrape",
+        data={"no_cap": "on", "from_date": "01/01/2026"},
+    )
+    reversed_dates = client.post(
+        "/jobs/scrape",
+        data={"no_cap": "on", "from_date": "31/03/2026", "to_date": "01/01/2026"},
+    )
+
+    assert missing.status_code == 400
+    assert "from date and a to date" in missing.text
+    assert reversed_dates.status_code == 400
+    assert reversed_dates.text == "From date is after to date."
+
+
+def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+
+    def fake(log, stop, **params):
+        log.write("listed")
+        return 0
+
+    monkeypatch.setattr("ops_ui.routes.jobs.run_scrape", fake)
+    client = TestClient(create_app(path))
+    response = client.post(
+        "/jobs/scrape",
+        data={
+            "no_cap": "on",
+            "from_date": "01/01/2026",
+            "to_date": "31/01/2026",
+            "date_field": "contract",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job = get_job(path, job_id)
+    assert job is not None
+    params = json.loads(job.params_json)
+    assert params["max_tenders"] is None
+    assert params["max_pages"] is None
+    assert params["from_date"] == "01/01/2026"
+    assert params["to_date"] == "31/01/2026"

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Add a tender{% endblock %}
+{% block body %}
+<p class="kicker">Manual</p>
+<h1>Add a tender</h1>
+<p class="lede">Leave the tender id blank and one starting with MANUAL- is created. A company name already stored is not duplicated.</p>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if snapshot.ready %}
+<form class="entry" method="post" action="/tender/new">
+  <label>Tender id <input name="tender_id" placeholder="blank for MANUAL-"></label>
+  <label>Title <input name="title"></label>
+  <label>Organisation <input name="organisation"></label>
+  <label>Status <input name="status"></label>
+  <label>Contract date <input name="contract_date" placeholder="21-Sep-2026"></label>
+  <label>Contract value <input name="contract_value"></label>
+  <fieldset>
+    <h2>Winner</h2>
+    <label>Company <input name="winner_name" required></label>
+    <label>Bid number <input name="bid_number" value="1"></label>
+    <label>Rank <input name="rank"></label>
+    <label>Quoted value <input name="quoted_value"></label>
+    <label>Awarded value <input name="awarded_value"></label>
+    <label>Currency <input name="awarded_currency"></label>
+    <label>Work title <input name="work_title"></label>
+  </fieldset>
+  <button type="submit">Save tender</button>
+</form>
+{% else %}
+<div class="empty"><p>{{ snapshot.message }}</p></div>
+{% endif %}
+{% endblock %}

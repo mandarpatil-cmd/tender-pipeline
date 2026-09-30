@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Attach award{% endblock %}
+{% block body %}
+<p class="kicker">Manual</p>
+<h1>This company is already stored</h1>
+<ul>
+  {% for match in matches %}
+  <li>{{ match.typed_name }} is {{ match.stored_name }} (vendor {{ match.vendor_id }})</li>
+  {% endfor %}
+</ul>
+<p>Attaching the award does not change that company's email or phone.</p>
+<form class="panel" method="post" action="/tender/new/attach">
+  <input type="hidden" name="tender_id" value="{{ fields.tender_id }}">
+  <input type="hidden" name="title" value="{{ fields.title }}">
+  <input type="hidden" name="organisation" value="{{ fields.organisation }}">
+  <input type="hidden" name="status" value="{{ fields.status }}">
+  <input type="hidden" name="contract_date" value="{{ fields.contract_date }}">
+  <input type="hidden" name="contract_value" value="{{ fields.contract_value }}">
+  {% for winner in winners %}
+  <input type="hidden" name="winner_name" value="{{ winner.name }}">
+  <input type="hidden" name="bid_number" value="{{ winner.bid_number }}">
+  <input type="hidden" name="rank" value="{{ winner.rank }}">
+  <input type="hidden" name="quoted_value" value="{{ winner.quoted_value }}">
+  <input type="hidden" name="awarded_value" value="{{ winner.awarded_value }}">
+  <input type="hidden" name="awarded_currency" value="{{ winner.awarded_currency }}">
+  <input type="hidden" name="work_title" value="{{ winner.work_title }}">
+  {% endfor %}
+  <button type="submit">Attach the award</button>
+</form>
+{% endblock %}

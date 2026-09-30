@@ -1,278 +1,97 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tender pipeline</title>
-  <script src="/static/htmx.min.js"></script>
-  <style>
-    :root {
-      --ink: #f3ecdf;
-      --muted: #a89880;
-      --line: #3c3428;
-      --desk: #12100e;
-      --card: #1c1915;
-      --amber: #e2a15a;
-      --amber-dim: rgba(226, 161, 90, 0.14);
-    }
+{% extends "base.html" %}
+{% block title %}Tender pipeline{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block body %}
+<p class="kicker">Awards</p>
+<h1>Tender pipeline</h1>
+<p class="lede">One row per award. The tender id opens everything stored for that tender and company. A scrape or a contact lookup starts from Runs. Amber columns are text taken from a PDF. They are not an address to mail.</p>
 
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      color: var(--ink);
-      background:
-        radial-gradient(ellipse 80% 50% at 10% -10%, rgba(226, 161, 90, 0.08), transparent 50%),
-        linear-gradient(180deg, #181510 0%, var(--desk) 40%);
-      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-    }
-
-    main { padding: 2.5rem 1.25rem 3rem; }
-
-    .kicker {
-      margin: 0 0 0.4rem;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      font-size: 0.72rem;
-      color: var(--amber);
-      font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
-    }
-
-    h1 {
-      margin: 0;
-      font-weight: 500;
-      font-size: 2.4rem;
-      letter-spacing: -0.02em;
-    }
-
-    .lede {
-      margin: 0.8rem 0 0;
-      max-width: 40rem;
-      color: var(--muted);
-      font-size: 1.05rem;
-      line-height: 1.45;
-    }
-
-    .strip {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
-      gap: 0.75rem;
-      margin-top: 1.6rem;
-    }
-
-    article {
-      background: var(--card);
-      border: 1px solid var(--line);
-      padding: 1rem 1rem 0.9rem;
-    }
-
-    .label, .filters label, th, .meta, footer, button, select, input {
-      font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
-    }
-
-    .label {
-      margin: 0;
-      color: var(--muted);
-      font-size: 0.78rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .count {
-      margin: 0.35rem 0 0;
-      font-size: 2rem;
-      font-variant-numeric: tabular-nums;
-      font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
-      line-height: 1.1;
-    }
-
-    .note { margin: 0.55rem 0 0; color: var(--muted); font-size: 0.82rem; line-height: 1.35; }
-
-    article.gap { background: var(--amber-dim); border-color: var(--amber); }
-    article.gap .label, article.gap .count { color: var(--amber); }
-
-    .sync { margin: 0.8rem 0 0; color: var(--muted); font-size: 0.85rem; }
-
-    .filters {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-      gap: 0.7rem 0.8rem;
-      margin-top: 1.6rem;
-      padding: 1rem;
-      border: 1px solid var(--line);
-      background: var(--card);
-    }
-
-    .filters .wide { grid-column: 1 / -1; }
-
-    .filters label {
-      display: flex;
-      flex-direction: column;
-      gap: 0.3rem;
-      color: var(--muted);
-      font-size: 0.72rem;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-    }
-
-    input, select, button {
-      background: var(--desk);
-      color: var(--ink);
-      border: 1px solid var(--line);
-      padding: 0.45rem 0.5rem;
-      font-size: 0.9rem;
-    }
-
-    button {
-      align-self: end;
-      cursor: pointer;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-
-    .meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.8rem 1.2rem;
-      align-items: baseline;
-      margin: 1.1rem 0 0.6rem;
-      color: var(--muted);
-      font-size: 0.82rem;
-    }
-
-    .meta a { color: var(--amber); }
-
-    .back { margin: 0 0 0.6rem; font-size: 0.85rem; }
-    .back a { color: var(--amber); }
-
-    .legend { color: var(--amber); }
-
-    .scroll {
-      overflow-x: auto;
-      border: 1px solid var(--line);
-    }
-
-    table {
-      border-collapse: collapse;
-      min-width: 100%;
-      font-size: 0.82rem;
-      font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
-    }
-
-    th, td {
-      border-bottom: 1px solid var(--line);
-      padding: 0.45rem 0.6rem;
-      text-align: left;
-      white-space: nowrap;
-      vertical-align: top;
-    }
-
-    th { color: var(--muted); font-weight: 500; background: #1a1713; }
-    th.evidence, td.evidence { color: var(--amber); background: var(--amber-dim); }
-    th a { color: inherit; text-decoration: none; }
-    th a:hover { color: var(--ink); }
-
-    tbody tr:hover td { background: #241f1a; }
-    tbody tr:hover td.evidence { background: rgba(226, 161, 90, 0.22); }
-
-    td a.open { color: var(--amber); }
-
-    .pager { display: flex; gap: 1rem; margin-top: 0.8rem; }
-    .pager a { color: var(--amber); }
-
-    .empty {
-      margin-top: 1.6rem;
-      padding: 1.25rem 1.3rem;
-      border: 1px solid var(--line);
-      background: var(--card);
-      max-width: 40rem;
-    }
-
-    .empty p, .none { margin: 0; line-height: 1.5; }
-
-    footer {
-      margin-top: 2rem;
-      color: var(--muted);
-      font-size: 0.82rem;
-      word-break: break-all;
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <p class="kicker">Operations</p>
-    <p class="back"><a href="/jobs">Runs</a></p>
-    <h1>Tender pipeline</h1>
-    <p class="lede">One row per award. The tender id opens everything stored for that tender and company. This page only reads. It does not scrape, look up contacts, or send mail. Amber columns are text taken from a PDF. They are not an address to mail.</p>
-
-    {% if snapshot.ready %}
-    <form class="filters" method="get" action="/" hx-boost="true">
-      <label class="wide">Search
-        <input name="q" value="{{ query.text }}" placeholder="Tender, company, city, email, phone">
-      </label>
-      <label>Tender status
-        <select name="tender_status">
-          <option value="">Any</option>
-          {% for value in choices.tender_status %}
-          <option value="{{ value }}" {% if query.tender_status == value %}selected{% endif %}>{{ value }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Enrichment
-        <select name="enrichment_status">
-          <option value="">Any</option>
-          {% for value in choices.enrichment_status %}
-          <option value="{{ value }}" {% if query.enrichment_status == value %}selected{% endif %}>{{ value }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Outreach
-        <select name="outreach_status">
-          <option value="">Any</option>
-          {% for value in choices.outreach_status %}
-          <option value="{{ value }}" {% if query.outreach_status == value %}selected{% endif %}>{{ value }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Source
-        <select name="source">
-          <option value="">Any</option>
-          {% for value in choices.source %}
-          <option value="{{ value }}" {% if query.source == value %}selected{% endif %}>{{ value }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>State
-        <input name="state" value="{{ query.state }}">
-      </label>
-      <label>Organisation
-        <input name="organisation" value="{{ query.organisation }}">
-      </label>
-      <label>Contract date from
-        <input name="date_from" value="{{ query.date_from }}" placeholder="2026-01-01">
-      </label>
-      <label>Contract date to
-        <input name="date_to" value="{{ query.date_to }}" placeholder="2026-12-31">
-      </label>
-      <label>Contract value min
-        <input name="value_min" value="{{ query.value_min }}">
-      </label>
-      <label>Contract value max
-        <input name="value_max" value="{{ query.value_max }}">
-      </label>
-      <input type="hidden" name="sort" value="{{ query.sort }}">
-      <input type="hidden" name="dir" value="{{ query.direction }}">
-      <button type="submit">Apply</button>
-    </form>
-    {% include "results.html" %}
-    {% else %}
-    <div class="empty">
-      <p>{{ snapshot.message }}</p>
-    </div>
-    {% endif %}
-
-    <footer>database {{ snapshot.path }}</footer>
-  </main>
-</body>
-</html>
+{% if snapshot.ready %}
+<form class="filters" method="get" action="/" hx-boost="true">
+  <label class="wide">Search
+    <input name="q" value="{{ query.text }}" placeholder="Tender, company, city, email, phone">
+  </label>
+  <label>Tender status
+    <select name="tender_status">
+      <option value="">Any</option>
+      {% for value in choices.tender_status %}
+      <option value="{{ value }}" {% if query.tender_status == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Enrichment
+    <select name="enrichment_status">
+      <option value="">Any</option>
+      {% for value in choices.enrichment_status %}
+      <option value="{{ value }}" {% if query.enrichment_status == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Outreach
+    <select name="outreach_status">
+      <option value="">Any</option>
+      {% for value in choices.outreach_status %}
+      <option value="{{ value }}" {% if query.outreach_status == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Source
+    <select name="source">
+      <option value="">Any</option>
+      {% for value in choices.source %}
+      <option value="{{ value }}" {% if query.source == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Mailable
+    <select name="mailable">
+      <option value="">Any</option>
+      <option value="yes" {% if query.mailable == 'yes' %}selected{% endif %}>Yes</option>
+      <option value="no" {% if query.mailable == 'no' %}selected{% endif %}>No</option>
+    </select>
+  </label>
+  <label>State
+    <select name="state">
+      <option value="">Any</option>
+      {% for value in choices.state %}
+      <option value="{{ value }}" {% if query.state|lower == value|lower %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Organisation
+    <input name="organisation" value="{{ query.organisation }}">
+  </label>
+  <label>Contract date from
+    <input name="date_from" value="{{ query.date_from }}" placeholder="2026-01-01">
+  </label>
+  <label>Contract date to
+    <input name="date_to" value="{{ query.date_to }}" placeholder="2026-12-31">
+  </label>
+  <label>Contract value min
+    <input name="value_min" value="{{ query.value_min }}">
+  </label>
+  <label>Contract value max
+    <input name="value_max" value="{{ query.value_max }}">
+  </label>
+  <label>Sort
+    <select name="sort">
+      {% for key, label in sort_columns %}
+      <option value="{{ key }}" {% if query.sort == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Order
+    <select name="dir">
+      <option value="asc" {% if query.direction == 'asc' %}selected{% endif %}>Ascending</option>
+      <option value="desc" {% if query.direction == 'desc' %}selected{% endif %}>Descending</option>
+    </select>
+  </label>
+  <button type="submit">Apply</button>
+</form>
+{% include "results.html" %}
+{% else %}
+<div class="empty">
+  <p>{{ snapshot.message }}</p>
+</div>
+{% endif %}
+{% endblock %}

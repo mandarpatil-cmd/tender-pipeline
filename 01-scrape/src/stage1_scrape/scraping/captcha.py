@@ -4,6 +4,7 @@ import base64
 import logging
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from stage1_scrape.domain.errors import CaptchaError
@@ -97,16 +98,34 @@ def resolve_captcha_code(
     captcha_text: str | None,
     *,
     solver: str = "manual",
+    ask: Callable[[Path], str] | None = None,
 ) -> str:
-    """Use typed text, OpenRouter OCR, or a human prompt."""
+    """Use typed text, OpenRouter OCR, a window callback, or a terminal prompt.
+
+    ``ask`` is only for a scrape the window started. When OCR gives up, it is
+    called with the image path instead of ``input()``. A terminal run leaves
+    it unset and still uses ``prompt_captcha``.
+    """
     if captcha_text:
-        if len(captcha_text) != 6:
-            raise CaptchaError(
-                f"Captcha must be exactly 6 characters. Got {len(captcha_text)!r}."
-            )
-        return captcha_text
+        return _require_six(captcha_text)
     if solver == "openrouter":
         from stage1_scrape.scraping.ocr import read_captcha_image
 
-        return read_captcha_image(image_path)
+        try:
+            return read_captcha_image(image_path)
+        except CaptchaError:
+            if ask is None:
+                raise
+            return _require_six(ask(image_path))
+    if ask is not None:
+        return _require_six(ask(image_path))
     return prompt_captcha(image_path)
+
+
+def _require_six(value: str) -> str:
+    text = (value or "").strip()
+    if len(text) != 6:
+        raise CaptchaError(
+            f"Captcha must be exactly 6 characters. Got {len(text)!r}."
+        )
+    return text

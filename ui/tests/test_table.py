@@ -116,6 +116,20 @@ def test_evidence_comes_from_the_tender_file(tmp_path):
     assert "work-order.pdf" in html
 
 
+def test_filters_offer_mailable_state_and_order(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    _seed(path)
+    html = TestClient(create_app(path)).get("/").text
+
+    assert 'name="mailable"' in html
+    assert "Maharashtra" in html
+    assert "Ascending" in html
+    assert "Descending" in html
+    assert "All companies in this filter" in html
+    assert "Mail these" in html
+    assert 'aria-label="Select rows on this page"' in html
+
+
 def test_export_matches_the_filter_and_writes_na_for_blanks(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path)

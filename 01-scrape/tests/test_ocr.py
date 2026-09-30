@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from stage1_scrape.domain.errors import CaptchaError
-from stage1_scrape.scraping.captcha import parse_captcha_option
+from stage1_scrape.scraping.captcha import parse_captcha_option, resolve_captcha_code
 from stage1_scrape.scraping.ocr import normalize_captcha_text, read_captcha_image
 
 
@@ -27,6 +27,30 @@ def test_normalize_rejects_wrong_length():
         normalize_captcha_text("ABCDEFG")
     with pytest.raises(CaptchaError):
         normalize_captcha_text("1yF.9R")
+
+
+def test_window_callback_is_used_only_after_ocr_gives_up(tmp_path: Path):
+    image = tmp_path / "captcha.png"
+    image.write_bytes(b"png")
+    asked = []
+
+    def ask(path: Path) -> str:
+        asked.append(path)
+        return "Ab12Xy"
+
+    with patch(
+        "stage1_scrape.scraping.ocr.read_captcha_image",
+        side_effect=CaptchaError("unreadable"),
+    ):
+        assert resolve_captcha_code(image, None, solver="openrouter", ask=ask) == "Ab12Xy"
+    assert asked == [image]
+
+    with patch(
+        "stage1_scrape.scraping.ocr.read_captcha_image",
+        side_effect=CaptchaError("unreadable"),
+    ):
+        with pytest.raises(CaptchaError):
+            resolve_captcha_code(image, None, solver="openrouter")
 
 
 def test_parse_captcha_option_auto_manual_and_text():

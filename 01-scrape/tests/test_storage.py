@@ -1,5 +1,7 @@
+from pathlib import Path
+
 from stage1_scrape.domain.models import BidRow, ListingRow, TenderRecord
-from stage1_scrape.persist.store import Store
+from stage1_scrape.persist.store import Store, backfill_blank_status
 
 
 def test_store_roundtrip(tmp_path):
@@ -72,8 +74,45 @@ def test_store_writes_vendor_and_award(tmp_path):
         award = conn.execute(
             "SELECT bidder_name, rank, quoted_value, awarded_value, awarded_currency FROM awards"
         ).fetchone()
+        status = conn.execute("SELECT status FROM tenders").fetchone()
     assert vendor == ("Kanta enterprises", "trade", "Nagpur", "Maharashtra", "pending")
     assert award == ("Kanta enterprises", "L1", "59934.56", "59,935", "INR")
+    assert status == ("AOC",)
+
+
+def test_blank_status_is_filled_from_saved_json(tmp_path):
+    import sqlite3
+
+    store = Store(tmp_path)
+    listing = ListingRow(
+        serial="1",
+        tender_id="2026_ORG_2",
+        title_and_ref="Cable / REF",
+        organisation_chain="Org",
+        tender_stage="AOC",
+        status="",
+        status_page_url="https://eprocure.gov.in/eprocure/app?sp=S",
+    )
+    store.save_tender(TenderRecord(listing=listing))
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute("UPDATE tenders SET status = ''")
+        conn.commit()
+        relative = conn.execute("SELECT json_path FROM tenders").fetchone()[0]
+    relative_path = Path("json") / Path(relative).name
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute("UPDATE tenders SET json_path = ?", (str(relative_path),))
+        conn.commit()
+
+    assert backfill_blank_status(store.db_path, tmp_path) == 1
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute("SELECT status FROM tenders").fetchone() == ("AOC",)
+
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute("UPDATE tenders SET status = 'awarded'")
+        conn.commit()
+    assert backfill_blank_status(store.db_path, tmp_path) == 0
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute("SELECT status FROM tenders").fetchone() == ("awarded",)
 
 
 def _pdf_contact_record(tender_id: str, *bidders: str) -> TenderRecord:

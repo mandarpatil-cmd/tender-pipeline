@@ -27,6 +27,46 @@ from .models import (
 
 PAGE_SIZE = 50
 
+#: 28 states and 8 union territories. The state filter matches these exactly.
+INDIA_STATES: tuple[str, ...] = (
+    "Andhra Pradesh",
+    "Arunachal Pradesh",
+    "Assam",
+    "Bihar",
+    "Chhattisgarh",
+    "Goa",
+    "Gujarat",
+    "Haryana",
+    "Himachal Pradesh",
+    "Jharkhand",
+    "Karnataka",
+    "Kerala",
+    "Madhya Pradesh",
+    "Maharashtra",
+    "Manipur",
+    "Meghalaya",
+    "Mizoram",
+    "Nagaland",
+    "Odisha",
+    "Punjab",
+    "Rajasthan",
+    "Sikkim",
+    "Tamil Nadu",
+    "Telangana",
+    "Tripura",
+    "Uttar Pradesh",
+    "Uttarakhand",
+    "West Bengal",
+    "Andaman and Nicobar Islands",
+    "Chandigarh",
+    "Dadra and Nagar Haveli and Daman and Diu",
+    "Delhi",
+    "Jammu and Kashmir",
+    "Ladakh",
+    "Lakshadweep",
+    "Puducherry",
+)
+
 COLUMNS: tuple[tuple[str, str, str, bool], ...] = (
     # key, label, group, evidence (PDF clue, not a mail address)
     ("tender_id", "Tender", "Tender", False),
@@ -85,6 +125,8 @@ class AwardQuery:
     date_to: str = ""
     value_min: str = ""
     value_max: str = ""
+    #: "" any, "yes" has an email, "no" does not. Same meaning as the mailable count.
+    mailable: str = ""
     sort: str = "tender_id"
     direction: str = "asc"
     page: int = 1
@@ -103,6 +145,7 @@ class AwardQuery:
             if self.outreach_status in {OUTREACH_SENT, OUTREACH_FAILED, "none"}
             else ""
         )
+        mailable = self.mailable if self.mailable in {"yes", "no"} else ""
         return replace(
             self,
             sort=sort,
@@ -110,6 +153,7 @@ class AwardQuery:
             page=page,
             enrichment_status=enrichment,
             outreach_status=outreach,
+            mailable=mailable,
         )
 
     def is_filtered(self) -> bool:
@@ -126,6 +170,7 @@ class AwardQuery:
                 self.date_to,
                 self.value_min,
                 self.value_max,
+                self.mailable,
             )
         )
 
@@ -177,9 +222,16 @@ def choices(session: Session) -> dict[str, list[str]]:
         for value in session.scalars(select(Vendor.source).distinct().order_by(Vendor.source))
         if value
     ]
+    known = {name.casefold() for name in INDIA_STATES}
+    stored = [
+        value
+        for value in session.scalars(select(Vendor.state).distinct())
+        if value and value.casefold() not in known
+    ]
     return {
         "tender_status": tender_status,
         "source": source,
+        "state": [*INDIA_STATES, *sorted(stored, key=str.casefold)],
         "enrichment_status": list(ENRICHMENT_STATUSES),
         "outreach_status": [OUTREACH_SENT, OUTREACH_FAILED, "none"],
     }
@@ -233,6 +285,15 @@ def award_view(
         sort=query.sort,
         direction=query.direction,
     )
+
+
+def filtered_vendor_ids(session: Session, query: AwardQuery) -> list[int]:
+    """Distinct companies in this filter, on every page. One winner is one id."""
+    query = query.normalized()
+    latest = _latest_outreach()
+    statement = _joined(select(Vendor.vendor_id), latest)
+    statement = _filtered(statement, query, latest).distinct().order_by(Vendor.vendor_id)
+    return [int(value) for value in session.scalars(statement)]
 
 
 def _latest_outreach():
@@ -340,7 +401,12 @@ def _filtered(statement, query: AwardQuery, latest):
     if query.source:
         statement = statement.where(Vendor.source == query.source)
     if query.state:
-        statement = statement.where(_contains(Vendor.state, _like(query.state)))
+        statement = statement.where(func.lower(Vendor.state) == query.state.strip().lower())
+    has_email = Vendor.email.is_not(None) & (Vendor.email != "")
+    if query.mailable == "yes":
+        statement = statement.where(has_email)
+    elif query.mailable == "no":
+        statement = statement.where(~has_email)
     if query.organisation:
         statement = statement.where(_contains(Tender.organisation, _like(query.organisation)))
     statement = _range(

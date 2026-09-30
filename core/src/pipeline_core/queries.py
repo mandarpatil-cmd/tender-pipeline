@@ -16,6 +16,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from .models import (
+    CONTACT_MODEL,
+    CONTACT_TYPED,
     OUTREACH_SENT,
     SOURCE_SCRAPE,
     STATUS_DONE,
@@ -194,6 +196,7 @@ def pending_vendors(
     limit: int | None = None,
     *,
     source: str | None = None,
+    vendor_ids: Iterable[int] | None = None,
 ) -> list[PendingVendor]:
     """Stage 2's work queue, oldest vendor first.
 
@@ -225,6 +228,11 @@ def pending_vendors(
     )
     if source is not None:
         statement = statement.where(Vendor.source == source)
+    if vendor_ids is not None:
+        ids = list(vendor_ids)
+        if not ids:
+            return []
+        statement = statement.where(Vendor.vendor_id.in_(ids))
     if limit is not None:
         statement = statement.limit(limit)
     return [PendingVendor(*row) for row in session.execute(statement).all()]
@@ -251,10 +259,88 @@ def mark_enriched(
             Vendor.phone: clean_phone,
             Vendor.enrichment_status: status,
             Vendor.enriched_at: utcnow(),
+            Vendor.contact_origin: CONTACT_MODEL,
         },
         synchronize_session=False,
     )
     return status
+
+
+class ContactError(ValueError):
+    """A typed email did not match the mailer's format check."""
+
+
+def set_typed_contact(
+    session: Session,
+    vendor_id: int,
+    *,
+    email: str | None = None,
+    phone: str | None = None,
+) -> None:
+    """Record a contact a person typed. A blank field leaves the stored value.
+
+    The company is marked answered, so stage 2 will not pay to look it up again.
+    """
+    from .emailcheck import is_email
+
+    vendor = session.get(Vendor, vendor_id)
+    if vendor is None:
+        raise ContactError(f"No company with id {vendor_id}.")
+    typed_email = (email or "").strip()
+    typed_phone = (phone or "").strip()
+    if typed_email and not is_email(typed_email):
+        raise ContactError("That email is not a valid address.")
+    if not typed_email and not typed_phone:
+        raise ContactError("Type an email or a phone.")
+    new_email = typed_email or vendor.email
+    new_phone = typed_phone or vendor.phone
+    session.query(Vendor).filter(Vendor.vendor_id == vendor_id).update(
+        {
+            Vendor.email: new_email,
+            Vendor.phone: new_phone,
+            Vendor.enrichment_status: STATUS_DONE,
+            Vendor.enriched_at: utcnow(),
+            Vendor.contact_origin: CONTACT_TYPED,
+        },
+        synchronize_session=False,
+    )
+
+
+def vendor_by_name(session: Session, name_raw: str) -> Vendor | None:
+    """The company this name already is, after the shared normalisation."""
+    from .naming import normalize_name
+
+    return session.scalar(select(Vendor).where(Vendor.name_norm == normalize_name(name_raw)))
+
+
+def reset_failed_ids(session: Session, vendor_ids: Iterable[int]) -> int:
+    """Put the ticked `failed` companies back on the queue."""
+    ids = list(vendor_ids)
+    if not ids:
+        return 0
+    return int(
+        session.query(Vendor)
+        .filter(Vendor.vendor_id.in_(ids), Vendor.enrichment_status == STATUS_FAILED)
+        .update({Vendor.enrichment_status: STATUS_PENDING}, synchronize_session=False)
+    )
+
+
+def reset_not_found_ids(session: Session, vendor_ids: Iterable[int]) -> int:
+    """Put the ticked `not_found` companies back on the queue.
+
+    Only makes sense after the lookup method itself has changed.
+    """
+    ids = list(vendor_ids)
+    if not ids:
+        return 0
+    return int(
+        session.query(Vendor)
+        .filter(
+            Vendor.vendor_id.in_(ids),
+            Vendor.enrichment_status == STATUS_NOT_FOUND,
+        )
+        .update({Vendor.enrichment_status: STATUS_PENDING}, synchronize_session=False)
+    )
 
 
 def mark_failed(session: Session, vendor_id: int) -> str:

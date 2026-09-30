@@ -17,7 +17,7 @@ from typing import Any
 
 from pipeline_core import settings as core_settings
 from pipeline_core.db import engine, ensure_schema, session
-from pipeline_core.models import SOURCE_SCRAPE, Award, Vendor
+from pipeline_core.models import SOURCE_SCRAPE, Award, Tender, Vendor
 from pipeline_core.naming import buyer_tail, infer_city_state
 from pipeline_core.queries import (
     known_tender_ids,
@@ -98,7 +98,7 @@ class Store:
                 tender_id=listing.tender_id,
                 title=listing.title_and_ref,
                 organisation=listing.organisation_chain,
-                status=listing.status,
+                status=listing_status(listing.status, listing.tender_stage),
                 contract_date=record.aoc.get("Contract Date", ""),
                 contract_value=record.aoc.get("Total Contract Value", ""),
                 json_path=str(path),
@@ -214,6 +214,56 @@ class Store:
             if stored:
                 return list(stored)
         return extract_folder(self.pdf_dir_for(tender_id))
+
+
+def listing_status(status: str | None, tender_stage: str | None) -> str:
+    """The word to store in tenders.status.
+
+    The portal's Status cell is a view icon, so its text is empty. The stage
+    word (AOC, and the rest) is the value the table and the filter can use.
+    A status that already has text, including a hand-typed one, is kept.
+    """
+    text = (status or "").strip()
+    if text:
+        return text
+    return (tender_stage or "").strip()
+
+
+def backfill_blank_status(db_path: Path, scrape_root: Path) -> int:
+    """Fill blank tenders.status from the stage stored in each tender's JSON.
+
+    An absolute json_path is read as stored. A relative path is resolved under
+    scrape_root, which is the 01-scrape folder. Rows that already have a
+    status are left alone. Returns how many rows changed.
+    """
+    updated = 0
+    with session(engine(db_path)) as current:
+        rows = current.scalars(
+            select(Tender).where((Tender.status.is_(None)) | (Tender.status == ""))
+        ).all()
+        for tender in rows:
+            stage = _stage_from_json(tender.json_path, scrape_root)
+            if not stage:
+                continue
+            tender.status = stage
+            updated += 1
+    return updated
+
+
+def _stage_from_json(json_path: str | None, scrape_root: Path) -> str:
+    if not json_path:
+        return ""
+    path = Path(json_path)
+    if not path.is_absolute():
+        path = scrape_root / path
+    if not path.is_file():
+        return ""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    listing = payload.get("listing") or {}
+    return listing_status(listing.get("status"), listing.get("tender_stage"))
 
 
 def _slug(value: str) -> str:

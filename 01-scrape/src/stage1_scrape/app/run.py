@@ -17,7 +17,7 @@ def run_scrape(
     *,
     captcha_text: str | None = None,
     captcha_solver: str = "openrouter",
-    max_pages: int = 1,
+    max_pages: int | None = 1,
     max_tenders: int | None = 1,
     delay: float = DEFAULT_DELAY_SECONDS,
     download_pdfs: bool = True,
@@ -26,6 +26,7 @@ def run_scrape(
     extra_fields: dict[str, str] | None = None,
     from_probe: bool = False,
     should_stop: "Callable[[], bool] | None" = None,
+    ask: "Callable[[Path], str] | None" = None,
 ) -> dict[str, Any]:
     """Scrape AOC records, then export every stored vendor to CSV and Excel.
 
@@ -45,6 +46,7 @@ def run_scrape(
         from_probe=from_probe,
         captcha_solver=captcha_solver,
         should_stop=should_stop,
+        ask=ask,
     )
     store = Store(out_dir)
     csv_path, xlsx_path = write_vendor_sheet(store, out_dir)

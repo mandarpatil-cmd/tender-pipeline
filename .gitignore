@@ -50,6 +50,13 @@ src/*.egg-info/
 htmlcov/
 
 # ---------------------------------------------------------------
+# Local working notes. The requirements in docs/intent.md stay tracked.
+# Lesson notes for the operations window live in learn/ and stay local too.
+# ---------------------------------------------------------------
+docs/codebase-notes.md
+learn/
+
+# ---------------------------------------------------------------
 # Tooling / OS
 # ---------------------------------------------------------------
 .claude/*

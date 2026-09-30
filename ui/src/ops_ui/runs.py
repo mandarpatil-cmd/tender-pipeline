@@ -1,4 +1,4 @@
-"""The three runs the window can start. Each one calls the stage's own function."""
+"""The runs the window can start. Each one calls the stage's own function."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ _DATE_FIELDS = {
     "published": ("publishedFromDate", "publishedToDate"),
 }
 _SCRAPE_DELAY_FLOOR = 1.5
+_MAIL_DELAY_FLOOR = 5.0
 
 
 def status_cost() -> str:
@@ -43,9 +44,14 @@ def enrich_cost(database: Path, *, limit: int, source: str | None, dry_run: bool
     )
 
 
-def scrape_cost(*, max_tenders: int, probe: bool) -> str:
+def scrape_cost(*, max_tenders: int | None, probe: bool) -> str:
     if probe:
         return "Probe. Walks one listing page and fetches no tenders. One captcha read."
+    if max_tenders is None:
+        return (
+            "Fetches every new tender in the date range. One captcha read. "
+            "Tenders already saved are skipped."
+        )
     return (
         f"Fetches up to {max_tenders} new tenders. One captcha read. "
         "Tenders already saved are skipped."
@@ -77,6 +83,7 @@ def run_enrich(
     source: str | None,
     retry_failed: bool,
     retry_not_found: bool,
+    vendor_ids: list[int] | None = None,
 ) -> int:
     from stage2_enrich.runner import enrich_pending
 
@@ -92,7 +99,10 @@ def run_enrich(
             )
             moved = reset_not_found(current)
             notes.append(f"Requeued {moved} not_found companies.")
-        work = pending_vendors(current, limit, source=source)
+        if vendor_ids is not None:
+            work = pending_vendors(current, vendor_ids=vendor_ids)
+        else:
+            work = pending_vendors(current, limit, source=source)
     for note in notes:
         log.write(note)
 
@@ -136,8 +146,8 @@ def run_scrape(
     log: Log,
     stop: threading.Event,
     *,
-    max_tenders: int,
-    max_pages: int,
+    max_tenders: int | None,
+    max_pages: int | None,
     delay: float,
     download_pdfs: bool,
     refresh: bool,
@@ -153,11 +163,16 @@ def run_scrape(
     extra = _dates(from_date, to_date, date_field, log)
     if extra is None:
         return 1
+    from ops_ui.jobs import CaptchaTimedOut, wait_for_captcha
+
     log.write(scrape_cost(max_tenders=max_tenders, probe=probe))
-    log.write(
-        "Captcha is read automatically. If that fails, this run stops. "
-        "Typing the captcha in the page is not built yet."
-    )
+    log.write("Captcha is read automatically. If that fails, type it on this page.")
+
+    def ask(image_path: Path) -> str:
+        try:
+            return wait_for_captcha(log, stop, image_path)
+        except CaptchaTimedOut as exc:
+            raise CaptchaError(str(exc)) from exc
     out = settings.project_root() / "01-scrape" / "data"
     handler = _Logger(log)
     logger = logging.getLogger("stage1_scrape")
@@ -175,10 +190,13 @@ def run_scrape(
             skip_known=not refresh,
             extra_fields=extra,
             should_stop=stop.is_set,
+            ask=ask,
         )
     except CaptchaError as exc:
         log.write(str(exc))
-        log.write("The captcha was not read. Nothing waited for a terminal.")
+        if stop.is_set():
+            log.write("Stopped. Tenders already saved are kept.")
+            return 0
         return 1
     finally:
         logger.removeHandler(handler)
@@ -200,10 +218,10 @@ def enrich_cost_line(count: int, dry_run: bool) -> str:
     return f"{count} companies. One paid model call each."
 
 
-def _dates(from_date: str, to_date: str, date_field: str, log: Log) -> dict[str, str] | None:
+def date_error(from_date: str, to_date: str, date_field: str) -> str | None:
+    """The same date checks a scrape refuses before it starts."""
     if date_field not in _DATE_FIELDS:
-        log.write("Date field must be contract or published.")
-        return None
+        return "Date field must be contract or published."
     parsed = {}
     for label, raw in (("From", from_date.strip()), ("To", to_date.strip())):
         if not raw:
@@ -211,10 +229,16 @@ def _dates(from_date: str, to_date: str, date_field: str, log: Log) -> dict[str,
         try:
             parsed[label] = datetime.strptime(raw, "%d/%m/%Y")
         except ValueError:
-            log.write(f"{label} date {raw!r} is not dd/MM/yyyy.")
-            return None
+            return f"{label} date {raw!r} is not dd/MM/yyyy."
     if len(parsed) == 2 and parsed["From"] > parsed["To"]:
-        log.write("From date is after to date.")
+        return "From date is after to date."
+    return None
+
+
+def _dates(from_date: str, to_date: str, date_field: str, log: Log) -> dict[str, str] | None:
+    error = date_error(from_date, to_date, date_field)
+    if error:
+        log.write(error)
         return None
     start, end = _DATE_FIELDS[date_field]
     fields = {}
@@ -223,6 +247,138 @@ def _dates(from_date: str, to_date: str, date_field: str, log: Log) -> dict[str,
     if to_date.strip():
         fields[end] = to_date.strip()
     return fields
+
+
+def run_outreach(
+    log: Log,
+    stop: threading.Event,
+    *,
+    database: Path,
+    vendor_ids: list[int] | None,
+    send: bool,
+    preflight: bool,
+    transport: str,
+    delay: float,
+    redirect_to: str,
+) -> int:
+    """Preview, preflight, or send. A live send records each attempt before the next."""
+    from pipeline_core.emailcheck import EMAIL_RE
+    from pipeline_core.queries import outreach_targets
+
+    campaign = load_campaign()
+    bind = _engine(database)
+    override = redirect_to.strip() or None
+    delay = max(delay, _MAIL_DELAY_FLOOR)
+    if preflight:
+        gap = credential_gap(transport, preflight=True)
+        if gap:
+            log.write(gap)
+            return 1
+        return _captured(log, lambda: campaign.preflight(transport))
+
+    with session(bind) as current:
+        queue = outreach_targets(current)
+    people = [person for person in queue if EMAIL_RE.match(person.email or "")]
+    if vendor_ids is not None:
+        wanted = set(vendor_ids)
+        people = [person for person in people if person.vendor_id in wanted]
+    log.write(f"{len(people)} companies can be mailed.")
+    if not people:
+        log.write("Nobody with an address is waiting. Nothing was sent.")
+        return 0
+    if not send:
+        return _captured(log, lambda: campaign.dry_run(people, override))
+
+    refusal = live_send_refusal(transport)
+    if refusal:
+        log.write(refusal)
+        return 1
+    if override:
+        log.write(
+            f"Every message goes to {override}. Each company is still marked sent."
+        )
+
+    def deliver() -> None:
+        campaign.send_all(
+            people,
+            delay,
+            override,
+            transport,
+            should_stop=stop.is_set,
+            bind=bind,
+        )
+
+    code = _captured(log, deliver)
+    if stop.is_set():
+        log.write("Stopped. Messages already sent are saved.")
+    return code
+
+
+def live_send_refusal(transport: str) -> str | None:
+    """Why a live send must not start. Preview is allowed either way."""
+    campaign = load_campaign()
+    if campaign.PLACEHOLDER in campaign.build_body("Test"):
+        return (
+            "Refusing to send: the message still contains the placeholder. "
+            "Replace it in 03-outreach/campaign.py. Preview still works."
+        )
+    if not (campaign.SENDER_NAME and campaign.SENDER_ORG):
+        return (
+            "Refusing to send: set SENDER_NAME and SENDER_ORG in 03-outreach/.env. "
+            "Preview still works."
+        )
+    return credential_gap(transport)
+
+
+def credential_gap(transport: str, *, preflight: bool = False) -> str | None:
+    """A missing mailbox setting, after the outreach .env has been read."""
+    import os
+
+    load_campaign()
+    if transport == "gmail":
+        if not os.getenv("GMAIL_USER", "").strip() or not os.getenv(
+            "GMAIL_APP_PASSWORD", ""
+        ).strip():
+            return "Gmail needs GMAIL_USER and GMAIL_APP_PASSWORD in 03-outreach/.env."
+        return None
+    if transport == "graph":
+        if not os.getenv("GRAPH_CLIENT_ID", "").strip() or not os.getenv(
+            "GRAPH_TENANT_ID", ""
+        ).strip():
+            return "Microsoft Graph needs GRAPH_CLIENT_ID and GRAPH_TENANT_ID in 03-outreach/.env."
+        if preflight and not os.getenv("OUTLOOK_USER", "").strip():
+            return "Preflight needs OUTLOOK_USER in 03-outreach/.env."
+        return None
+    return "Transport must be gmail or graph."
+
+
+def load_campaign():
+    import sys
+
+    root = str(settings.project_root() / "03-outreach")
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    import campaign
+
+    return campaign
+
+
+def _captured(log: Log, call) -> int:
+    buffer = io.StringIO()
+    code = 0
+    try:
+        with contextlib.redirect_stdout(buffer):
+            result = call()
+        if isinstance(result, int):
+            code = result
+    except SystemExit as exc:
+        code = 1
+        text = exc.code if isinstance(exc.code, str) else str(exc)
+        buffer.write(text + "\n")
+    written = buffer.getvalue().strip()
+    if written:
+        log.write(written)
+    return code
 
 
 def _engine(database: Path):

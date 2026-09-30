@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline_core.db import engine, session
+from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.queries import contact_breakdown, pipeline_funnel
 from sqlalchemy.exc import DatabaseError, OperationalError
 
@@ -47,6 +47,7 @@ def load_home(path: Path) -> HomeSnapshot:
     if kind == "unreadable":
         return _unread(path, "The database could not be read. Nothing was changed.")
 
+    ensure_schema(engine(path))
     try:
         with session(engine(path)) as current:
             funnel = tuple(pipeline_funnel(current))
