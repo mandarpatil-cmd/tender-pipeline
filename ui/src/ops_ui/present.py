@@ -117,18 +117,19 @@ class Header:
     evidence: bool
     href: str | None
     mark: str
+    key: str
 
 
 def headers(query: AwardQuery) -> list[Header]:
     built = []
     for key, label, group, evidence in COLUMNS:
         if key in FILE_COLUMNS:
-            built.append(Header(label, group, evidence, None, ""))
+            built.append(Header(label, group, evidence, None, "", key))
             continue
         mark = ""
         if query.sort == key:
             mark = query.direction
-        built.append(Header(label, group, evidence, sort_href(query, key), mark))
+        built.append(Header(label, group, evidence, sort_href(query, key), mark, key))
     return built
 
 

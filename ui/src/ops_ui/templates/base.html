@@ -4,12 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Tender pipeline{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <script>
+    try {
+      if (localStorage.getItem("theme") === "dark") document.documentElement.classList.add("dark");
+    } catch (e) {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v=4">
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
   {% set here = request.url.path %}
-  <header class="top">
+  <header class="top sticky">
     <a class="brand" href="/">Tender pipeline</a>
     <nav class="nav">
       <a href="/" {% if here == '/' or here == '/award' or here == '/selection' %}class="current" aria-current="page"{% endif %}>Awards</a>
@@ -17,6 +25,7 @@
       <a href="/mail" {% if here.startswith('/mail') %}class="current" aria-current="page"{% endif %}>Mail</a>
       <a href="/tender/new" {% if here.startswith('/tender') %}class="current" aria-current="page"{% endif %}>Add a tender</a>
     </nav>
+    <button type="button" class="quiet theme" id="theme">Dark</button>
   </header>
   <main class="{% block main_class %}narrow{% endblock %}">
     {% block body %}{% endblock %}
@@ -24,5 +33,19 @@
     <footer>database {{ snapshot.path }}</footer>
     {% endif %}
   </main>
+  <script>
+    (function () {
+      var button = document.getElementById("theme");
+      function label() {
+        button.textContent = document.documentElement.classList.contains("dark") ? "Light" : "Dark";
+      }
+      label();
+      button.addEventListener("click", function () {
+        var dark = document.documentElement.classList.toggle("dark");
+        try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) {}
+        label();
+      });
+    })();
+  </script>
 </body>
 </html>

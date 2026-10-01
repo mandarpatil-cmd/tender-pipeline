@@ -4,9 +4,20 @@
 {% block body %}
 <p class="kicker">Awards</p>
 <h1>Tender pipeline</h1>
-<p class="lede">One row per award. The tender id opens everything stored for that tender and company. A scrape or a contact lookup starts from Runs. Amber columns are text taken from a PDF. They are not an address to mail.</p>
+<p class="lede">One row per award. The tender id opens everything stored for that tender and company. A scrape or a contact lookup starts from Runs. Mint columns are text taken from a PDF. They are not an address to mail.</p>
 
 {% if snapshot.ready %}
+<section class="strip" aria-label="Pipeline counts">
+  {% for label, count, note in cards %}
+  <article class="{{ 'gap' if label == 'phone-only' else '' }}">
+    <p class="label">{{ label }}</p>
+    <p class="count" data-count="{{ label }}">{{ count }}</p>
+    <p class="note">{{ note }}</p>
+  </article>
+  {% endfor %}
+</section>
+<p class="sync">{% if filtered %}Counts match the rows in this filter.{% else %}Counts are the whole database. The table is one row per award.{% endif %}</p>
+
 <form class="filters" method="get" action="/" hx-boost="true">
   <label class="wide">Search
     <input name="q" value="{{ query.text }}" placeholder="Tender, company, city, email, phone">
