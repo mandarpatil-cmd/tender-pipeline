@@ -192,6 +192,8 @@ class Outreach(Base):
     vendor_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("vendors.vendor_id"), nullable=False
     )
+    #: Which award this attempt was about. Null on rows written before that.
+    tender_id: Mapped[str | None] = mapped_column(Text, ForeignKey("tenders.tender_id"))
     #: The address actually used — not necessarily `vendors.email` (see TO=).
     email: Mapped[str | None] = mapped_column(Text)
     subject: Mapped[str | None] = mapped_column(Text)
@@ -203,6 +205,7 @@ class Outreach(Base):
     __table_args__ = (
         Index("idx_outreach_vendor", "vendor_id"),
         Index("idx_outreach_status", "status"),
+        Index("idx_outreach_tender", "tender_id"),
     )
 
     def __repr__(self) -> str:

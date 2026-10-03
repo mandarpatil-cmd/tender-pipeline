@@ -109,12 +109,13 @@
 {% if detail.attempts %}
 <table>
   <thead>
-    <tr><th>When</th><th>Address used</th><th>Subject</th><th>Transport</th><th>Status</th><th>Error</th></tr>
+    <tr><th>When</th><th>Tender</th><th>Address used</th><th>Subject</th><th>Transport</th><th>Status</th><th>Error</th></tr>
   </thead>
   <tbody>
     {% for attempt in detail.attempts %}
     <tr>
       <td>{{ attempt.sent_at or "" }}</td>
+      <td>{{ attempt.tender_id or "" }}</td>
       <td>{{ attempt.email or "" }}</td>
       <td>{{ attempt.subject or "" }}</td>
       <td>{{ attempt.transport or "" }}</td>

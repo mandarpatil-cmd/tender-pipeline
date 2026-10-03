@@ -256,9 +256,8 @@ def award_view(
     ``page_size is None`` returns every matching row. That is the export.
     """
     query = query.normalized()
-    latest = _latest_outreach()
-    attempts = _attempt_counts()
-    total, counts = _totals(session, query, latest)
+    specific, legacy = _outreach_ranks()
+    total, counts = _totals(session, query, specific, legacy)
     if page_size is None:
         size = total
         page = 1
@@ -272,13 +271,10 @@ def award_view(
         limit = page_size
         offset = (page - 1) * page_size
 
-    columns = _row_columns(latest, attempts)
-    statement = _joined(
-        select(*columns.values()),
-        latest,
-    ).outerjoin(attempts, attempts.c.vendor_id == Vendor.vendor_id)
-    statement = _filtered(statement, query, latest)
-    statement = statement.order_by(*_order(query, latest, attempts))
+    columns = _row_columns(specific, legacy)
+    statement = _joined(select(*columns.values()), specific, legacy)
+    statement = _filtered(statement, query, specific, legacy)
+    statement = statement.order_by(*_order(query, specific, legacy))
     if limit is not None:
         statement = statement.limit(limit).offset(offset)
 
@@ -301,18 +297,54 @@ def award_view(
 def filtered_vendor_ids(session: Session, query: AwardQuery) -> list[int]:
     """Distinct companies in this filter, on every page. One winner is one id."""
     query = query.normalized()
-    latest = _latest_outreach()
-    statement = _joined(select(Vendor.vendor_id), latest)
-    statement = _filtered(statement, query, latest).distinct().order_by(Vendor.vendor_id)
+    specific, legacy = _outreach_ranks()
+    statement = _joined(select(Vendor.vendor_id), specific, legacy)
+    statement = _filtered(statement, query, specific, legacy).distinct().order_by(
+        Vendor.vendor_id
+    )
     return [int(value) for value in session.scalars(statement)]
 
 
-def _latest_outreach():
-    return (
+def filtered_award_keys(session: Session, query: AwardQuery) -> list[tuple[int, str]]:
+    """Every award in this filter, on every page. One company on two tenders is two."""
+    query = query.normalized()
+    specific, legacy = _outreach_ranks()
+    statement = _joined(
+        select(Vendor.vendor_id, Award.tender_id), specific, legacy
+    )
+    statement = (
+        _filtered(statement, query, specific, legacy)
+        .distinct()
+        .order_by(Award.tender_id, Vendor.vendor_id)
+    )
+    return [(int(vendor_id), tender_id) for vendor_id, tender_id in session.execute(statement)]
+
+
+def _outreach_ranks():
+    """Latest attempt that names a tender, and the latest company-level attempt."""
+    specific = (
         select(
             Outreach.vendor_id.label("vendor_id"),
-            Outreach.status.label("outreach_status"),
-            Outreach.sent_at.label("last_attempt_at"),
+            Outreach.tender_id.label("tender_id"),
+            Outreach.status.label("status"),
+            Outreach.sent_at.label("sent_at"),
+            Outreach.transport.label("transport"),
+            Outreach.error.label("error"),
+            func.row_number()
+            .over(
+                partition_by=(Outreach.vendor_id, Outreach.tender_id),
+                order_by=(Outreach.sent_at.desc(), Outreach.outreach_id.desc()),
+            )
+            .label("rn"),
+        )
+        .where(Outreach.tender_id.is_not(None))
+        .subquery("outreach_for_tender")
+    )
+    legacy = (
+        select(
+            Outreach.vendor_id.label("vendor_id"),
+            Outreach.status.label("status"),
+            Outreach.sent_at.label("sent_at"),
             Outreach.transport.label("transport"),
             Outreach.error.label("error"),
             func.row_number()
@@ -322,21 +354,49 @@ def _latest_outreach():
             )
             .label("rn"),
         )
-    ).subquery("outreach_ranked")
+        .where(Outreach.tender_id.is_(None))
+        .subquery("outreach_for_company")
+    )
+    return specific, legacy
 
 
-def _attempt_counts():
-    return (
-        select(
-            Outreach.vendor_id.label("vendor_id"),
-            func.count().label("attempts"),
-        )
-        .group_by(Outreach.vendor_id)
-        .subquery("outreach_attempts")
+def _prefer(specific, legacy, field: str):
+    """The later of the tender attempt and a company-level attempt that covers it."""
+    spec = getattr(specific.c, field)
+    old = getattr(legacy.c, field)
+    return case(
+        (specific.c.sent_at.is_(None), old),
+        (legacy.c.sent_at.is_(None), spec),
+        (specific.c.sent_at >= legacy.c.sent_at, spec),
+        else_=old,
     )
 
 
-def _row_columns(latest, attempts) -> dict[str, Any]:
+def _attempt_total():
+    named = (
+        select(func.count())
+        .select_from(Outreach)
+        .where(
+            Outreach.vendor_id == Vendor.vendor_id,
+            Outreach.tender_id == Award.tender_id,
+        )
+        .scalar_subquery()
+    )
+    covered = (
+        select(func.count())
+        .select_from(Outreach)
+        .where(
+            Outreach.vendor_id == Vendor.vendor_id,
+            Outreach.tender_id.is_(None),
+            Outreach.sent_at.is_not(None),
+            Tender.scraped_at <= Outreach.sent_at,
+        )
+        .scalar_subquery()
+    )
+    return named + covered
+
+
+def _row_columns(specific, legacy) -> dict[str, Any]:
     return {
         "tender_id": Tender.tender_id,
         "title": Tender.title,
@@ -364,28 +424,40 @@ def _row_columns(latest, attempts) -> dict[str, Any]:
         "phone": Vendor.phone,
         "enrichment_status": Vendor.enrichment_status,
         "enriched_at": Vendor.enriched_at,
-        "outreach_status": latest.c.outreach_status,
-        "last_attempt_at": latest.c.last_attempt_at,
-        "attempts": attempts.c.attempts,
-        "transport": latest.c.transport,
-        "error": latest.c.error,
+        "outreach_status": _prefer(specific, legacy, "status"),
+        "last_attempt_at": _prefer(specific, legacy, "sent_at"),
+        "attempts": _attempt_total(),
+        "transport": _prefer(specific, legacy, "transport"),
+        "error": _prefer(specific, legacy, "error"),
         "json_path": Tender.json_path,
     }
 
 
-def _joined(statement, latest):
+def _joined(statement, specific, legacy):
     return (
         statement.select_from(Award)
         .join(Tender, Tender.tender_id == Award.tender_id)
         .join(Vendor, Vendor.vendor_id == Award.vendor_id)
         .outerjoin(
-            latest,
-            and_(latest.c.vendor_id == Vendor.vendor_id, latest.c.rn == 1),
+            specific,
+            and_(
+                specific.c.vendor_id == Vendor.vendor_id,
+                specific.c.tender_id == Award.tender_id,
+                specific.c.rn == 1,
+            ),
+        )
+        .outerjoin(
+            legacy,
+            and_(
+                legacy.c.vendor_id == Vendor.vendor_id,
+                legacy.c.rn == 1,
+                Tender.scraped_at <= legacy.c.sent_at,
+            ),
         )
     )
 
 
-def _filtered(statement, query: AwardQuery, latest):
+def _filtered(statement, query: AwardQuery, specific, legacy):
     if query.text:
         pattern = _like(query.text)
         statement = statement.where(
@@ -405,10 +477,11 @@ def _filtered(statement, query: AwardQuery, latest):
         statement = statement.where(Tender.status == query.tender_status)
     if query.enrichment_status:
         statement = statement.where(Vendor.enrichment_status == query.enrichment_status)
+    status = _prefer(specific, legacy, "status")
     if query.outreach_status == "none":
-        statement = statement.where(latest.c.outreach_status.is_(None))
+        statement = statement.where(status.is_(None))
     elif query.outreach_status:
-        statement = statement.where(latest.c.outreach_status == query.outreach_status)
+        statement = statement.where(status == query.outreach_status)
     if query.source:
         statement = statement.where(Vendor.source == query.source)
     if query.state:
@@ -462,10 +535,10 @@ def _range(statement, column, low, high):
     return statement.where(or_(column.is_(None), and_(*bounds)))
 
 
-def _totals(session: Session, query: AwardQuery, latest) -> tuple[int, ViewCounts]:
+def _totals(session: Session, query: AwardQuery, specific, legacy) -> tuple[int, ViewCounts]:
     has_email = Vendor.email.is_not(None) & (Vendor.email != "")
     has_phone = Vendor.phone.is_not(None) & (Vendor.phone != "")
-    sent_ids = select(Outreach.vendor_id).where(Outreach.status == OUTREACH_SENT)
+    sent_award = _prefer(specific, legacy, "status") == OUTREACH_SENT
     statement = _joined(
         select(
             func.count(),
@@ -475,12 +548,13 @@ def _totals(session: Session, query: AwardQuery, latest) -> tuple[int, ViewCount
                 func.distinct(case((Vendor.enrichment_status == STATUS_DONE, Vendor.vendor_id)))
             ),
             func.count(func.distinct(case((has_email, Vendor.vendor_id)))),
-            func.count(func.distinct(case((Vendor.vendor_id.in_(sent_ids), Vendor.vendor_id)))),
+            func.sum(case((sent_award, 1), else_=0)),
             func.count(func.distinct(case((and_(~has_email, has_phone), Vendor.vendor_id)))),
         ),
-        latest,
+        specific,
+        legacy,
     )
-    statement = _filtered(statement, query, latest)
+    statement = _filtered(statement, query, specific, legacy)
     awards, tenders, vendors, enriched, mailable, sent, phone_only = session.execute(
         statement
     ).one()
@@ -495,8 +569,8 @@ def _totals(session: Session, query: AwardQuery, latest) -> tuple[int, ViewCount
     )
 
 
-def _order(query: AwardQuery, latest, attempts):
-    columns = _row_columns(latest, attempts)
+def _order(query: AwardQuery, specific, legacy):
+    columns = _row_columns(specific, legacy)
     column = columns[query.sort]
     primary = column.desc() if query.direction == "desc" else column.asc()
     return (primary, Award.tender_id.asc(), Award.bid_number.asc())

@@ -14,7 +14,7 @@ from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
 from ops_ui.queries import load_home
 from ops_ui.runs import credential_gap, live_send_refusal, load_campaign, run_outreach
-from ops_ui.selection import selected_vendor_ids
+from ops_ui.selection import selected_awards
 from ops_ui.templating import TEMPLATES
 
 router = APIRouter()
@@ -25,7 +25,7 @@ _DELAY_FLOOR = 5.0
 
 @router.get("/mail")
 def mail_page(request: Request, path: Path = Depends(database_path)):
-    return _render(request, path, vendor_ids=None, error="")
+    return _render(request, path, awards=None, error="")
 
 
 @router.post("/mail/from-table")
@@ -35,15 +35,15 @@ async def mail_from_table(request: Request):
     if not snapshot.ready:
         return Response(snapshot.message, status_code=404, media_type="text/plain")
     form = await request.form()
-    ids = selected_vendor_ids(form, path)
-    if not ids:
+    awards = selected_awards(form, path)
+    if not awards:
         message = (
-            "No companies match this filter."
+            "No awards match this filter."
             if str(form.get("select_all") or "")
             else "Tick at least one row."
         )
         return Response(message, status_code=400, media_type="text/plain")
-    return _render(request, path, vendor_ids=ids, error="")
+    return _render(request, path, awards=awards, error="")
 
 
 @router.post("/mail")
@@ -62,19 +62,21 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
         delay = _DELAY_FLOOR
     delay = max(delay, _DELAY_FLOOR)
     redirect_to = str(form.get("redirect_to") or "").strip()
-    vendor_ids = _ids(form.getlist("vendor_id"))
-    chosen = vendor_ids or None
+    awards = _awards(form.getlist("award"))
+    chosen = awards or None
+    include_sent = str(form.get("send_again") or "") in _ON
     preflight = mode == "preflight"
     send = mode == "send" and str(form.get("send") or "") in _ON
     if mode == "send" and not send:
         return _render(
             request,
             path,
-            vendor_ids=chosen,
-            error="Tick Send for real to mail companies. Preview writes files and sends nothing.",
+            awards=chosen,
+            error="Tick Send for real to mail these awards. Preview writes files and sends nothing.",
             transport=transport,
             delay=delay,
             redirect_to=redirect_to,
+            include_sent=include_sent,
         )
     if preflight:
         problem = credential_gap(transport, preflight=True)
@@ -86,15 +88,17 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
         return _render(
             request,
             path,
-            vendor_ids=chosen,
+            awards=chosen,
             error=problem,
             transport=transport,
             delay=delay,
             redirect_to=redirect_to,
+            include_sent=include_sent,
         )
     params = {
-        "vendor_ids": chosen,
+        "awards": [f"{vendor_id}:{tender_id}" for vendor_id, tender_id in chosen] if chosen else None,
         "send": send,
+        "send_again": include_sent,
         "preflight": preflight,
         "transport": transport,
         "delay": delay,
@@ -106,7 +110,8 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
             log,
             stop,
             database=path,
-            vendor_ids=chosen,
+            awards=chosen,
+            include_sent=include_sent,
             send=send,
             preflight=preflight,
             transport=transport,
@@ -125,33 +130,47 @@ def _render(
     request: Request,
     path: Path,
     *,
-    vendor_ids: list[int] | None,
+    awards: list[tuple[int, str]] | None,
     error: str,
     transport: str = "gmail",
     delay: float = _DELAY_FLOOR,
     redirect_to: str = "",
+    include_sent: bool = False,
 ):
     snapshot = load_home(path)
     waiting = 0
     mailable: list = []
+    already = 0
     subject = ""
     body = ""
     if snapshot.ready:
         campaign = load_campaign()
         subject = campaign.SUBJECT_TEMPLATE
-        body = campaign.build_body("the company")
+        body = campaign.build_body("the company", "the tender id", "the title", "the contract date")
         with session(engine(path)) as current:
-            queue = [
+            unsent = [
                 person
                 for person in outreach_targets(current)
                 if EMAIL_RE.match(person.email or "")
             ]
-        waiting = len(queue)
-        if vendor_ids is None:
+            everyone = [
+                person
+                for person in outreach_targets(current, include_sent=True)
+                if EMAIL_RE.match(person.email or "")
+            ]
+        waiting = len(unsent)
+        queue = everyone if include_sent else unsent
+        sent_keys = {(person.vendor_id, person.tender_id) for person in everyone} - {
+            (person.vendor_id, person.tender_id) for person in unsent
+        }
+        if awards is None:
             mailable = queue
         else:
-            wanted = set(vendor_ids)
-            mailable = [person for person in queue if person.vendor_id in wanted]
+            wanted = set(awards)
+            mailable = [
+                person for person in queue if (person.vendor_id, person.tender_id) in wanted
+            ]
+            already = len(wanted & sent_keys)
     return TEMPLATES.TemplateResponse(
         request=request,
         name="mail.html",
@@ -159,7 +178,9 @@ def _render(
             "snapshot": snapshot,
             "error": error,
             "waiting": waiting,
-            "selected": vendor_ids,
+            "selected": awards,
+            "already": already,
+            "include_sent": include_sent,
             "mailable": mailable,
             "subject": subject,
             "body": body,
@@ -170,10 +191,16 @@ def _render(
     )
 
 
-def _ids(values) -> list[int]:
-    ids = []
+def _awards(values) -> list[tuple[int, str]]:
+    chosen = []
+    seen = set()
     for value in values:
         text = str(value).strip()
-        if text.isdigit():
-            ids.append(int(text))
-    return ids
+        vendor_text, separator, tender_id = text.partition(":")
+        if not separator or not vendor_text.isdigit() or not tender_id:
+            continue
+        key = (int(vendor_text), tender_id)
+        if key not in seen:
+            seen.add(key)
+            chosen.append(key)
+    return chosen

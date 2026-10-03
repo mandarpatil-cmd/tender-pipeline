@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pipeline_core.db import session
 from pipeline_core.models import OUTREACH_FAILED, OUTREACH_SENT, Outreach
-from pipeline_core.queries import mark_enriched, upsert_vendor
+from pipeline_core.queries import mark_enriched, replace_awards, upsert_tender, upsert_vendor
 
 import campaign
 from transport import TransportError
@@ -37,7 +37,11 @@ def written_pitch(monkeypatch):
     have their own tests at the bottom of this file.
     """
     monkeypatch.setattr(
-        campaign, "build_body", lambda company: f"Hello {company} team,\n\nA real pitch.\n"
+        campaign,
+        "build_body",
+        lambda company, tender_id="", title="", contract_date="": (
+            f"Hello {company} team,\n\nA real pitch.\n"
+        ),
     )
     monkeypatch.setattr(campaign, "SENDER_NAME", "Test Sender")
     monkeypatch.setattr(campaign, "SENDER_ORG", "Test Org")
@@ -59,6 +63,20 @@ def _vendor(name: str, email: str | None) -> int:
     with session() as current:
         vendor_id = upsert_vendor(current, name_raw=name)
         mark_enriched(current, vendor_id, email=email, phone=None)
+        if email:
+            tender_id = f"T-{vendor_id}"
+            upsert_tender(
+                current,
+                tender_id=tender_id,
+                title="Work",
+                contract_date="01-Jan-2026",
+                scraped_at="2020-01-01T00:00:00+00:00",
+            )
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
         return vendor_id
 
 
@@ -100,16 +118,17 @@ def test_a_dry_run_writes_previews_and_sends_nothing(fake_transport):
 
 
 def test_a_sent_vendor_drops_out_of_the_next_run(fake_transport):
-    _vendor("Kanta Enterprises", "hi@kanta.example")
+    vendor_id = _vendor("Kanta Enterprises", "hi@kanta.example")
 
     campaign.run(send=True, delay=0)
 
     assert fake_transport["transport"].sent == [
-        ("hi@kanta.example", "Enquiry for Kanta Enterprises")
+        ("hi@kanta.example", f"Enquiry for Kanta Enterprises (T-{vendor_id})")
     ]
     with session() as current:
         row = current.query(Outreach).one()
         assert row.status == OUTREACH_SENT
+        assert row.tender_id == f"T-{vendor_id}"
         assert row.transport == "gmail"
         assert row.sent_at
 
@@ -127,7 +146,8 @@ def test_a_rejected_address_is_logged_and_stays_in_the_queue(monkeypatch, writte
 
     campaign.run(send=True, delay=0)
 
-    assert transport.sent == [("hi@good.example", "Enquiry for Good Ltd")]
+    assert transport.sent[0][0] == "hi@good.example"
+    assert transport.sent[0][1].startswith("Enquiry for Good Ltd (T-")
     with session() as current:
         rows = {r.email: r for r in current.query(Outreach).all()}
     assert rows["nope@bounces.example"].status == OUTREACH_FAILED
@@ -203,7 +223,9 @@ def test_previews_still_work_while_the_pitch_is_a_placeholder():
     _vendor("Kanta Enterprises", "hi@kanta.example")
 
     assert campaign.run(send=False) == 0
-    assert len(list(campaign.PREVIEW_DIR.glob("*.txt"))) == 1
+    previews = list(campaign.PREVIEW_DIR.glob("*.txt"))
+    assert len(previews) == 1
+    assert "This note is about tender T-" in previews[0].read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("blank", ["SENDER_NAME", "SENDER_ORG"])

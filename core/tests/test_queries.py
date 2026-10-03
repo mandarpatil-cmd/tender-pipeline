@@ -245,27 +245,46 @@ def test_record_llm_run_audits_success_and_failure(bind):
 # --------------------------------------------------------------------------
 
 
+def _award(session, vendor_id: int, tender_id: str, scraped_at: str, name: str) -> None:
+    upsert_tender(
+        session,
+        tender_id=tender_id,
+        title=f"Work {tender_id}",
+        contract_date="01-Jan-2026",
+        scraped_at=scraped_at,
+    )
+    replace_awards(
+        session,
+        tender_id,
+        [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+    )
+
+
 def test_outreach_targets_needs_an_address(bind):
     with session(bind) as s:
         with_email = upsert_vendor(s, name_raw="Reachable Ltd")
         mark_enriched(s, with_email, email="hi@reachable.example", phone=None)
+        _award(s, with_email, "T-REACH", "2020-01-01T00:00:00+00:00", "Reachable Ltd")
         blank = upsert_vendor(s, name_raw="Blank Ltd")
         mark_enriched(s, blank, email=None, phone="+91 1")
+        _award(s, blank, "T-BLANK", "2020-01-01T00:00:00+00:00", "Blank Ltd")
 
     with session(bind) as s:
         assert [t.vendor_id for t in outreach_targets(s)] == [with_email]
 
 
-def test_recording_a_send_removes_that_vendor_from_the_queue(bind):
+def test_recording_a_send_removes_that_tender_from_the_queue(bind):
     with session(bind) as s:
         vendor_id = upsert_vendor(s, name_raw="Reachable Ltd")
         mark_enriched(s, vendor_id, email="hi@reachable.example", phone=None)
+        _award(s, vendor_id, "T-1", "2020-01-01T00:00:00+00:00", "Reachable Ltd")
 
     with session(bind) as s:
         assert len(outreach_targets(s)) == 1
         record_outreach(
             s,
             vendor_id=vendor_id,
+            tender_id="T-1",
             email="hi@reachable.example",
             subject="Enquiry",
             transport="gmail",
@@ -274,15 +293,18 @@ def test_recording_a_send_removes_that_vendor_from_the_queue(bind):
 
     with session(bind) as s:
         assert outreach_targets(s) == []
+        assert len(outreach_targets(s, include_sent=True)) == 1
 
 
 def test_a_failed_send_stays_in_the_queue_for_the_next_run(bind):
     with session(bind) as s:
         vendor_id = upsert_vendor(s, name_raw="Reachable Ltd")
         mark_enriched(s, vendor_id, email="hi@reachable.example", phone=None)
+        _award(s, vendor_id, "T-1", "2020-01-01T00:00:00+00:00", "Reachable Ltd")
         record_outreach(
             s,
             vendor_id=vendor_id,
+            tender_id="T-1",
             email="hi@reachable.example",
             subject="Enquiry",
             transport="gmail",
@@ -291,19 +313,67 @@ def test_a_failed_send_stays_in_the_queue_for_the_next_run(bind):
         )
 
     with session(bind) as s:
-        assert [t.vendor_id for t in outreach_targets(s)] == [vendor_id]
+        assert [t.tender_id for t in outreach_targets(s)] == ["T-1"]
+
+
+def test_two_tenders_are_two_messages_and_a_later_win_stays_queued(bind):
+    with session(bind) as s:
+        vendor_id = upsert_vendor(s, name_raw="Reachable Ltd")
+        mark_enriched(s, vendor_id, email="hi@reachable.example", phone=None)
+        _award(s, vendor_id, "T-OLD", "2020-01-01T00:00:00+00:00", "Reachable Ltd")
+        _award(s, vendor_id, "T-NEW", "2026-06-01T00:00:00+00:00", "Reachable Ltd")
+
+    with session(bind) as s:
+        assert [t.tender_id for t in outreach_targets(s)] == ["T-NEW", "T-OLD"]
+        record_outreach(
+            s,
+            vendor_id=vendor_id,
+            tender_id="T-OLD",
+            email="hi@reachable.example",
+            subject="Enquiry",
+            transport="gmail",
+            status=OUTREACH_SENT,
+        )
+
+    with session(bind) as s:
+        assert [t.tender_id for t in outreach_targets(s)] == ["T-NEW"]
+        again = outreach_targets(s, include_sent=True)
+        assert [t.tender_id for t in again] == ["T-NEW", "T-OLD"]
+
+
+def test_an_old_company_send_covers_earlier_awards_only(bind):
+    with session(bind) as s:
+        vendor_id = upsert_vendor(s, name_raw="Reachable Ltd")
+        mark_enriched(s, vendor_id, email="hi@reachable.example", phone=None)
+        _award(s, vendor_id, "T-BEFORE", "2020-01-01T00:00:00+00:00", "Reachable Ltd")
+        record_outreach(
+            s,
+            vendor_id=vendor_id,
+            email="hi@reachable.example",
+            subject="Enquiry",
+            transport="gmail",
+            status=OUTREACH_SENT,
+        )
+        _award(s, vendor_id, "T-AFTER", "2099-01-01T00:00:00+00:00", "Reachable Ltd")
+
+    with session(bind) as s:
+        assert [t.tender_id for t in outreach_targets(s)] == ["T-AFTER"]
 
 
 def test_outreach_target_carries_what_the_mail_needs(bind):
     with session(bind) as s:
         vendor_id = upsert_vendor(s, name_raw="Kanta Enterprises")
         mark_enriched(s, vendor_id, email="hi@kanta.example", phone=None)
+        _award(s, vendor_id, "T-1", "2020-01-01T00:00:00+00:00", "Kanta Enterprises")
 
     with session(bind) as s:
         target = outreach_targets(s)[0]
 
     assert target.company == "Kanta Enterprises"
     assert target.email == "hi@kanta.example"
+    assert target.tender_id == "T-1"
+    assert target.title == "Work T-1"
+    assert target.contract_date == "01-Jan-2026"
 
 
 # --------------------------------------------------------------------------
@@ -448,9 +518,12 @@ def test_outreach_queue_counts_agree_with_outreach_targets(bind):
         second = upsert_vendor(s, name_raw="Beta Traders")
         mark_enriched(s, first, email="a@b.example", phone=None)
         mark_enriched(s, second, email="c@d.example", phone=None)
+        _award(s, first, "T-A", "2020-01-01T00:00:00+00:00", "Alpha Ltd")
+        _award(s, second, "T-B", "2020-01-01T00:00:00+00:00", "Beta Traders")
         record_outreach(
             s,
             vendor_id=first,
+            tender_id="T-A",
             email="a@b.example",
             subject="hi",
             transport="gmail",
@@ -472,6 +545,7 @@ def test_outreach_queue_counts_failed_attempts_stay_in_the_queue(bind):
     with session(bind) as s:
         vendor_id = upsert_vendor(s, name_raw="Bounces Ltd")
         mark_enriched(s, vendor_id, email="bad@nowhere.example", phone=None)
+        _award(s, vendor_id, "T-1", "2020-01-01T00:00:00+00:00", "Bounces Ltd")
         record_outreach(
             s,
             vendor_id=vendor_id,

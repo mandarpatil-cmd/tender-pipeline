@@ -609,28 +609,77 @@ class OutreachTarget:
     vendor_id: int
     company: str
     email: str
+    tender_id: str
+    title: str
+    contract_date: str
 
 
-def outreach_targets(session: Session, limit: int | None = None) -> list[OutreachTarget]:
-    """Everyone with an address who has not already been sent to.
+def outreach_targets(
+    session: Session,
+    limit: int | None = None,
+    *,
+    include_sent: bool = False,
+) -> list[OutreachTarget]:
+    """One message per company and tender that still needs sending.
 
-    This replaces both `emails.csv` and `sent_log.csv`: the "who is left"
-    question is answered by the database, so an interrupted run resumes simply
-    by being run again.
+    A successful attempt for that pair is skipped. A successful attempt with no
+    tender id is the older company-level send: it covers awards whose tender
+    was already scraped at that time, and leaves a later win in the queue.
+
+    `include_sent` is the deliberate second send. It returns those pairs too.
+    A failed attempt never removes a pair.
     """
-    already_sent = select(Outreach.vendor_id).where(Outreach.status == OUTREACH_SENT)
-    statement = (
-        select(Vendor.vendor_id, Vendor.name_raw, Vendor.email)
+    sent_for_tender = (
+        select(Outreach.outreach_id)
         .where(
-            Vendor.email.is_not(None),
-            Vendor.email != "",
-            Vendor.vendor_id.not_in(already_sent),
+            Outreach.vendor_id == Vendor.vendor_id,
+            Outreach.tender_id == Award.tender_id,
+            Outreach.status == OUTREACH_SENT,
         )
-        .order_by(Vendor.vendor_id)
+        .exists()
     )
+    covered_by_old_send = (
+        select(Outreach.outreach_id)
+        .where(
+            Outreach.vendor_id == Vendor.vendor_id,
+            Outreach.tender_id.is_(None),
+            Outreach.status == OUTREACH_SENT,
+            Tender.scraped_at <= Outreach.sent_at,
+        )
+        .exists()
+    )
+    statement = (
+        select(
+            Vendor.vendor_id,
+            Vendor.name_raw,
+            Vendor.email,
+            Award.tender_id,
+            Tender.title,
+            Tender.contract_date,
+        )
+        .join(Award, Award.vendor_id == Vendor.vendor_id)
+        .join(Tender, Tender.tender_id == Award.tender_id)
+        .where(Vendor.email.is_not(None), Vendor.email != "")
+        .distinct()
+        .order_by(Vendor.vendor_id, Award.tender_id)
+    )
+    if not include_sent:
+        statement = statement.where(~sent_for_tender, ~covered_by_old_send)
     if limit is not None:
         statement = statement.limit(limit)
-    return [OutreachTarget(*row) for row in session.execute(statement).all()]
+    return [
+        OutreachTarget(
+            vendor_id=int(vendor_id),
+            company=company,
+            email=email,
+            tender_id=tender_id,
+            title=title or "",
+            contract_date=contract_date or "",
+        )
+        for vendor_id, company, email, tender_id, title, contract_date in session.execute(
+            statement
+        ).all()
+    ]
 
 
 def record_outreach(
@@ -642,9 +691,11 @@ def record_outreach(
     transport: str,
     status: str,
     error: str | None = None,
+    tender_id: str | None = None,
 ) -> int:
     row = Outreach(
         vendor_id=vendor_id,
+        tender_id=(tender_id or "").strip() or None,
         email=email,
         subject=subject,
         transport=transport,

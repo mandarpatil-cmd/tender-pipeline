@@ -64,6 +64,7 @@ def award_detail(session: Session, tender_id: str, bid_number: str) -> AwardDeta
     attempts = session.execute(
         select(
             Outreach.outreach_id,
+            Outreach.tender_id,
             Outreach.email,
             Outreach.subject,
             Outreach.transport,

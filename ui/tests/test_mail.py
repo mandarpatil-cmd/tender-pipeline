@@ -37,7 +37,7 @@ def test_mail_page_shows_the_message_and_the_queue(tmp_path):
     assert "Preview" in html
     assert "Send for real" in html
     assert "1 waiting with an address" in html
-    assert "Enquiry for {company}" in html
+    assert "Enquiry for {company} ({tender_id})" in html
 
 
 def test_preview_writes_a_file_and_sends_nothing(tmp_path, monkeypatch):
@@ -88,5 +88,6 @@ def test_mail_these_opens_the_page_for_the_ticked_company(tmp_path):
     page = client.post("/mail/from-table", data={"vendor_id": str(vendor_id), "action": "mail"})
 
     assert page.status_code == 200
-    assert "1 came from the table" in page.text
-    assert "1 can be mailed" in page.text
+    assert "1 award(s) came from the table" in page.text
+    assert "1 message(s) will be mailed" in page.text
+    assert "Send again" in page.text

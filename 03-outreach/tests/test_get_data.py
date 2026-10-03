@@ -7,7 +7,13 @@ import csv
 import pytest
 from pipeline_core.db import session
 from pipeline_core.models import OUTREACH_FAILED, OUTREACH_SENT
-from pipeline_core.queries import mark_enriched, record_outreach, upsert_vendor
+from pipeline_core.queries import (
+    mark_enriched,
+    record_outreach,
+    replace_awards,
+    upsert_tender,
+    upsert_vendor,
+)
 
 import campaign
 import get_data
@@ -19,6 +25,19 @@ def _vendor(name: str, email: str | None, *, source: str = "scrape") -> int:
     with session() as current:
         vendor_id = upsert_vendor(current, name_raw=name, source=source)
         mark_enriched(current, vendor_id, email=email, phone=None)
+        if email:
+            tender_id = f"T-{vendor_id}"
+            upsert_tender(
+                current,
+                tender_id=tender_id,
+                title="Work",
+                scraped_at="2020-01-01T00:00:00+00:00",
+            )
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
         return vendor_id
 
 
@@ -42,6 +61,7 @@ def test_a_sent_vendor_drops_out_of_the_export_too():
         record_outreach(
             current,
             vendor_id=vendor_id,
+            tender_id=f"T-{vendor_id}",
             email="hi@kanta.example",
             subject="Enquiry",
             transport="gmail",
@@ -59,6 +79,7 @@ def test_include_sent_shows_the_whole_campaign_with_its_status():
         record_outreach(
             current,
             vendor_id=sent,
+            tender_id=f"T-{sent}",
             email="hi@mailed.example",
             subject="Enquiry",
             transport="gmail",
@@ -79,6 +100,7 @@ def test_a_failed_attempt_still_counts_as_queued():
         record_outreach(
             current,
             vendor_id=vendor_id,
+            tender_id=f"T-{vendor_id}",
             email="nope@bounces.example",
             subject="Enquiry",
             transport="gmail",

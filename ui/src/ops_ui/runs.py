@@ -300,14 +300,20 @@ def run_outreach(
     stop: threading.Event,
     *,
     database: Path,
-    vendor_ids: list[int] | None,
+    awards: list[tuple[int, str]] | None = None,
+    include_sent: bool = False,
     send: bool,
     preflight: bool,
     transport: str,
     delay: float,
     redirect_to: str,
+    vendor_ids: list[int] | None = None,
 ) -> int:
-    """Preview, preflight, or send. A live send records each attempt before the next."""
+    """Preview, preflight, or send. A live send records each attempt before the next.
+
+    ``vendor_ids`` remains so an older call still narrows by company. Mail from
+    the table passes ``awards`` instead, one entry per tender.
+    """
     from pipeline_core.emailcheck import EMAIL_RE
     from pipeline_core.queries import outreach_targets
 
@@ -323,12 +329,17 @@ def run_outreach(
         return _captured(log, lambda: campaign.preflight(transport))
 
     with session(bind) as current:
-        queue = outreach_targets(current)
+        queue = outreach_targets(current, include_sent=include_sent)
     people = [person for person in queue if EMAIL_RE.match(person.email or "")]
-    if vendor_ids is not None:
-        wanted = set(vendor_ids)
-        people = [person for person in people if person.vendor_id in wanted]
-    log.write(f"{len(people)} companies can be mailed.")
+    if awards is not None:
+        wanted = set(awards)
+        people = [person for person in people if (person.vendor_id, person.tender_id) in wanted]
+    elif vendor_ids is not None:
+        wanted_vendors = set(vendor_ids)
+        people = [person for person in people if person.vendor_id in wanted_vendors]
+    if include_sent:
+        log.write("Send again is on. Awards already sent are included.")
+    log.write(f"{len(people)} message(s) can be mailed.")
     if not people:
         log.write("Nobody with an address is waiting. Nothing was sent.")
         return 0

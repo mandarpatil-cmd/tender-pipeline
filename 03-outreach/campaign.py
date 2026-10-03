@@ -33,7 +33,7 @@ load_dotenv(BASE / ".env")
 #: is blank, and previews show where they will appear.
 SENDER_NAME = os.getenv("SENDER_NAME", "").strip()
 SENDER_ORG = os.getenv("SENDER_ORG", "").strip()
-SUBJECT_TEMPLATE = "Enquiry for {company}"
+SUBJECT_TEMPLATE = "Enquiry for {company} ({tender_id})"
 
 #: The pitch has not been written yet. `send_all` refuses while this string is
 #: still in the body, because a dry run and a live send build the same text and
@@ -41,15 +41,28 @@ SUBJECT_TEMPLATE = "Enquiry for {company}"
 PLACEHOLDER = "<-- replace this paragraph with your actual pitch -->"
 
 
-def build_body(company: str) -> str:
+def build_body(
+    company: str,
+    tender_id: str = "",
+    title: str = "",
+    contract_date: str = "",
+) -> str:
     name = SENDER_NAME or "<SENDER_NAME from .env>"
     org = SENDER_ORG or "<SENDER_ORG from .env>"
+    about = ""
+    if tender_id:
+        detail = tender_id
+        if title:
+            detail += f", {title}"
+        if contract_date:
+            detail += f", contract date {contract_date}"
+        about = f"This note is about tender {detail}.\n\n"
     return f"""Hello {company} team,
 
 I came across your organisation in connection with recent public tender
 awards, and wanted to introduce what we do.
 
-<-- replace this paragraph with your actual pitch -->
+{about}<-- replace this paragraph with your actual pitch -->
 
 If this is not the right contact for such enquiries, I would be grateful if
 you could point me to the right person.
@@ -64,7 +77,9 @@ business contact. Reply with "unsubscribe" and I will not contact you again.
 """
 
 
-def load_recipients(limit: int | None = None) -> list[OutreachTarget]:
+def load_recipients(
+    limit: int | None = None, *, include_sent: bool = False
+) -> list[OutreachTarget]:
     """Everyone with an address who has not already been sent to.
 
     The query already excludes anyone with a successful `outreach` row, so there
@@ -73,7 +88,7 @@ def load_recipients(limit: int | None = None) -> list[OutreachTarget]:
     handed to a transport that would only reject them.
     """
     with session() as current:
-        people = outreach_targets(current, limit=None)
+        people = outreach_targets(current, limit=None, include_sent=include_sent)
 
     usable = [p for p in people if EMAIL_RE.match(p.email or "")]
     if len(usable) != len(people):
@@ -82,6 +97,12 @@ def load_recipients(limit: int | None = None) -> list[OutreachTarget]:
     if limit is not None:
         usable = usable[:limit]
     return usable
+
+
+def message_for(person: OutreachTarget) -> tuple[str, str]:
+    subject = SUBJECT_TEMPLATE.format(company=person.company, tender_id=person.tender_id)
+    body = build_body(person.company, person.tender_id, person.title, person.contract_date)
+    return subject, body
 
 
 def log_result(
@@ -98,6 +119,7 @@ def log_result(
         record_outreach(
             current,
             vendor_id=target.vendor_id,
+            tender_id=target.tender_id,
             email=email,
             subject=subject,
             transport=transport_name,
@@ -154,13 +176,8 @@ def dry_run(people: list[OutreachTarget], override_to: str | None) -> None:
         stale.unlink()
     for i, person in enumerate(people, start=1):
         to = override_to or person.email
-        write_preview(
-            i,
-            person.company,
-            to,
-            SUBJECT_TEMPLATE.format(company=person.company),
-            build_body(person.company),
-        )
+        subject, body = message_for(person)
+        write_preview(i, person.company, to, subject, body)
     print(f"DRY RUN: wrote {len(people)} previews to {PREVIEW_DIR}")
     print("Nothing was sent. Set SEND = True in main.py to transmit.")
 
@@ -212,8 +229,7 @@ def send_all(
                 stopped = True
                 break
             to = override_to or person.email
-            subject = SUBJECT_TEMPLATE.format(company=person.company)
-            body = build_body(person.company)
+            subject, body = message_for(person)
             try:
                 transport.send(to, subject, body)
             except TransportError as err:

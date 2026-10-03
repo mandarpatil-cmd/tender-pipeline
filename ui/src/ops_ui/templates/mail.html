@@ -3,22 +3,22 @@
 {% block body %}
 <p class="kicker">Mail</p>
 <h1>Mail</h1>
-<p class="lede">Stage 3 mails <code>vendors.email</code> only. A company already sent to is left out. Preview writes files and sends nothing.</p>
+<p class="lede">One message per tender, to <code>vendors.email</code> only. A tender already sent is left out unless you tick Send again. Preview writes files and sends nothing.</p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% else %}
 {% if error %}<p class="warn">{{ error }}</p>{% endif %}
 <p class="cost">{{ waiting }} waiting with an address that has not been sent to.</p>
 {% if selected is not none %}
-<p class="cost">{{ selected|length }} came from the table. {{ mailable|length }} can be mailed. The rest have no email or were already sent.</p>
+<p class="cost">{{ selected|length }} award(s) came from the table. {{ mailable|length }} message(s) will be mailed.{% if already %} {{ already }} already sent are left out unless Send again is ticked.{% endif %}</p>
 {% endif %}
 <h2>Message</h2>
 <p class="cost">Subject: {{ subject }}</p>
 <pre>{{ body }}</pre>
 <form class="panel" method="post" action="/mail">
   {% if selected is not none %}
-  {% for vendor_id in selected %}
-  <input type="hidden" name="vendor_id" value="{{ vendor_id }}">
+  {% for vendor_id, tender_id in selected %}
+  <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
   {% endfor %}
   {% endif %}
   <div class="grid">
@@ -36,6 +36,7 @@
     </label>
   </div>
   <p class="warn">If that address is filled in, every message goes there, and each company is still marked sent.</p>
+  <label class="check"><input type="checkbox" name="send_again" value="1" {% if include_sent %}checked{% endif %}> Send again to awards that were already sent</label>
   <label class="check"><input type="checkbox" name="send" value="1"> Send for real</label>
   <p class="meta">
     <button class="quiet" type="submit" name="mode" value="preview">Preview</button>

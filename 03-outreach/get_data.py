@@ -83,6 +83,7 @@ from pipeline_core.queries import outreach_targets  # noqa: E402
 
 COLUMNS = [
     "vendor_id",
+    "tender_id",
     "company",
     "email",
     "phone",
@@ -98,34 +99,40 @@ COLUMNS = [
 
 
 def collect_rows(*, include_sent: bool = False, source: str | None = None) -> list[dict]:
-    """Stage 3's input, one dict per recipient.
+    """Stage 3's input, one dict per tender still to be mailed.
 
     `outreach_targets()` decides who is in the queue. Everything else here is
-    just extra columns looked up for those same vendors.
+    extra columns for those same companies.
     """
     with session() as current:
-        queued = {t.vendor_id for t in outreach_targets(current)}
-
-        query = current.query(Vendor).filter(
-            Vendor.email.is_not(None), Vendor.email != ""
-        )
-        if source is not None:
-            query = query.filter(Vendor.source == source)
-        if not include_sent:
-            query = query.filter(Vendor.vendor_id.in_(queued or [-1]))
-        vendors = query.order_by(Vendor.vendor_id).all()
-
-        # Latest attempt per vendor, for the two status columns.
-        attempts: dict[int, Outreach] = {}
+        queued = {
+            (target.vendor_id, target.tender_id) for target in outreach_targets(current)
+        }
+        targets = outreach_targets(current, include_sent=True)
+        vendors = {
+            vendor.vendor_id: vendor
+            for vendor in current.query(Vendor).all()
+        }
+        attempts: dict[tuple[int, str], Outreach] = {}
         for row in current.query(Outreach).order_by(Outreach.outreach_id).all():
-            attempts[row.vendor_id] = row
+            if row.tender_id:
+                attempts[(row.vendor_id, row.tender_id)] = row
 
     rows = []
-    for vendor in vendors:
-        attempt = attempts.get(vendor.vendor_id)
+    for target in targets:
+        if (target.vendor_id, target.tender_id) not in queued and not include_sent:
+            continue
+        vendor = vendors.get(target.vendor_id)
+        if vendor is None:
+            continue
+        if source is not None and vendor.source != source:
+            continue
+        attempt = attempts.get((target.vendor_id, target.tender_id))
+        in_queue = (target.vendor_id, target.tender_id) in queued
         rows.append(
             {
-                "vendor_id": vendor.vendor_id,
+                "vendor_id": target.vendor_id,
+                "tender_id": target.tender_id,
                 "company": vendor.name_raw,
                 "email": vendor.email,
                 "phone": vendor.phone or "",
@@ -136,7 +143,7 @@ def collect_rows(*, include_sent: bool = False, source: str | None = None) -> li
                 "enriched_at": vendor.enriched_at or "",
                 "pdf_email": vendor.pdf_email or "",
                 "outreach_status": (
-                    "queued" if vendor.vendor_id in queued else (attempt.status if attempt else "")
+                    "queued" if in_queue else (attempt.status if attempt else "")
                 ),
                 "last_attempt_at": attempt.sent_at if attempt else "",
             }
