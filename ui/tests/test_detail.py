@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
-
 from fastapi.testclient import TestClient
 from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.queries import (
     record_llm_run,
     record_outreach,
     replace_awards,
+    replace_tender_documents,
     set_pdf_contacts,
     upsert_tender,
     upsert_vendor,
@@ -76,26 +75,21 @@ def test_row_links_to_the_award(tmp_path):
 
 
 def test_detail_shows_tender_awards_model_call_and_mail(tmp_path):
-    folder = tmp_path / "json"
-    folder.mkdir()
-    document = folder / "large.json"
-    document.write_text(
-        json.dumps(
-            {
-                "pdf_extracts": [
-                    {
-                        "filename": "work-order.pdf",
-                        "emails": ["clue@example.com"],
-                        "phones": [],
-                        "gstins": ["27ABCDE1234F1Z5"],
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
     path = tmp_path / "pipeline.sqlite3"
-    _seed(path, json_path=str(document))
+    _seed(path, json_path="")
+    with session(engine(path)) as current:
+        replace_tender_documents(
+            current,
+            "LARGE",
+            [
+                {
+                    "filename": "work-order.pdf",
+                    "emails": ["clue@example.com"],
+                    "phones": [],
+                    "gstins": ["27ABCDE1234F1Z5"],
+                }
+            ],
+        )
     response = TestClient(create_app(path)).get("/award?tender_id=LARGE&bid=1")
 
     assert response.status_code == 200
@@ -109,6 +103,8 @@ def test_detail_shows_tender_awards_model_call_and_mail(tmp_path):
     assert "27ABCDE1234F1Z5" in html
     assert "clue@example.com" in html
     assert "not an address to mail" in html
+    assert "Download PDFs" in html
+    assert "The files were not kept." in html
 
 
 def test_unknown_award_is_not_found(tmp_path):

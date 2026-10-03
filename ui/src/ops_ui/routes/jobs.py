@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from ops_ui.deps import database_path
 from ops_ui.jobs import (
+    JOB_STAGES,
+    JOB_STATES,
     Busy,
+    JobQuery,
     captcha_image,
     get_job,
-    recent_jobs,
+    job_query_from,
+    list_jobs,
+    pdf_zip_path,
     request_stop,
     start_job,
     submit_captcha,
@@ -22,6 +28,7 @@ from ops_ui.runs import (
     date_error,
     enrich_cost,
     run_enrich,
+    run_fetch_pdfs,
     run_scrape,
     run_status,
     scrape_cost,
@@ -35,7 +42,8 @@ router = APIRouter()
 @router.get("/jobs")
 def jobs_page(request: Request, path: Path = Depends(database_path)):
     snapshot = load_home(path)
-    jobs = recent_jobs(path) if snapshot.ready else []
+    query = job_query_from(request.query_params)
+    listing = list_jobs(path, query) if snapshot.ready else None
     waiting = ""
     if snapshot.ready:
         waiting = enrich_cost(path, limit=1, source="scrape", dry_run=True)
@@ -44,7 +52,17 @@ def jobs_page(request: Request, path: Path = Depends(database_path)):
         name="jobs.html",
         context={
             "snapshot": snapshot,
-            "jobs": jobs,
+            "jobs": listing.rows if listing else [],
+            "listing": listing,
+            "job_query": query,
+            "stages": JOB_STAGES,
+            "states": JOB_STATES,
+            "previous": _jobs_href(query, page=listing.page - 1) if listing and listing.page > 1 else None,
+            "following": (
+                _jobs_href(query, page=listing.page + 1)
+                if listing and listing.page < listing.pages
+                else None
+            ),
             "status_cost": status_cost(),
             "enrich_cost_text": waiting,
             "scrape_cost_text": scrape_cost(max_tenders=1, probe=False),
@@ -167,6 +185,20 @@ async def post_scrape(request: Request, path: Path = Depends(database_path)):
     return _start(path, "scrape", params, work)
 
 
+@router.post("/jobs/pdfs")
+async def post_pdfs(request: Request, path: Path = Depends(database_path)):
+    form = await request.form()
+    tender_id = str(form.get("tender_id") or "").strip()
+    if not tender_id:
+        return Response("A tender id is required.", status_code=400, media_type="text/plain")
+    params = {"tender_id": tender_id}
+
+    def work(log, stop):
+        return run_fetch_pdfs(log, stop, tender_id=tender_id)
+
+    return _start(path, "pdfs", params, work)
+
+
 @router.get("/jobs/{job_id}")
 def job_page(request: Request, job_id: int, refused: int = 0, path: Path = Depends(database_path)):
     job = get_job(path, job_id)
@@ -175,7 +207,7 @@ def job_page(request: Request, job_id: int, refused: int = 0, path: Path = Depen
     return TEMPLATES.TemplateResponse(
         request=request,
         name="job.html",
-        context={"job": job, "refused": bool(refused)},
+        context=_job_view(job, refused=bool(refused)),
     )
 
 
@@ -187,8 +219,18 @@ def job_live(request: Request, job_id: int, path: Path = Depends(database_path))
     return TEMPLATES.TemplateResponse(
         request=request,
         name="job_live.html",
-        context={"job": job},
+        context=_job_view(job),
     )
+
+
+@router.get("/jobs/{job_id}/pdfs")
+def job_pdfs(job_id: int, path: Path = Depends(database_path)):
+    if get_job(path, job_id) is None:
+        return Response("No run with that id.", status_code=404)
+    archive = pdf_zip_path(job_id)
+    if not archive.is_file():
+        return Response("No PDFs were saved for this run.", status_code=404)
+    return FileResponse(archive, filename=f"tender-{job_id}.zip")
 
 
 @router.get("/jobs/{job_id}/captcha")
@@ -224,6 +266,23 @@ def _start(path, stage: str, params: dict, work) -> Response:
     except Busy as exc:
         return RedirectResponse(f"/jobs/{exc.job_id}?refused=1", status_code=303)
     return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+def _job_view(job, **extra) -> dict:
+    return {"job": job, "zip_ready": pdf_zip_path(job.job_id).is_file(), **extra}
+
+
+def _jobs_href(query: JobQuery, *, page: int) -> str:
+    params: dict[str, str] = {"page": str(page)}
+    if query.stage:
+        params["stage"] = query.stage
+    if query.state:
+        params["state"] = query.state
+    if query.started_from:
+        params["started_from"] = query.started_from
+    if query.started_to:
+        params["started_to"] = query.started_to
+    return "/jobs?" + urlencode(params)
 
 
 def _at_least(raw, default: int) -> int:

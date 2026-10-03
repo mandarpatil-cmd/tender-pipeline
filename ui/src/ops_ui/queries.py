@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline_core.db import engine, ensure_schema, session
-from pipeline_core.queries import contact_breakdown, pipeline_funnel
+from pipeline_core.queries import (
+    backfill_tender_documents,
+    contact_breakdown,
+    pipeline_funnel,
+)
 from sqlalchemy.exc import DatabaseError, OperationalError
 
 #: Shown when creating the schema is the way forward.
@@ -48,6 +52,7 @@ def load_home(path: Path) -> HomeSnapshot:
         return _unread(path, "The database could not be read. Nothing was changed.")
 
     ensure_schema(engine(path))
+    backfill_tender_documents(path)
     try:
         with session(engine(path)) as current:
             funnel = tuple(pipeline_funnel(current))

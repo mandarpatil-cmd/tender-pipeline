@@ -17,12 +17,15 @@ from typing import Any
 
 from pipeline_core import settings as core_settings
 from pipeline_core.db import engine, ensure_schema, session
-from pipeline_core.models import SOURCE_SCRAPE, Award, Tender, Vendor
+from pipeline_core.models import SOURCE_SCRAPE, Award, Tender, TenderDocument, Vendor
 from pipeline_core.naming import buyer_tail, infer_city_state
 from pipeline_core.queries import (
+    backfill_tender_documents,
     known_tender_ids,
     replace_awards,
+    replace_tender_documents,
     set_pdf_contacts,
+    split_clues,
     upsert_tender,
 )
 from pipeline_core.queries import upsert_vendor as core_upsert_vendor
@@ -32,7 +35,7 @@ from sqlalchemy.orm import Session
 
 from stage1_scrape.domain.enrichment import winner_rows
 from stage1_scrape.domain.models import TenderRecord
-from stage1_scrape.persist.pdf_text import extract_folder, merge_pdf_contacts
+from stage1_scrape.persist.pdf_text import merge_pdf_contacts
 
 VENDOR_SEED_COLUMNS = (
     Vendor.vendor_id,
@@ -69,6 +72,7 @@ class Store:
         self.db_path = Path(db_path) if db_path else core_settings.db_path()
         self.engine = engine(self.db_path)
         ensure_schema(self.engine)
+        backfill_tender_documents(self.db_path)
 
     # ----------------------------------------------------------------- files
 
@@ -84,13 +88,22 @@ class Store:
 
     # -------------------------------------------------------------- database
 
-    def save_tender(self, record: TenderRecord, scraped_at: str | None = None) -> Path:
-        """Write the raw JSON, then upsert the tender and its awards."""
-        payload = record.to_dict()
-        payload["scraped_at"] = scraped_at or datetime.now(timezone.utc).isoformat()
-        path = self.json_dir / f"{_slug(record.listing.tender_id)}.json"
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    def save_tender(
+        self,
+        record: TenderRecord,
+        scraped_at: str | None = None,
+        *,
+        replace_documents: bool | None = None,
+    ) -> None:
+        """Upsert the tender and its awards. Document clues go in the database.
 
+        `replace_documents` defaults to true when this record carries extracts.
+        A scrape that downloaded PDFs passes true even when the extracts are
+        empty, so a tender whose files yielded nothing does not keep old clues.
+        """
+        scraped = scraped_at or datetime.now(timezone.utc).isoformat()
+        if replace_documents is None:
+            replace_documents = bool(record.pdf_extracts)
         listing = record.listing
         with session(self.engine) as current:
             upsert_tender(
@@ -101,11 +114,14 @@ class Store:
                 status=listing_status(listing.status, listing.tender_stage),
                 contract_date=record.aoc.get("Contract Date", ""),
                 contract_value=record.aoc.get("Total Contract Value", ""),
-                json_path=str(path),
-                scraped_at=payload["scraped_at"],
+                json_path=None,
+                scraped_at=scraped,
             )
             self._save_awards(current, record)
-        return path
+            if replace_documents:
+                replace_tender_documents(
+                    current, listing.tender_id, record.pdf_extracts
+                )
 
     def known_ids(self) -> set[str]:
         with session(self.engine) as current:
@@ -133,9 +149,14 @@ class Store:
                     .order_by(Award.tender_id)
                 ).mappings().all()
                 seed["awards"] = [dict(award) for award in awards]
+            tender_ids = {
+                award["tender_id"] for seed in seeds for award in seed["awards"]
+            }
+            stored = _extracts_by_tender(current, tender_ids)
+            for seed in seeds:
                 extracts: list[dict] = []
                 for award in seed["awards"]:
-                    extracts.extend(self._pdf_extracts_for_tender(award["tender_id"]))
+                    extracts.extend(stored.get(award["tender_id"], []))
                 seed["pdf_extracts"] = extracts
                 contacts = merge_pdf_contacts(extracts)
                 seed["pdf_emails"] = contacts["emails"]
@@ -177,10 +198,13 @@ class Store:
                 }
             )
         replace_awards(current, listing.tender_id, rows)
-        self._save_pdf_contacts(current, listing.tender_id, rows)
+        self._save_pdf_contacts(current, rows, record.pdf_extracts)
 
     def _save_pdf_contacts(
-        self, current: Session, tender_id: str, rows: list[dict[str, Any]]
+        self,
+        current: Session,
+        rows: list[dict[str, Any]],
+        extracts: list[dict[str, Any]],
     ) -> None:
         """Hand the winner whatever contact details the work order carried.
 
@@ -195,7 +219,7 @@ class Store:
         """
         if len(rows) != 1:
             return
-        contacts = merge_pdf_contacts(self._pdf_extracts_for_tender(tender_id))
+        contacts = merge_pdf_contacts(extracts)
         set_pdf_contacts(
             current,
             rows[0]["vendor_id"],
@@ -203,17 +227,25 @@ class Store:
             phone=next(iter(contacts["phones"]), None),
         )
 
-    def _pdf_extracts_for_tender(self, tender_id: str) -> list[dict]:
-        path = self.json_dir / f"{_slug(tender_id)}.json"
-        if path.is_file():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                data = {}
-            stored = data.get("pdf_extracts") or []
-            if stored:
-                return list(stored)
-        return extract_folder(self.pdf_dir_for(tender_id))
+
+def _extracts_by_tender(current: Session, tender_ids: set[str]) -> dict[str, list[dict]]:
+    if not tender_ids:
+        return {}
+    rows = current.scalars(
+        select(TenderDocument).where(TenderDocument.tender_id.in_(tender_ids))
+    )
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row.tender_id, []).append(
+            {
+                "filename": row.filename,
+                "text": "",
+                "emails": split_clues(row.emails),
+                "phones": split_clues(row.phones),
+                "gstins": split_clues(row.gstins),
+            }
+        )
+    return grouped
 
 
 def listing_status(status: str | None, tender_stage: str | None) -> str:

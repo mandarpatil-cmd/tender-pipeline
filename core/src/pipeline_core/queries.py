@@ -7,8 +7,10 @@ exactly one definition.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
 from sqlalchemy import func, select
@@ -28,6 +30,7 @@ from .models import (
     LlmRun,
     Outreach,
     Tender,
+    TenderDocument,
     Vendor,
 )
 from .naming import infer_legal_form, normalize_name
@@ -123,6 +126,128 @@ def replace_awards(session: Session, tender_id: str, rows: Iterable[dict[str, An
         session.execute(sqlite_insert(Award).values(tender_id=tender_id, **row))
         written += 1
     return written
+
+
+def join_clues(values: Iterable[Any] | None) -> str:
+    """Semicolon-joined clues, in first-seen order. The shape the dashboard prints."""
+    kept: list[str] = []
+    for value in values or []:
+        text = str(value).strip()
+        if text and text not in kept:
+            kept.append(text)
+    return "; ".join(kept)
+
+
+def split_clues(value: str | None) -> list[str]:
+    return [part.strip() for part in (value or "").split(";") if part.strip()]
+
+
+def _clue_list(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        return split_clues(raw)
+    return [str(value).strip() for value in (raw or []) if str(value).strip()]
+
+
+def replace_tender_documents(
+    session: Session, tender_id: str, extracts: Iterable[dict[str, Any]]
+) -> int:
+    """Rewrite every document row for one tender. Returns how many were written."""
+    merged: dict[str, dict[str, list[str]]] = {}
+    for item in extracts or []:
+        filename = str(item.get("filename") or "").strip() or "document.pdf"
+        bucket = merged.setdefault(
+            filename, {"emails": [], "phones": [], "gstins": []}
+        )
+        for key in ("emails", "phones", "gstins"):
+            for value in _clue_list(item.get(key)):
+                if value not in bucket[key]:
+                    bucket[key].append(value)
+    session.query(TenderDocument).filter(TenderDocument.tender_id == tender_id).delete(
+        synchronize_session=False
+    )
+    for filename, clues in merged.items():
+        session.execute(
+            sqlite_insert(TenderDocument).values(
+                tender_id=tender_id,
+                filename=filename,
+                emails=join_clues(clues["emails"]),
+                phones=join_clues(clues["phones"]),
+                gstins=join_clues(clues["gstins"]),
+            )
+        )
+    return len(merged)
+
+
+def documents_for_tenders(
+    session: Session, tender_ids: Iterable[str]
+) -> dict[str, list[dict[str, str]]]:
+    """Document cards keyed by tender id. Strings are already semicolon-joined."""
+    ids = [tender_id for tender_id in dict.fromkeys(tender_ids) if tender_id]
+    if not ids:
+        return {}
+    rows = session.scalars(
+        select(TenderDocument)
+        .where(TenderDocument.tender_id.in_(ids))
+        .order_by(TenderDocument.tender_id, TenderDocument.filename)
+    )
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        grouped.setdefault(row.tender_id, []).append(
+            {
+                "filename": row.filename,
+                "emails": row.emails or "",
+                "phones": row.phones or "",
+                "gstins": row.gstins or "",
+            }
+        )
+    return grouped
+
+
+def backfill_tender_documents(db_path: Path) -> int:
+    """Copy `pdf_extracts` from each tender JSON into `tender_documents`.
+
+    A tender that already has document rows is left alone. Returns how many
+    tenders were filled. Missing files are skipped.
+    """
+    from .db import session as open_session
+    from .db import engine
+
+    filled = 0
+    with open_session(engine(db_path)) as current:
+        tenders = current.scalars(
+            select(Tender).where(
+                Tender.json_path.is_not(None),
+                Tender.json_path != "",
+            )
+        ).all()
+        for tender in tenders:
+            already = current.scalar(
+                select(func.count())
+                .select_from(TenderDocument)
+                .where(TenderDocument.tender_id == tender.tender_id)
+            )
+            if already:
+                continue
+            extracts = _extracts_from_json(tender.json_path)
+            if not extracts:
+                continue
+            replace_tender_documents(current, tender.tender_id, extracts)
+            filled += 1
+    return filled
+
+
+def _extracts_from_json(json_path: str | None) -> list[dict[str, Any]]:
+    if not json_path:
+        return []
+    path = Path(json_path)
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    extracts = payload.get("pdf_extracts") or []
+    return list(extracts) if isinstance(extracts, list) else []
 
 
 def vendor_count(session: Session) -> int:

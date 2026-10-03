@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from stage1_scrape.app.pipeline import matching_listing
 from stage1_scrape.app.run import run_scrape
 from stage1_scrape.domain.models import BidRow, ListingRow, TenderRecord
 from stage1_scrape.persist.store import Store
@@ -68,3 +69,12 @@ def test_run_scrape_does_not_import_any_llm_machinery():
     source = open(module.__file__, encoding="utf-8").read()
     for banned in ("langchain", "run_llm_source", "enrich_limit", "web_search"):
         assert banned not in source
+
+
+def test_matching_listing_uses_only_the_rows_it_was_given():
+    rows = [
+        ListingRow("1", "2026_A_1", "", "", "", "", "https://example.test/a"),
+        ListingRow("2", " 2026_B_2 ", "", "", "", "", "https://example.test/b"),
+    ]
+    assert matching_listing(rows, "2026_B_2").tender_id == " 2026_B_2 "
+    assert matching_listing(rows, "missing") is None

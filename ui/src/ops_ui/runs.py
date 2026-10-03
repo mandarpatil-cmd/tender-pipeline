@@ -212,6 +212,52 @@ def run_scrape(
     return 0
 
 
+def run_fetch_pdfs(log: Log, stop: threading.Event, *, tender_id: str) -> int:
+    """One tender, found by the portal's tender-id box, then its PDFs."""
+    from stage1_scrape.app.pipeline import fetch_tender_pdfs
+    from stage1_scrape.domain.errors import CaptchaError, ParseError
+
+    from ops_ui.jobs import CaptchaTimedOut, pdf_zip_path, wait_for_captcha
+
+    log.write(f"Fetching PDFs for {tender_id}. One captcha read.")
+    log.write("Captcha is read automatically. If that fails, type it on this page.")
+
+    def ask(image_path: Path) -> str:
+        try:
+            return wait_for_captcha(log, stop, image_path)
+        except CaptchaTimedOut as exc:
+            raise CaptchaError(str(exc)) from exc
+
+    out = settings.project_root() / "01-scrape" / "data"
+    handler = _Logger(log)
+    logger = logging.getLogger("stage1_scrape")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        info = fetch_tender_pdfs(
+            out,
+            tender_id,
+            zip_path=pdf_zip_path(log.job_id),
+            captcha_solver="openrouter",
+            captcha_retries=10,
+            delay=_SCRAPE_DELAY_FLOOR,
+            should_stop=stop.is_set,
+            ask=ask,
+        )
+    except CaptchaError as exc:
+        log.write(str(exc))
+        return 0 if stop.is_set() else 1
+    except ParseError as exc:
+        log.write(str(exc))
+        return 1
+    finally:
+        logger.removeHandler(handler)
+    log.write(info["message"])
+    if info.get("stopped") or stop.is_set():
+        return 0
+    return 0 if info.get("ok") else 1
+
+
 def enrich_cost_line(count: int, dry_run: bool) -> str:
     if dry_run:
         return f"{count} companies would be listed. Nothing will be spent."

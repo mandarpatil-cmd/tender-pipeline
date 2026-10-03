@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-import json
 from io import BytesIO
 
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from pipeline_core.db import engine, ensure_schema, session
-from pipeline_core.queries import replace_awards, upsert_tender, upsert_vendor, utcnow
+from pipeline_core.queries import (
+    replace_awards,
+    replace_tender_documents,
+    upsert_tender,
+    upsert_vendor,
+    utcnow,
+)
 
 from ops_ui.app import create_app
 
@@ -94,22 +99,15 @@ def test_unreadable_contract_value_stays_visible(tmp_path):
     assert "SMALL" not in html
 
 
-def test_evidence_comes_from_the_tender_file(tmp_path):
-    folder = tmp_path / "json"
-    folder.mkdir()
-    document = folder / "large.json"
-    document.write_text(
-        json.dumps(
-            {
-                "pdf_extracts": [
-                    {"filename": "work-order.pdf", "gstins": ["27ABCDE1234F1Z5"]}
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
+def test_evidence_comes_from_the_database(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
-    _seed(path, json_path=str(document))
+    _seed(path)
+    with session(engine(path)) as current:
+        replace_tender_documents(
+            current,
+            "LARGE",
+            [{"filename": "work-order.pdf", "gstins": ["27ABCDE1234F1Z5"]}],
+        )
     html = TestClient(create_app(path)).get("/?q=electrical").text
 
     assert "27ABCDE1234F1Z5" in html
@@ -125,9 +123,23 @@ def test_filters_offer_mailable_state_and_order(tmp_path):
     assert "Maharashtra" in html
     assert "Ascending" in html
     assert "Descending" in html
+    assert 'name="scraped_from"' in html
+    assert 'name="scraped_to"' in html
     assert "All companies in this filter" in html
     assert "Mail these" in html
     assert 'aria-label="Select rows on this page"' in html
+
+
+def test_scraped_range_is_kept_on_the_export_link(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    _seed(path)
+    html = TestClient(create_app(path)).get(
+        "/?scraped_from=1999-01-01&scraped_to=1999-01-02"
+    ).text
+
+    assert "No awards match." in html
+    assert "scraped_from=1999-01-01" in html
+    assert "scraped_to=1999-01-02" in html
 
 
 def test_export_matches_the_filter_and_writes_na_for_blanks(tmp_path):

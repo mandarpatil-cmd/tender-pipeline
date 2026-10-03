@@ -12,5 +12,8 @@
     <button type="submit">Stop</button>
   </form>
   {% endif %}
+  {% if zip_ready %}
+  <p><a href="/jobs/{{ job.job_id }}/pdfs">Download the PDFs</a></p>
+  {% endif %}
   <pre>{{ job.log }}</pre>
 </div>

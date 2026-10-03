@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 
 from stage1_scrape.config import APP_URL, DEFAULT_DELAY_SECONDS, TENDER_STATUS_AOC
@@ -17,7 +20,7 @@ from stage1_scrape.parse import (
     search_still_showing_form,
 )
 from stage1_scrape.persist import Store, download_document
-from stage1_scrape.persist.pdf_text import extract_folder
+from stage1_scrape.persist.pdf_text import extract_folder, pdf_paths
 from stage1_scrape.scraping import (
     GePNICClient,
     extract_form_fields,
@@ -104,6 +107,7 @@ def scrape_one_tender(
     listing,
     store: Store,
     download_pdfs: bool,
+    copy_pdfs_to: Path | None = None,
 ) -> TenderRecord:
     status_html = client.get(listing.status_page_url).text
     store.write_debug(f"status_{_slug_id(listing.tender_id)}.html", status_html)
@@ -124,17 +128,107 @@ def scrape_one_tender(
         aoc=parsed["aoc"],
         documents=parsed["documents"],
     )
-    if download_pdfs:
-        dest = store.pdf_dir_for(listing.tender_id)
-        for doc in record.documents:
-            try:
-                path = download_document(client, doc, dest)
-                record.downloaded_files.append(str(path))
-            except Exception as exc:
-                log.warning("PDF skipped for %s (%s): %s", listing.tender_id, doc.filename, exc)
-    record.pdf_extracts = extract_folder(store.pdf_dir_for(listing.tender_id))
-    store.save_tender(record)
+    with tempfile.TemporaryDirectory(prefix="tender-pdfs-") as tmp:
+        dest = Path(tmp)
+        if download_pdfs:
+            for doc in record.documents:
+                try:
+                    path = download_document(client, doc, dest)
+                    record.downloaded_files.append(path.name)
+                except Exception as exc:
+                    log.warning(
+                        "PDF skipped for %s (%s): %s",
+                        listing.tender_id,
+                        doc.filename,
+                        exc,
+                    )
+            record.pdf_extracts = extract_folder(dest)
+            if copy_pdfs_to is not None:
+                copy_pdfs_to.mkdir(parents=True, exist_ok=True)
+                for path in pdf_paths(dest):
+                    shutil.copy2(path, copy_pdfs_to / path.name)
+        store.save_tender(record, replace_documents=download_pdfs)
+    if download_pdfs and record.downloaded_files:
+        log.info(
+            "Read %s PDF(s) for %s, stored the clues, and deleted the files.",
+            len(record.downloaded_files),
+            listing.tender_id,
+        )
     return record
+
+
+def matching_listing(rows, tender_id: str):
+    """The listing row for this tender id, or None. Does not look at later pages."""
+    wanted = (tender_id or "").strip()
+    for row in rows:
+        if row.tender_id.strip() == wanted:
+            return row
+    return None
+
+
+def fetch_tender_pdfs(
+    out_dir: Path,
+    tender_id: str,
+    *,
+    zip_path: Path,
+    captcha_solver: str = "openrouter",
+    captcha_retries: int = 10,
+    delay: float = DEFAULT_DELAY_SECONDS,
+    ask: "Callable[[Path], str] | None" = None,
+    should_stop: "Callable[[], bool] | None" = None,
+) -> dict:
+    """Search by tender id, download that tender's PDFs, store the clues.
+
+    The zip is written for the operator. The working copies are deleted with
+    the temporary folder. The portal link is not kept.
+    """
+    wanted = tender_id.strip()
+    if should_stop and should_stop():
+        return {"ok": False, "stopped": True, "message": "Stopped before the search."}
+    store = Store(out_dir)
+    client = GePNICClient(delay=delay)
+    results_html = _search_with_captcha(
+        client,
+        store,
+        captcha_text=None,
+        retries=captcha_retries,
+        extra_fields={"tenderId": wanted},
+        captcha_solver=captcha_solver,
+        ask=ask,
+    )
+    if should_stop and should_stop():
+        return {"ok": False, "stopped": True, "message": "Stopped after the search."}
+    rows = parse_results_table(results_html)
+    match = matching_listing(rows, wanted)
+    if match is None:
+        found = ", ".join(row.tender_id for row in rows[:5]) or "(none)"
+        raise ParseError(
+            f"The search did not return {wanted}. It returned: {found}."
+        )
+    with tempfile.TemporaryDirectory(prefix="tender-zip-") as hold:
+        record = scrape_one_tender(
+            client,
+            match,
+            store,
+            download_pdfs=True,
+            copy_pdfs_to=Path(hold),
+        )
+        files = pdf_paths(Path(hold))
+        if files:
+            _write_zip(files, zip_path)
+    count = len(record.downloaded_files)
+    if count:
+        message = f"Saved clues for {wanted}. {count} PDF(s) are ready to download."
+    else:
+        message = f"Opened {wanted}. The portal returned no PDF."
+    return {"ok": True, "stopped": False, "message": message, "files": count}
+
+
+def _write_zip(files: list[Path], dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in files:
+            archive.write(path, arcname=path.name)
 
 
 def scrape_aoc(
@@ -297,7 +391,10 @@ def probe_search_form(out_dir: Path, delay: float = 1.0) -> dict:
 
 
 def reindex_saved(out_dir: Path) -> int:
-    """Re-parse saved summary HTML into JSON plus vendor/award tables. No HTTP."""
+    """Re-parse saved summary HTML into the vendor and award tables. No HTTP.
+
+    An empty PDF folder does not clear document rows already stored.
+    """
     store = Store(out_dir)
     count = 0
     for path in sorted(store.json_dir.glob("*.json")):
@@ -314,8 +411,15 @@ def reindex_saved(out_dir: Path) -> int:
                 record.aoc = {**record.aoc, **parsed["aoc"]}
             if parsed.get("header"):
                 record.header = {**record.header, **parsed["header"]}
-        record.pdf_extracts = extract_folder(store.pdf_dir_for(record.listing.tender_id))
-        store.save_tender(record, scraped_at=data.get("scraped_at"))
+        folder = store.pdf_dir_for(record.listing.tender_id)
+        saved_pdfs = pdf_paths(folder)
+        if saved_pdfs:
+            record.pdf_extracts = extract_folder(folder)
+        store.save_tender(
+            record,
+            scraped_at=data.get("scraped_at"),
+            replace_documents=bool(saved_pdfs),
+        )
         count += 1
         log.info(
             "Indexed %s — %s financial row(s), %s awarded",

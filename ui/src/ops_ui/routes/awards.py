@@ -6,7 +6,6 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
-from pipeline_core import settings
 from pipeline_core.db import engine, session
 from pipeline_core.detail import award_detail
 from pipeline_core.grid import COLUMNS, FILE_COLUMNS, PAGE_SIZE, award_view, choices
@@ -39,7 +38,8 @@ def load_view(path: Path, query, *, page_size: int | None):
     with session(engine(path)) as current:
         view = award_view(current, query, page_size=page_size)
         picked = choices(current) if page_size is not None else {}
-    fill_evidence(view.rows, settings.project_root())
+        if view is not None:
+            fill_evidence(current, view.rows)
     return snapshot, view, picked
 
 
@@ -103,11 +103,8 @@ def award(
     if snapshot.ready:
         with session(engine(path)) as current:
             detail = award_detail(current, tender_id, bid)
-        if detail is not None:
-            documents = read_documents(
-                detail.tender.get("json_path") or "",
-                settings.project_root(),
-            )
+            if detail is not None:
+                documents = read_documents(current, tender_id)
     status = 200 if detail is not None or not snapshot.ready else 404
     return TEMPLATES.TemplateResponse(
         request=request,

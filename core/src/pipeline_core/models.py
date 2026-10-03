@@ -66,6 +66,23 @@ class Tender(Base):
         return f"<Tender {self.tender_id}>"
 
 
+class TenderDocument(Base):
+    """Clues pulled from one work-order PDF. The dashboard reads this, not the file."""
+
+    __tablename__ = "tender_documents"
+
+    tender_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("tenders.tender_id"), primary_key=True
+    )
+    filename: Mapped[str] = mapped_column(Text, primary_key=True)
+    emails: Mapped[str | None] = mapped_column(Text)
+    phones: Mapped[str | None] = mapped_column(Text)
+    gstins: Mapped[str | None] = mapped_column(Text)
+
+    def __repr__(self) -> str:
+        return f"<TenderDocument {self.tender_id}/{self.filename}>"
+
+
 class Vendor(Base):
     """One row per company. The spine of the pipeline.
 
@@ -213,4 +230,4 @@ class UiJob(Base):
 
 
 #: Printed by `pipeline-db status`, in pipeline order.
-TABLES = (Tender, Vendor, Award, LlmRun, Outreach, UiJob)
+TABLES = (Tender, TenderDocument, Vendor, Award, LlmRun, Outreach, UiJob)

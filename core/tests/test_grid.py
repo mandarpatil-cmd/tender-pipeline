@@ -7,7 +7,7 @@ import pytest
 from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.grid import AwardQuery, award_view, choices, filtered_vendor_ids
 from pipeline_core.loose import loose_date, loose_number
-from pipeline_core.models import OUTREACH_SENT, STATUS_DONE
+from pipeline_core.models import OUTREACH_SENT, STATUS_DONE, Tender
 from pipeline_core.queries import (
     mark_enriched,
     record_outreach,
@@ -173,3 +173,21 @@ def test_direction_reverses_the_same_column(bind):
         )
 
     assert [row["tender_id"] for row in view.rows] == ["OLD", "ODD", "NEW"]
+
+
+def test_scraped_day_range_uses_the_stored_timestamp(bind):
+    _seed(bind)
+    with session(bind) as current:
+        current.get(Tender, "OLD").scraped_at = "2020-01-15T08:00:00+00:00"
+        current.get(Tender, "NEW").scraped_at = "2026-09-21T08:00:00+00:00"
+        current.get(Tender, "ODD").scraped_at = "2026-09-22T08:00:00+00:00"
+    with session(bind) as current:
+        view = award_view(
+            current,
+            AwardQuery(scraped_from="2026-09-22", scraped_to="2026-09-21"),
+            page_size=50,
+        )
+        junk = award_view(current, AwardQuery(scraped_from="not-a-date"), page_size=50)
+
+    assert [row["tender_id"] for row in view.rows] == ["NEW", "ODD"]
+    assert junk.total == 3

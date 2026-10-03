@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select
@@ -123,6 +124,8 @@ class AwardQuery:
     organisation: str = ""
     date_from: str = ""
     date_to: str = ""
+    scraped_from: str = ""
+    scraped_to: str = ""
     value_min: str = ""
     value_max: str = ""
     #: "" any, "yes" has an email, "no" does not. Same meaning as the mailable count.
@@ -146,6 +149,10 @@ class AwardQuery:
             else ""
         )
         mailable = self.mailable if self.mailable in {"yes", "no"} else ""
+        scraped_from = _iso_day(self.scraped_from)
+        scraped_to = _iso_day(self.scraped_to)
+        if scraped_from and scraped_to and scraped_from > scraped_to:
+            scraped_from, scraped_to = scraped_to, scraped_from
         return replace(
             self,
             sort=sort,
@@ -154,6 +161,8 @@ class AwardQuery:
             enrichment_status=enrichment,
             outreach_status=outreach,
             mailable=mailable,
+            scraped_from=scraped_from,
+            scraped_to=scraped_to,
         )
 
     def is_filtered(self) -> bool:
@@ -168,6 +177,8 @@ class AwardQuery:
                 self.organisation,
                 self.date_from,
                 self.date_to,
+                self.scraped_from,
+                self.scraped_to,
                 self.value_min,
                 self.value_max,
                 self.mailable,
@@ -421,7 +432,22 @@ def _filtered(statement, query: AwardQuery, latest):
         loose_number(query.value_min),
         loose_number(query.value_max),
     )
+    scraped_day = func.substr(Tender.scraped_at, 1, 10)
+    if query.scraped_from:
+        statement = statement.where(scraped_day >= query.scraped_from)
+    if query.scraped_to:
+        statement = statement.where(scraped_day <= query.scraped_to)
     return statement
+
+
+def _iso_day(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return ""
 
 
 def _range(statement, column, low, high):

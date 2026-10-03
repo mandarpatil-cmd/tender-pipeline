@@ -71,8 +71,39 @@
   <button type="submit">Scrape</button>
 </form>
 
-<h2 class="section">Recent runs</h2>
-{% if jobs %}
+<h2 class="section">Runs</h2>
+<form class="panel" method="get" action="/jobs">
+  <div class="grid">
+    <label>Stage
+      <select name="stage">
+        <option value="" {% if not job_query.stage %}selected{% endif %}>Every stage</option>
+        {% for stage in stages %}
+        <option value="{{ stage }}" {% if job_query.stage == stage %}selected{% endif %}>{{ stage }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>State
+      <select name="state">
+        <option value="" {% if not job_query.state %}selected{% endif %}>Every state</option>
+        {% for state in states %}
+        <option value="{{ state }}" {% if job_query.state == state %}selected{% endif %}>{{ state }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Started from
+      <input name="started_from" type="date" value="{{ job_query.started_from }}">
+    </label>
+    <label>Started to
+      <input name="started_to" type="date" value="{{ job_query.started_to }}">
+    </label>
+  </div>
+  <button type="submit">Filter</button>
+</form>
+{% if listing and listing.total == 0 %}
+<p class="cost">No runs yet.</p>
+{% elif not jobs %}
+<p class="cost">No runs match.</p>
+{% else %}
 <table class="recent">
   <thead><tr><th>Id</th><th>Stage</th><th>State</th><th>Started</th></tr></thead>
   <tbody>
@@ -86,8 +117,13 @@
     {% endfor %}
   </tbody>
 </table>
-{% else %}
-<p class="cost">No runs yet.</p>
+{% if previous or following %}
+<p class="pager">
+  {% if previous %}<a href="{{ previous }}">Previous</a>{% endif %}
+  <span>Page {{ listing.page }} of {{ listing.pages }}</span>
+  {% if following %}<a href="{{ following }}">Next</a>{% endif %}
+</p>
+{% endif %}
 {% endif %}
 {% endif %}
 {% endblock %}

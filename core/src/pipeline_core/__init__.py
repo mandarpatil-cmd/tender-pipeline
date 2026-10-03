@@ -29,6 +29,7 @@ from .models import (
     LlmRun,
     Outreach,
     Tender,
+    TenderDocument,
     UiJob,
     Vendor,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "LlmRun",
     "Outreach",
     "Tender",
+    "TenderDocument",
     "UiJob",
     "Vendor",
     "buyer_tail",

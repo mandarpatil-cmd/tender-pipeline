@@ -49,11 +49,17 @@
 
 <h2 class="section">PDF evidence</h2>
 <p class="evidence">These are clues from a document. They are not an address to mail.</p>
+<form method="post" action="/jobs/pdfs">
+  <input type="hidden" name="tender_id" value="{{ detail.tender.tender_id }}">
+  <button type="submit">Download PDFs</button>
+</form>
+<p class="muted">Searches the portal by this tender id and downloads the files in that session. If the captcha reader fails, type it on the run page.</p>
 <dl>
   <div class="pair"><dt>PDF email</dt><dd class="evidence">{{ detail.vendor.pdf_email or "" }}</dd></div>
   <div class="pair"><dt>PDF phone</dt><dd class="evidence">{{ detail.vendor.pdf_phone or "" }}</dd></div>
 </dl>
 {% if documents %}
+  <p class="muted">These clues were read from the PDFs. The files were not kept.</p>
   {% for doc in documents %}
   <div class="card">
     <p>{{ doc.filename or "Unnamed file" }}</p>

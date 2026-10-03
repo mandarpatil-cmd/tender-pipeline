@@ -240,3 +240,72 @@ def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
     assert params["max_pages"] is None
     assert params["from_date"] == "01/01/2026"
     assert params["to_date"] == "31/01/2026"
+
+
+def test_runs_list_pages_and_filters(tmp_path):
+    from pipeline_core.models import UiJob
+
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        for index in range(51):
+            current.add(
+                UiJob(
+                    stage="enrich" if index == 50 else "scrape",
+                    state="failed" if index % 2 else "done",
+                    operator="local",
+                    log="",
+                    started_at=f"2026-01-{(index % 28) + 1:02d}T00:00:00+00:00",
+                )
+            )
+    client = TestClient(create_app(path))
+
+    first = client.get("/jobs")
+    assert first.status_code == 200
+    assert "Page 1 of 2" in first.text
+    assert "No runs yet." not in first.text
+
+    second = client.get("/jobs?page=2")
+    assert "Page 2 of 2" in second.text
+    assert second.text.count('href="/jobs/') < first.text.count('href="/jobs/')
+
+    enrich = client.get("/jobs?stage=enrich")
+    assert "No runs match." not in enrich.text
+    assert "enrich</td>" in enrich.text
+    assert "Page 1 of 2" not in enrich.text
+
+    missing = client.get("/jobs?stage=pdfs")
+    assert "No runs match." in missing.text
+
+    window = client.get("/jobs?started_from=2026-01-20&started_to=2026-01-22").text
+    assert "2026-01-01" not in window
+    assert "2026-01-20" in window
+
+    empty = TestClient(create_app(tmp_path / "other.sqlite3"))
+    ensure_schema(engine(tmp_path / "other.sqlite3"))
+    assert "No runs yet." in empty.get("/jobs").text
+
+
+def test_download_pdfs_starts_a_pdf_job(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+
+    def fake(log, stop, *, tender_id):
+        log.write(tender_id)
+        return 0
+
+    monkeypatch.setattr("ops_ui.routes.jobs.run_fetch_pdfs", fake)
+    client = TestClient(create_app(path))
+    response = client.post(
+        "/jobs/pdfs",
+        data={"tender_id": "2026_ORG_1"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job = get_job(path, job_id)
+    assert job is not None
+    assert job.stage == "pdfs"
+    assert json.loads(job.params_json)["tender_id"] == "2026_ORG_1"

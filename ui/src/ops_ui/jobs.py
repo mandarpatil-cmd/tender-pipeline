@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
+from pipeline_core import settings
 from pipeline_core.db import ensure_schema, engine, session
 from pipeline_core.models import UiJob
 from pipeline_core.queries import utcnow
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 Work = Callable[["Log", threading.Event], int]
 
@@ -171,17 +175,94 @@ def get_job(database: Path, job_id: int) -> UiJob | None:
         return job
 
 
-def recent_jobs(database: Path, limit: int = 20) -> list[UiJob]:
+JOB_PAGE_SIZE = 50
+JOB_STAGES = ("scrape", "enrich", "outreach", "status", "pdfs")
+JOB_STATES = ("running", "waiting", "done", "failed", "stopped")
+
+
+@dataclass(frozen=True)
+class JobQuery:
+    stage: str = ""
+    state: str = ""
+    started_from: str = ""
+    started_to: str = ""
+    page: int = 1
+
+
+@dataclass(frozen=True)
+class JobPage:
+    rows: tuple
+    page: int
+    pages: int
+    total: int
+    matched: int
+
+
+def pdf_zip_path(job_id: int) -> Path:
+    """The zip a PDF fetch leaves for the operator. Working copies are not kept."""
+    return settings.project_root() / "data" / "downloads" / f"{job_id}.zip"
+
+
+def job_query_from(params) -> JobQuery:
+    stage = str(params.get("stage") or "")
+    state = str(params.get("state") or "")
+    started_from = _iso_date(params.get("started_from"))
+    started_to = _iso_date(params.get("started_to"))
+    if started_from and started_to and started_from > started_to:
+        started_from, started_to = started_to, started_from
+    try:
+        page = int(params.get("page") or "1")
+    except ValueError:
+        page = 1
+    return JobQuery(
+        stage=stage if stage in JOB_STAGES else "",
+        state=state if state in JOB_STATES else "",
+        started_from=started_from,
+        started_to=started_to,
+        page=page if page >= 1 else 1,
+    )
+
+
+def list_jobs(database: Path, query: JobQuery) -> JobPage:
+    """Newest run first. Filters apply together. Page size matches the awards grid."""
     ensure_schema(engine(database))
     with session(engine(database)) as current:
+        total = int(current.scalar(select(func.count()).select_from(UiJob)) or 0)
+        statement = select(UiJob)
+        day = func.substr(UiJob.started_at, 1, 10)
+        if query.stage:
+            statement = statement.where(UiJob.stage == query.stage)
+        if query.state:
+            statement = statement.where(UiJob.state == query.state)
+        if query.started_from:
+            statement = statement.where(day >= query.started_from)
+        if query.started_to:
+            statement = statement.where(day <= query.started_to)
+        matched = int(
+            current.scalar(select(func.count()).select_from(statement.subquery())) or 0
+        )
+        pages = max(1, math.ceil(matched / JOB_PAGE_SIZE)) if matched else 1
+        page = min(query.page, pages)
         rows = list(
             current.scalars(
-                select(UiJob).order_by(UiJob.job_id.desc()).limit(limit)
+                statement.order_by(UiJob.job_id.desc())
+                .limit(JOB_PAGE_SIZE)
+                .offset((page - 1) * JOB_PAGE_SIZE)
             )
         )
         for row in rows:
             current.expunge(row)
-        return rows
+    return JobPage(rows=tuple(rows), page=page, pages=pages, total=total, matched=matched)
+
+
+def _iso_date(raw) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return ""
 
 
 def _execute(database: Path, job_id: int, work: Work, stop: threading.Event) -> None:

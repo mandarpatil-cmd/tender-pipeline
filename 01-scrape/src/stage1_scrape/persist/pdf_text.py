@@ -112,11 +112,19 @@ def harvest_contacts(text: str) -> dict[str, list[str]]:
     return {"emails": emails, "phones": phones, "gstins": gstins}
 
 
-def extract_folder(folder: Path) -> list[dict[str, Any]]:
+def pdf_paths(folder: Path) -> list[Path]:
+    """PDF files in a folder, one path each. Case differences do not duplicate a file."""
     if not folder.is_dir():
         return []
-    files = sorted({*folder.glob("*.pdf"), *folder.glob("*.PDF")})
-    return [extract_pdf(path) for path in files]
+    found: dict[Path, Path] = {}
+    for path in folder.iterdir():
+        if path.is_file() and path.suffix.lower() == ".pdf":
+            found.setdefault(path.resolve(), path)
+    return [found[key] for key in sorted(found)]
+
+
+def extract_folder(folder: Path) -> list[dict[str, Any]]:
+    return [extract_pdf(path) for path in pdf_paths(folder)]
 
 
 def merge_pdf_contacts(extracts: list[dict[str, Any]]) -> dict[str, list[str]]:
