@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from pipeline_core.db import session
-from pipeline_core.models import OUTREACH_FAILED, OUTREACH_SENT, Outreach
+from pipeline_core.models import OUTREACH_FAILED, OUTREACH_SENT, MailLetter, Outreach
 from pipeline_core.queries import mark_enriched, replace_awards, upsert_tender, upsert_vendor
 
 import campaign
@@ -17,12 +17,14 @@ class FakeTransport:
     def __init__(self, reject: set[str] | None = None):
         self.reject = reject or set()
         self.sent: list[tuple[str, str]] = []
+        self.files: list[tuple[str, ...]] = []
         self.closed = False
 
-    def send(self, to: str, subject: str, body: str) -> None:
+    def send(self, to: str, subject: str, body: str, attachments=None) -> None:
         if to in self.reject:
             raise TransportError(f"550 mailbox unavailable: {to}")
         self.sent.append((to, subject))
+        self.files.append(tuple(name for name, _content in (attachments or [])))
 
     def close(self) -> None:
         self.closed = True
@@ -36,15 +38,11 @@ def written_pitch(monkeypatch):
     must not hit the placeholder or sender guards in `send_all`. The guards
     have their own tests at the bottom of this file.
     """
-    monkeypatch.setattr(
-        campaign,
-        "build_body",
-        lambda company, tender_id="", title="", contract_date="": (
-            f"Hello {company} team,\n\nA real pitch.\n"
-        ),
-    )
     monkeypatch.setattr(campaign, "SENDER_NAME", "Test Sender")
+    monkeypatch.setattr(campaign, "SENDER_DESIGNATION", "Director")
     monkeypatch.setattr(campaign, "SENDER_ORG", "Test Org")
+    monkeypatch.setattr(campaign, "SENDER_MOBILE", "9000000000")
+    monkeypatch.setattr(campaign, "SENDER_EMAIL", "sender@example.com")
 
 
 @pytest.fixture
@@ -123,7 +121,13 @@ def test_a_sent_vendor_drops_out_of_the_next_run(fake_transport):
     campaign.run(send=True, delay=0)
 
     assert fake_transport["transport"].sent == [
-        ("hi@kanta.example", f"Enquiry for Kanta Enterprises (T-{vendor_id})")
+        ("hi@kanta.example", "Corporate insurance introduction for Kanta Enterprises")
+    ]
+    assert fake_transport["transport"].files == [
+        (
+            "PolicyPact_Corporate_Insurance_Pitch.pdf",
+            "Surety_Bond_Corporate_Presentation_PolicyPact.pdf",
+        )
     ]
     with session() as current:
         row = current.query(Outreach).one()
@@ -147,7 +151,7 @@ def test_a_rejected_address_is_logged_and_stays_in_the_queue(monkeypatch, writte
     campaign.run(send=True, delay=0)
 
     assert transport.sent[0][0] == "hi@good.example"
-    assert transport.sent[0][1].startswith("Enquiry for Good Ltd (T-")
+    assert transport.sent[0][1] == "Corporate insurance introduction for Good Ltd"
     with session() as current:
         rows = {r.email: r for r in current.query(Outreach).all()}
     assert rows["nope@bounces.example"].status == OUTREACH_FAILED
@@ -206,6 +210,10 @@ def test_nothing_to_do_is_not_an_error(fake_transport):
 def test_a_live_send_refuses_while_the_pitch_is_still_a_placeholder(monkeypatch):
     """A dry run and a live send build the same text, so nothing else catches this."""
     _vendor("Kanta Enterprises", "hi@kanta.example")
+    campaign.load_letter()
+    with session() as current:
+        row = current.get(MailLetter, 1)
+        row.body = campaign.PLACEHOLDER
 
     built = []
     monkeypatch.setattr(campaign, "build_transport", lambda name: built.append(name))
@@ -218,26 +226,43 @@ def test_a_live_send_refuses_while_the_pitch_is_still_a_placeholder(monkeypatch)
         assert current.query(Outreach).count() == 0
 
 
-def test_previews_still_work_while_the_pitch_is_a_placeholder():
-    """The guard blocks live sends only -- you can still review the copy."""
+def test_a_dry_run_writes_the_letter_and_both_attachment_names():
+    """Preview needs no mailbox. It shows the letter and the two PDF names."""
     _vendor("Kanta Enterprises", "hi@kanta.example")
 
     assert campaign.run(send=False) == 0
     previews = list(campaign.PREVIEW_DIR.glob("*.txt"))
     assert len(previews) == 1
-    assert "This note is about tender T-" in previews[0].read_text(encoding="utf-8")
+    text = previews[0].read_text(encoding="utf-8")
+    assert "Subject: Corporate insurance introduction for Kanta Enterprises" in text
+    assert "Dear Kanta Enterprises team," in text
+    assert "Surety Insurance:" in text
+    assert "Attachment: PolicyPact_Corporate_Insurance_Pitch.pdf" in text
+    assert "Attachment: Surety_Bond_Corporate_Presentation_PolicyPact.pdf" in text
+    assert "unsubscribe" in text
+    assert campaign.PLACEHOLDER not in text
+    assert "This note is about tender" not in text
 
 
-@pytest.mark.parametrize("blank", ["SENDER_NAME", "SENDER_ORG"])
-def test_a_live_send_refuses_until_the_sender_is_set(monkeypatch, written_pitch, blank):
-    """The signature comes from .env, so a blank one must not reach a real inbox."""
+@pytest.mark.parametrize(
+    ("blank", "label"),
+    [
+        ("SENDER_NAME", "Your name"),
+        ("SENDER_DESIGNATION", "Job title"),
+        ("SENDER_ORG", "Organisation"),
+        ("SENDER_MOBILE", "Mobile"),
+        ("SENDER_EMAIL", "Email"),
+    ],
+)
+def test_a_live_send_refuses_until_the_sender_is_set(monkeypatch, written_pitch, blank, label):
+    """A signature token with a blank field must not reach a real inbox."""
     _vendor("Kanta Enterprises", "hi@kanta.example")
     monkeypatch.setattr(campaign, blank, "")
 
     built = []
     monkeypatch.setattr(campaign, "build_transport", lambda name: built.append(name))
 
-    with pytest.raises(SystemExit, match="SENDER_NAME and SENDER_ORG"):
+    with pytest.raises(SystemExit, match=f"fill in {label}"):
         campaign.run(send=True, delay=0)
 
     assert built == []
@@ -245,11 +270,34 @@ def test_a_live_send_refuses_until_the_sender_is_set(monkeypatch, written_pitch,
         assert current.query(Outreach).count() == 0
 
 
-def test_previews_show_where_an_unset_sender_will_appear(monkeypatch):
+def test_a_blank_signature_token_is_filled_as_empty_in_a_preview(monkeypatch):
     monkeypatch.setattr(campaign, "SENDER_NAME", "")
+    monkeypatch.setattr(campaign, "SENDER_DESIGNATION", "")
     monkeypatch.setattr(campaign, "SENDER_ORG", "Acme Ltd")
+    monkeypatch.setattr(campaign, "SENDER_MOBILE", "")
+    monkeypatch.setattr(campaign, "SENDER_EMAIL", "")
 
-    body = campaign.build_body("Kanta Enterprises")
+    letter = campaign.load_letter()
+    _subject, body = campaign.render_letter(letter, "Kanta Enterprises")
 
-    assert "<SENDER_NAME from .env>" in body
+    assert "{{sender_name}}" not in body
+    assert "{{sender_org}}" not in body
     assert "Acme Ltd" in body
+    assert "unsubscribe" in body
+    assert "Your name" in (campaign.letter_refusal() or "")
+
+
+def test_a_live_send_refuses_when_an_attachment_is_missing(monkeypatch, written_pitch):
+    _vendor("Kanta Enterprises", "hi@kanta.example")
+    campaign.load_letter()
+    with session() as current:
+        row = current.get(MailLetter, 1)
+        row.attachment_names = "no-such-pitch.pdf"
+
+    built = []
+    monkeypatch.setattr(campaign, "build_transport", lambda name: built.append(name))
+
+    with pytest.raises(SystemExit, match="no-such-pitch.pdf"):
+        campaign.run(send=True, delay=0)
+
+    assert built == []

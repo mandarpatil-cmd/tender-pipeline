@@ -212,6 +212,27 @@ class Outreach(Base):
         return f"<Outreach {self.outreach_id} vendor={self.vendor_id} {self.status}>"
 
 
+class MailLetter(Base):
+    """The one letter the Mail page edits and every send uses. letter_id is always 1."""
+
+    __tablename__ = "mail_letter"
+
+    letter_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    sender_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sender_designation: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sender_org: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sender_mobile: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sender_email: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Newline-separated PDF names, in the order they are attached.
+    attachment_names: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<MailLetter {self.letter_id}>"
+
+
 class UiJob(Base):
     """One run started from the operations window."""
 
@@ -233,4 +254,4 @@ class UiJob(Base):
 
 
 #: Printed by `pipeline-db status`, in pipeline order.
-TABLES = (Tender, TenderDocument, Vendor, Award, LlmRun, Outreach, UiJob)
+TABLES = (Tender, TenderDocument, Vendor, Award, LlmRun, Outreach, MailLetter, UiJob)

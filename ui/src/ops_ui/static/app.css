@@ -324,7 +324,7 @@ article.gap .label, article.gap .count { color: var(--accent-foreground); }
   gap: 0.7rem;
 }
 
-input, select {
+input, select, textarea {
   background: var(--card);
   color: var(--foreground);
   border: 1px solid var(--input);
@@ -334,9 +334,16 @@ input, select {
   font-size: 0.9rem;
 }
 
-input:focus, select:focus, button:focus-visible {
+input:focus, select:focus, textarea:focus, button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 18rem;
+  box-sizing: border-box;
+  resize: vertical;
 }
 
 input[type="checkbox"] {

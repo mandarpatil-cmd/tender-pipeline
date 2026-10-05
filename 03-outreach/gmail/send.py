@@ -49,12 +49,20 @@ class GmailTransport:
         server.login(self._user, self._password)
         return server
 
-    def send(self, to: str, subject: str, body: str) -> None:
+    def send(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        attachments: list[tuple[str, bytes]] | None = None,
+    ) -> None:
         msg = EmailMessage()
         msg["From"] = self._user
         msg["To"] = to
         msg["Subject"] = subject
         msg.set_content(body)
+        for name, content in attachments or []:
+            msg.add_attachment(content, maintype="application", subtype="pdf", filename=name)
         try:
             self._server.send_message(msg)
         except smtplib.SMTPServerDisconnected:

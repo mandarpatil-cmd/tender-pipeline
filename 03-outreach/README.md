@@ -39,7 +39,7 @@ Do the one-time setup in the [root README](../README.md) first (one shared `.ven
 the whole pipeline). Then, in this folder:
 
 ```powershell
-copy .env.example .env             # then fill in SENDER_NAME, SENDER_ORG and a mailbox
+copy .env.example .env             # then fill in the mailbox; edit the letter on the Mail page
 uv run python main.py              # SEND = False by default: writes previews/, mails nobody
 ```
 
@@ -52,8 +52,10 @@ Then, in order, changing the `CONFIG` block in `main.py` each time:
    send, redirected to you.
 4. `SEND = True`, `TO = None`, `LIMIT` to taste — the real thing.
 
-A live send (steps 3 and 4) refuses to start until the pitch is written and the sender
-is set — see [The message](#the-message).
+A live send (steps 3 and 4) refuses to start while the saved letter is not ready —
+see [The message](#the-message). Outlook is the default
+transport. There is a from-scratch explanation in
+[learn/how-mail-works.md](../learn/how-mail-works.md).
 
 See who is waiting before any of that:
 
@@ -99,7 +101,7 @@ Everything is in the `CONFIG` block at the top of `main.py`. There are no flags.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `TRANSPORT` | `"gmail"` | `"gmail"` or `"graph"`. Only the one you name is imported |
+| `TRANSPORT` | `"graph"` | `"graph"` (Outlook) or `"gmail"`. Only the one you name is imported. Both send the same letter and the same two PDFs |
 | `SEND` | `False` | `False` writes previews and mails nobody |
 | `PREFLIGHT` | `False` | `True` = one test mail to yourself, then stop. Overrides everything below |
 | `LIMIT` | `None` | `None` = everyone remaining; an int caps the batch |
@@ -115,7 +117,7 @@ Everything is in the `CONFIG` block at the top of `main.py`. There are no flags.
 
 | For | Variables |
 | --- | --- |
-| every live send | `SENDER_NAME`, `SENDER_ORG` — the signature on every message |
+| the letter | Edited on the Mail page: subject, body, signature, and PDFs. `{{company}}` is filled in for each company. The signature email is not the From address |
 | `gmail` | `GMAIL_USER`, `GMAIL_APP_PASSWORD` (an [App Password](https://myaccount.google.com/apppasswords), not your login; needs 2-Step Verification) |
 | `graph` | `GRAPH_CLIENT_ID`, `GRAPH_TENANT_ID`, `OUTLOOK_USER` — see [Using Microsoft Graph](#using-microsoft-graph) |
 
@@ -127,7 +129,9 @@ Everything is in the `CONFIG` block at the top of `main.py`. There are no flags.
 
 ```python
 __init__(self)                         connect / authenticate
-send(self, to, subject, body) -> None  deliver one message
+send(self, to, subject, body, attachments=None) -> None
+                                   deliver one message. attachments is a list of
+                                   (filename, bytes); both campaign PDFs are passed
 close(self)                            tear down
 ```
 
@@ -154,32 +158,36 @@ Entra admin:
    the signed-in user, and cannot read any mailbox.
 4. From the app's **Overview** page, copy the *Application (client) ID* and the
    *Directory (tenant) ID* into `.env` as `GRAPH_CLIENT_ID` and `GRAPH_TENANT_ID`. Set
-   `OUTLOOK_USER` to the mailbox that sends.
+   `OUTLOOK_USER` to the mailbox that receives the preflight. The From address is
+   whichever account completes the device-code login.
 
-Then set `TRANSPORT = "graph"` in `main.py` and run a preflight. The first run prints a
-code to enter at <https://microsoft.com/devicelogin>. After that the sign-in is cached in
-`.msal_token_cache.json` (never committed) and later runs are silent. To revoke access,
-delete the app registration.
+`TRANSPORT` is already `"graph"` in `main.py`. Run a preflight once those values are
+set. The first run prints a code to enter at <https://microsoft.com/devicelogin>. After
+that the sign-in is cached in `.msal_token_cache.json` (never committed) and later runs
+are silent. To revoke access, delete the app registration. Until the client id and
+tenant id are filled in, a live send stops before any request. Preview does not need them.
 
 ---
 
 ## The message
 
-`campaign.py` holds `SUBJECT_TEMPLATE` and `build_body`. Two things must be done before
-any real send, and a live send refuses to start until they are:
+The Mail page edits the one saved letter. The command-line run sends that same letter.
+The first time the page or a run opens an empty database, it stores today's Policy Pact
+introduction. After that, changing the words means Save letter on the Mail page.
 
-1. **The pitch.** The body contains a placeholder paragraph — replace it in
-   `build_body()`:
+Leave `{{company}}` where each company's name should appear. The signature fields fill
+`{{sender_name}}`, `{{sender_designation}}`, `{{sender_org}}`, `{{sender_mobile}}`, and
+`{{sender_email}}` when the letter still uses those tokens. A token with a blank field
+cannot be saved or sent. Any other `{{token}}` is refused. There is no token for a
+person's name.
 
-   ```text
-   <-- replace this paragraph with your actual pitch -->
-   ```
+Add and remove PDFs on the same page. PDF files only, each under 2 MB, all of them
+together under 2.5 MB. A real send needs at least one. They are stored in `attachments/`.
 
-2. **The signature.** Set `SENDER_NAME` and `SENDER_ORG` in `.env`. Until then,
-   previews show `<SENDER_NAME from .env>` where the name will go.
-
-Previews work either way, so you can review the text first. The footer offers an
-unsubscribe reply; keep it.
+Previews work before the letter is perfect, so you can read it first. The unsubscribe
+line is added to every email and is not part of the editable text. A live send also
+refuses while the old placeholder `<-- replace this paragraph with your actual pitch -->`
+is still in the letter.
 
 ---
 
@@ -191,11 +199,12 @@ unsubscribe reply; keep it.
 ├── get_data.py                 # download the send queue as CSV + Excel
 ├── campaign.py                 # recipients, rendering, previews, send loop, logging
 ├── transport.py                # the contract + build_transport
-├── gmail/send.py               # SMTP over TLS
+├── gmail/send.py               # SMTP over TLS, same letter and PDFs
 ├── graph/auth.py, send.py      # MSAL device-code + Graph sendMail
+├── attachments/                # the two PDFs attached to every message
 ├── previews/                   # dry-run output (gitignored)
 ├── exports/                    # get_data.py output (gitignored)
-└── tests/test_campaign.py      # a fake transport; nothing is ever sent
+└── tests/                      # fakes only; nothing is ever sent
 ```
 
 ---

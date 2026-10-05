@@ -326,7 +326,7 @@ def run_outreach(
         if gap:
             log.write(gap)
             return 1
-        return _captured(log, lambda: campaign.preflight(transport))
+        return _captured(log, lambda: campaign.preflight(transport, bind=bind))
 
     with session(bind) as current:
         queue = outreach_targets(current, include_sent=include_sent)
@@ -344,9 +344,9 @@ def run_outreach(
         log.write("Nobody with an address is waiting. Nothing was sent.")
         return 0
     if not send:
-        return _captured(log, lambda: campaign.dry_run(people, override))
+        return _captured(log, lambda: campaign.dry_run(people, override, bind=bind))
 
-    refusal = live_send_refusal(transport)
+    refusal = live_send_refusal(transport, bind=bind)
     if refusal:
         log.write(refusal)
         return 1
@@ -371,19 +371,12 @@ def run_outreach(
     return code
 
 
-def live_send_refusal(transport: str) -> str | None:
+def live_send_refusal(transport: str, bind=None) -> str | None:
     """Why a live send must not start. Preview is allowed either way."""
     campaign = load_campaign()
-    if campaign.PLACEHOLDER in campaign.build_body("Test"):
-        return (
-            "Refusing to send: the message still contains the placeholder. "
-            "Replace it in 03-outreach/campaign.py. Preview still works."
-        )
-    if not (campaign.SENDER_NAME and campaign.SENDER_ORG):
-        return (
-            "Refusing to send: set SENDER_NAME and SENDER_ORG in 03-outreach/.env. "
-            "Preview still works."
-        )
+    problem = campaign.letter_refusal(bind)
+    if problem:
+        return problem
     return credential_gap(transport)
 
 

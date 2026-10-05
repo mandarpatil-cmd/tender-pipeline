@@ -3,7 +3,8 @@
 A transport is any object with:
 
     __init__(self)                         connect / authenticate
-    send(self, to, subject, body) -> None  deliver one message
+    send(self, to, subject, body, attachments=None) -> None
+        deliver one message. attachments is a list of (filename, bytes).
     close(self)                            tear down
 
 and which raises TransportError when a single recipient fails. Failing that

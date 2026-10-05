@@ -59,7 +59,7 @@ and fill them in:
 | --- | --- | --- |
 | `01-scrape\.env` | `OPENROUTER_API_KEY` (reads the portal's captcha) | <https://openrouter.ai/keys> |
 | `02-enrich\.env` | `OPENROUTER_API_KEY`, `MODEL` | the same account |
-| `03-outreach\.env` | `SENDER_NAME`, `SENDER_ORG`, and a mailbox: `GMAIL_USER` + `GMAIL_APP_PASSWORD`, or the Microsoft 365 values | [03-outreach/README.md](03-outreach/README.md) |
+| `03-outreach\.env` | A mailbox only: the Microsoft 365 values (Outlook, the default) or `GMAIL_USER` + `GMAIL_APP_PASSWORD`. The letter and signature are edited on the Mail page | [03-outreach/README.md](03-outreach/README.md) |
 
 `.env` files hold secrets and are never committed. Each stage reads only its own.
 
@@ -128,15 +128,20 @@ Everything is set so that a first run is cheap and sends nothing:
 
 ## 3. Before the first real send
 
-1. **Write the pitch.** The body in `03-outreach/campaign.py` (`build_body`) still has a
-   placeholder paragraph: `<-- replace this paragraph with your actual pitch -->`.
-2. **Set the signature.** Put `SENDER_NAME` and `SENDER_ORG` in `03-outreach\.env`.
+1. **Edit the letter on the Mail page.** Subject, letter, signature, and PDFs are
+   saved there. Leave `{{company}}` where each company's name should appear. How the
+   send works, including Outlook before a mailbox exists, is in
+   [learn/how-mail-works.md](learn/how-mail-works.md).
+2. **Save letter.** That does not mail anyone. Check "How one email will look".
 3. **Test on yourself.** Follow the order in [03-outreach/README.md](03-outreach/README.md).
-   It goes preflight, then previews, then one message redirected to you, then the real
-   thing.
+   Outlook (`TRANSPORT = "graph"`) is the default. Gmail sends the same letter and the
+   same files. It goes preflight, then previews, then one message redirected to you,
+   then the real thing.
 
-A live send refuses to start until 1 and 2 are done. Previews work regardless, so you can
-review the text first.
+A live send refuses to start while a signature token is still blank, a PDF is missing,
+or the letter uses a token that cannot be filled in. Previews work regardless. A live
+Outlook send also refuses until `GRAPH_CLIENT_ID` and `GRAPH_TENANT_ID` are set. That
+check does not call Microsoft.
 
 **Live status:** stages 1 and 2 have been run against the real portal and OpenRouter.
 Stage 3 has not sent a real campaign yet: its mail transports are tested against a fake,

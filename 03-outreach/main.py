@@ -63,9 +63,10 @@ from transport import TRANSPORTS  # noqa: E402
 # Edit these, save, then run:  python main.py
 
 # Which mailer to use. Only the one you name here is ever loaded.
+# Both send the same letter and the same two PDFs.
+#   "graph" -> Outlook via Microsoft 365, needs GRAPH_CLIENT_ID + GRAPH_TENANT_ID in .env
 #   "gmail" -> Gmail SMTP, needs GMAIL_USER + GMAIL_APP_PASSWORD in .env
-#   "graph" -> Microsoft 365, needs GRAPH_CLIENT_ID + GRAPH_TENANT_ID in .env
-TRANSPORT = "gmail"
+TRANSPORT = "graph"
 
 # False -> dry run: write previews/*.txt and send nothing.
 # True  -> actually transmit to every vendor with an address who has not

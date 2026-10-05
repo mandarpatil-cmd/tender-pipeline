@@ -53,9 +53,9 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
         return Response(snapshot.message, status_code=404, media_type="text/plain")
     form = await request.form()
     mode = str(form.get("mode") or "preview")
-    transport = str(form.get("transport") or "gmail")
+    transport = str(form.get("transport") or "graph")
     if transport not in {"gmail", "graph"}:
-        transport = "gmail"
+        transport = "graph"
     try:
         delay = float(form.get("delay") or _DELAY_FLOOR)
     except ValueError:
@@ -81,7 +81,7 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
     if preflight:
         problem = credential_gap(transport, preflight=True)
     elif send:
-        problem = live_send_refusal(transport)
+        problem = live_send_refusal(transport, bind=engine(path))
     else:
         problem = None
     if problem:
@@ -126,28 +126,111 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
     return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
 
+_LETTER_FIELDS = (
+    "subject",
+    "body",
+    "sender_name",
+    "sender_designation",
+    "sender_org",
+    "sender_mobile",
+    "sender_email",
+)
+
+
+@router.post("/mail/letter")
+async def post_letter(request: Request, path: Path = Depends(database_path)):
+    snapshot = load_home(path)
+    if not snapshot.ready:
+        return Response(snapshot.message, status_code=404, media_type="text/plain")
+    form = await request.form()
+    fields = {key: str(form.get(key) or "") for key in _LETTER_FIELDS}
+    campaign = load_campaign()
+    error = campaign.save_letter(
+        subject=fields["subject"],
+        body=fields["body"],
+        sender_name=fields["sender_name"],
+        sender_designation=fields["sender_designation"],
+        sender_org=fields["sender_org"],
+        sender_mobile=fields["sender_mobile"],
+        sender_email=fields["sender_email"],
+        bind=engine(path),
+    )
+    return _render(
+        request,
+        path,
+        awards=None,
+        error=error or "",
+        saved=not error,
+        draft=fields if error else None,
+    )
+
+
+@router.post("/mail/attachment")
+async def post_attachment(request: Request, path: Path = Depends(database_path)):
+    snapshot = load_home(path)
+    if not snapshot.ready:
+        return Response(snapshot.message, status_code=404, media_type="text/plain")
+    form = await request.form()
+    upload = form.get("pdf")
+    campaign = load_campaign()
+    filename = str(getattr(upload, "filename", "") or "").strip()
+    if upload is None or not filename or not hasattr(upload, "read"):
+        error = "Choose a PDF to add."
+    else:
+        data = await upload.read()
+        error = campaign.add_attachment(filename, data, bind=engine(path))
+    return _render(request, path, awards=None, error=error or "", saved=not error)
+
+
+@router.post("/mail/attachment/remove")
+async def remove_attachment(request: Request, path: Path = Depends(database_path)):
+    snapshot = load_home(path)
+    if not snapshot.ready:
+        return Response(snapshot.message, status_code=404, media_type="text/plain")
+    form = await request.form()
+    campaign = load_campaign()
+    error = campaign.remove_attachment(str(form.get("filename") or ""), bind=engine(path))
+    return _render(request, path, awards=None, error=error or "", saved=not error)
+
+
 def _render(
     request: Request,
     path: Path,
     *,
     awards: list[tuple[int, str]] | None,
     error: str,
-    transport: str = "gmail",
+    transport: str = "graph",
     delay: float = _DELAY_FLOOR,
     redirect_to: str = "",
     include_sent: bool = False,
+    saved: bool = False,
+    draft: dict[str, str] | None = None,
 ):
     snapshot = load_home(path)
     waiting = 0
     mailable: list = []
     already = 0
-    subject = ""
-    body = ""
+    letter = None
+    form = draft or {}
+    sample_company = "Example Company"
+    sample_subject = ""
+    sample_body = ""
+    files: list[dict[str, str]] = []
     if snapshot.ready:
         campaign = load_campaign()
-        subject = campaign.SUBJECT_TEMPLATE
-        body = campaign.build_body("the company", "the tender id", "the title", "the contract date")
-        with session(engine(path)) as current:
+        bind = engine(path)
+        letter = campaign.load_letter(bind)
+        if draft is None:
+            form = {
+                "subject": letter.subject,
+                "body": letter.body,
+                "sender_name": letter.sender_name,
+                "sender_designation": letter.sender_designation,
+                "sender_org": letter.sender_org,
+                "sender_mobile": letter.sender_mobile,
+                "sender_email": letter.sender_email,
+            }
+        with session(bind) as current:
             unsent = [
                 person
                 for person in outreach_targets(current)
@@ -171,19 +254,47 @@ def _render(
                 person for person in queue if (person.vendor_id, person.tender_id) in wanted
             ]
             already = len(wanted & sent_keys)
+        sample_company = mailable[0].company if mailable else "Example Company"
+        shown = letter
+        if draft is not None:
+            shown = campaign.Letter(
+                subject=form.get("subject", ""),
+                body=form.get("body", ""),
+                sender_name=form.get("sender_name", ""),
+                sender_designation=form.get("sender_designation", ""),
+                sender_org=form.get("sender_org", ""),
+                sender_mobile=form.get("sender_mobile", ""),
+                sender_email=form.get("sender_email", ""),
+                attachment_names=letter.attachment_names,
+            )
+        sample_subject, sample_body = campaign.render_letter(shown, sample_company)
+        for name in letter.attachment_names:
+            file_path = campaign.attachment_path(name)
+            size = file_path.stat().st_size if file_path.is_file() else 0
+            files.append(
+                {
+                    "name": name,
+                    "size": campaign.format_size(size),
+                    "missing": "" if file_path.is_file() else "missing",
+                }
+            )
     return TEMPLATES.TemplateResponse(
         request=request,
         name="mail.html",
         context={
             "snapshot": snapshot,
             "error": error,
+            "saved": saved,
             "waiting": waiting,
             "selected": awards,
             "already": already,
             "include_sent": include_sent,
             "mailable": mailable,
-            "subject": subject,
-            "body": body,
+            "form": form,
+            "files": files,
+            "sample_company": sample_company,
+            "sample_subject": sample_subject,
+            "sample_body": sample_body,
             "transport": transport,
             "delay": delay,
             "redirect_to": redirect_to,
