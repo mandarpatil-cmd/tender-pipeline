@@ -3,70 +3,69 @@
 {% block body %}
 <p class="kicker">Mail</p>
 <h1>Mail</h1>
-<p class="lede">One message per tender, to <code>vendors.email</code> only. Outlook is the default. Gmail sends the same letter and the same two PDFs. A tender already sent is left out unless you tick Send again. Preview writes files and sends nothing.</p>
+<p class="lede">Mail the companies you picked on Awards. One message per tender, to <code>vendors.email</code> only. Sending does not change the saved default letter.</p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% else %}
 {% if error %}<p class="warn">{{ error }}</p>{% endif %}
-<p class="cost">{{ waiting }} waiting with an address that has not been sent to.</p>
-{% if selected is not none %}
-<p class="cost">{{ selected|length }} award(s) came from the table. {{ mailable|length }} message(s) will be mailed.{% if already %} {{ already }} already sent are left out unless Send again is ticked.{% endif %}</p>
-{% endif %}
 {% if saved and not error %}<p class="cost">Saved. Nothing was sent.</p>{% endif %}
-<h2>Your letter</h2>
-<p class="meta">Leave {{ "{{company}}" }} where each company's name should appear. It is filled in for every email.</p>
-<form class="panel" method="post" action="/mail/letter">
-  <label>Subject
-    <input name="subject" value="{{ form.subject }}">
-  </label>
-  <label>Letter
-    <textarea id="letter-body" name="body">{{ form.body }}</textarea>
-  </label>
-  <p class="meta"><button type="button" class="quiet" id="insert-company" data-token="{{ '{{company}}' }}">Insert company name</button></p>
-  <h2>Who signs it</h2>
-  <div class="grid">
-    <label>Your name <input name="sender_name" value="{{ form.sender_name }}"></label>
-    <label>Job title <input name="sender_designation" value="{{ form.sender_designation }}"></label>
-    <label>Organisation <input name="sender_org" value="{{ form.sender_org }}"></label>
-    <label>Mobile <input name="sender_mobile" value="{{ form.sender_mobile }}"></label>
-    <label>Email <input name="sender_email" value="{{ form.sender_email }}"></label>
-  </div>
-  <p class="meta">These fill {{ "{{sender_name}}" }}, {{ "{{sender_designation}}" }}, {{ "{{sender_org}}" }}, {{ "{{sender_mobile}}" }}, and {{ "{{sender_email}}" }} where the letter still uses them. The email here is not the address the message is sent from.</p>
-  <p class="meta"><button type="submit">Save letter</button></p>
-</form>
-<h2>PDFs</h2>
-<p class="meta">PDF files only. Each under 2 MB. All of them together under 2.5 MB.</p>
-{% if files %}
-<ul>
-  {% for file in files %}
-  <li>
-    {{ file.name }} ({{ file.size }}){% if file.missing %} — file missing{% endif %}
-    <form method="post" action="/mail/attachment/remove">
-      <input type="hidden" name="filename" value="{{ file.name }}">
-      <button class="quiet" type="submit">Remove</button>
-    </form>
-  </li>
-  {% endfor %}
-</ul>
+{% if not selected %}
+<div class="empty">
+  <p>Choose companies on Awards.</p>
+  <p><a href="/">Awards</a></p>
+</div>
 {% else %}
-<p class="meta">No PDF yet. Add at least one before a real send.</p>
+<h2>These companies</h2>
+<p class="cost">{{ mailable|length }} message(s) will be mailed.{% if already %} {{ already }} already sent are left out unless Send again is ticked.{% endif %}</p>
+{% if mailable|length > 10 %}
+<details>
+  <summary>{{ mailable|length }} companies in this list</summary>
+  {% include "mail_companies.html" %}
+</details>
+{% else %}
+{% include "mail_companies.html" %}
 {% endif %}
-<form class="panel" method="post" action="/mail/attachment" enctype="multipart/form-data">
-  <label>Add a PDF <input name="pdf" type="file" accept="application/pdf,.pdf"></label>
-  <p class="meta"><button type="submit">Add a PDF</button></p>
-</form>
-<h2>How one email will look</h2>
-<p class="cost">Filled in for {{ sample_company }}.</p>
+<p class="meta"><a href="/">Change the list</a></p>
+<h2>The letter</h2>
+{% if mailable %}
+<p class="meta">Filled in for {{ sample_company }}. Send the default uses the saved letter. Change some phrases applies to this send only. The unsubscribe line at the end is added to every email and cannot be removed.</p>
 <p class="cost">Subject: {{ sample_subject }}</p>
 <p class="cost">Attachments: {% if files %}{{ files | map(attribute='name') | join(', ') }}{% else %}none{% endif %}</p>
 <pre>{{ sample_body }}</pre>
-<p class="meta">The unsubscribe line at the end is added to every email and cannot be removed.</p>
+{% else %}
+<p class="meta">Nobody in this list has an address waiting.</p>
+{% endif %}
+<p class="meta">Signed by {{ form.sender_name or "—" }}{% if form.sender_designation %}, {{ form.sender_designation }}{% endif %}{% if form.sender_org %}, {{ form.sender_org }}{% endif %}.</p>
 <form class="panel" method="post" action="/mail">
-  {% if selected is not none %}
   {% for vendor_id, tender_id in selected %}
   <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
   {% endfor %}
-  {% endif %}
+  <label class="check"><input type="radio" name="letter" value="default" {% if letter_mode != 'custom' %}checked{% endif %}> Send the default</label>
+  <label class="check"><input type="radio" name="letter" value="custom" {% if letter_mode == 'custom' %}checked{% endif %}> Change some phrases</label>
+  <div id="phrases" {% if letter_mode != 'custom' %}hidden{% endif %}>
+    <label>Subject
+      <input name="subject" value="{{ phrases.subject }}">
+    </label>
+    <label>Letter
+      <textarea id="letter-body" name="body">{{ phrases.body }}</textarea>
+    </label>
+    <p class="meta">
+      <button type="button" class="quiet insert-token" data-token="{{ '{{company}}' }}">Company</button>
+      <button type="button" class="quiet insert-token" data-token="{{ '{{title}}' }}">Tender title</button>
+      <button type="button" class="quiet insert-token" data-token="{{ '{{contract_date}}' }}">Contract date</button>
+    </p>
+    <details>
+      <summary>Signed by, for this send</summary>
+      <div class="grid">
+        <label>Your name <input name="sender_name" value="{{ phrases.sender_name }}"></label>
+        <label>Job title <input name="sender_designation" value="{{ phrases.sender_designation }}"></label>
+        <label>Organisation <input name="sender_org" value="{{ phrases.sender_org }}"></label>
+        <label>Mobile <input name="sender_mobile" value="{{ phrases.sender_mobile }}"></label>
+        <label>Email <input name="sender_email" value="{{ phrases.sender_email }}"></label>
+      </div>
+      <p class="meta">These fill the signature tokens for this send. They do not change the saved default. The email here is not the address the message is sent from.</p>
+    </details>
+  </div>
   <div class="grid">
     <label>Transport
       <select name="transport">
@@ -90,12 +89,88 @@
     <button type="submit" name="mode" value="send">Send</button>
   </p>
 </form>
+{% endif %}
+<details {% if editing %}open{% endif %}>
+  <summary>Edit the default</summary>
+  <p class="meta">This saves the letter and mails nobody. A send does not change it.</p>
+  <form class="panel" method="post" action="/mail/letter">
+    {% if selected %}
+    {% for vendor_id, tender_id in selected %}
+    <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
+    {% endfor %}
+    {% endif %}
+    <label>Subject
+      <input name="subject" value="{{ form.subject }}">
+    </label>
+    <label>Letter
+      <textarea id="default-body" name="body">{{ form.body }}</textarea>
+    </label>
+    <p class="meta">
+      <button type="button" class="quiet insert-token" data-token="{{ '{{company}}' }}" data-box="default-body">Company</button>
+      <button type="button" class="quiet insert-token" data-token="{{ '{{title}}' }}" data-box="default-body">Tender title</button>
+      <button type="button" class="quiet insert-token" data-token="{{ '{{contract_date}}' }}" data-box="default-body">Contract date</button>
+    </p>
+    <div class="grid">
+      <label>Your name <input name="sender_name" value="{{ form.sender_name }}"></label>
+      <label>Job title <input name="sender_designation" value="{{ form.sender_designation }}"></label>
+      <label>Organisation <input name="sender_org" value="{{ form.sender_org }}"></label>
+      <label>Mobile <input name="sender_mobile" value="{{ form.sender_mobile }}"></label>
+      <label>Email <input name="sender_email" value="{{ form.sender_email }}"></label>
+    </div>
+    <p class="meta">
+      <button type="submit">Save the default</button>
+      <button class="quiet" type="submit" name="restore" value="1">Restore the original letter</button>
+    </p>
+  </form>
+</details>
+<h2>PDFs</h2>
+<p class="meta">PDF files only. Each under 2 MB. All of them together under 2.5 MB. Both choices attach these files.</p>
+{% if files %}
+<ul>
+  {% for file in files %}
+  <li>
+    {{ file.name }} ({{ file.size }}){% if file.missing %} — file missing{% endif %}
+    <form method="post" action="/mail/attachment/remove">
+      {% if selected %}
+      {% for vendor_id, tender_id in selected %}
+      <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
+      {% endfor %}
+      {% endif %}
+      <input type="hidden" name="filename" value="{{ file.name }}">
+      <button class="quiet" type="submit">Remove</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="meta">No PDF yet. Add at least one before a real send.</p>
+{% endif %}
+<form class="panel" method="post" action="/mail/attachment" enctype="multipart/form-data">
+  {% if selected %}
+  {% for vendor_id, tender_id in selected %}
+  <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
+  {% endfor %}
+  {% endif %}
+  <label>Add a PDF <input name="pdf" type="file" accept="application/pdf,.pdf"></label>
+  <p class="meta"><button type="submit">Add a PDF</button></p>
+</form>
 <script>
-document.getElementById("insert-company").addEventListener("click", function () {
-  var box = document.getElementById("letter-body");
-  var token = document.getElementById("insert-company").getAttribute("data-token");
-  box.value = box.value.replace(/\s*$/, "") + "\n" + token + "\n";
-  box.focus();
+document.querySelectorAll('input[name="letter"]').forEach(function (radio) {
+  radio.addEventListener("change", function () {
+    var box = document.getElementById("phrases");
+    var custom = document.querySelector('input[name="letter"][value="custom"]');
+    if (box && custom) box.hidden = !custom.checked;
+  });
+});
+document.querySelectorAll(".insert-token").forEach(function (button) {
+  button.addEventListener("click", function () {
+    var id = button.getAttribute("data-box") || "letter-body";
+    var box = document.getElementById(id);
+    var token = button.getAttribute("data-token");
+    if (!box) return;
+    box.value = box.value.replace(/\s*$/, "") + "\n" + token + "\n";
+    box.focus();
+  });
 });
 </script>
 {% endif %}

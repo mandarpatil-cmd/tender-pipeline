@@ -18,12 +18,8 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-pipeline-core = { path = "../core", editable = true }
+pipeline-core = { workspace = true}
 
-# The whole pipeline shares one environment at the repo root (../requirements.txt).
-# This keeps `uv run` / `uv sync` from building a separate .venv in this folder.
-[tool.uv]
-managed = false
 
 [tool.setuptools.packages.find]
 where = ["src"]

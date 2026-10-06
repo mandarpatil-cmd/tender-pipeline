@@ -14,12 +14,12 @@ dependencies = [
     "pipeline-core",
 ]
 
-# Scripts at the project root (main.py, campaign.py, transport.py, gmail/, graph/),
-# not an installable package. The whole pipeline shares one environment at the
-# repo root (../requirements.txt); this keeps `uv run` / `uv sync` from building
-# a separate .venv in this folder.
+
 [tool.uv]
-managed = false
+package = false
+
+[tool.uv.sources]
+pipeline-core = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

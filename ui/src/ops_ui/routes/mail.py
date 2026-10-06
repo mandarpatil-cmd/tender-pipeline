@@ -62,47 +62,94 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
         delay = _DELAY_FLOOR
     delay = max(delay, _DELAY_FLOOR)
     redirect_to = str(form.get("redirect_to") or "").strip()
-    awards = _awards(form.getlist("award"))
-    chosen = awards or None
+    picked = _awards(form.getlist("award"))
+    letter_mode = str(form.get("letter") or "default")
+    if letter_mode not in {"default", "custom"}:
+        letter_mode = "default"
     include_sent = str(form.get("send_again") or "") in _ON
     preflight = mode == "preflight"
     send = mode == "send" and str(form.get("send") or "") in _ON
+    phrases = _phrases(form)
+    if mode == "remove":
+        return _render(
+            request,
+            path,
+            awards=picked or None,
+            error="",
+            transport=transport,
+            delay=delay,
+            redirect_to=redirect_to,
+            include_sent=include_sent,
+            letter_mode="default",
+        )
+    if not picked and not preflight:
+        return _render(
+            request,
+            path,
+            awards=None,
+            error="Choose companies on Awards.",
+            transport=transport,
+            delay=delay,
+            redirect_to=redirect_to,
+            include_sent=include_sent,
+            letter_mode=letter_mode,
+            phrases=phrases if letter_mode == "custom" else None,
+        )
+    custom = None
+    if letter_mode == "custom" and not preflight:
+        campaign = load_campaign()
+        saved = campaign.load_letter(engine(path))
+        custom = campaign.Letter(
+            subject=phrases["subject"],
+            body=phrases["body"],
+            sender_name=phrases["sender_name"],
+            sender_designation=phrases["sender_designation"],
+            sender_org=phrases["sender_org"],
+            sender_mobile=phrases["sender_mobile"],
+            sender_email=phrases["sender_email"],
+            attachment_names=saved.attachment_names,
+        )
     if mode == "send" and not send:
         return _render(
             request,
             path,
-            awards=chosen,
+            awards=picked,
             error="Tick Send for real to mail these awards. Preview writes files and sends nothing.",
             transport=transport,
             delay=delay,
             redirect_to=redirect_to,
             include_sent=include_sent,
+            letter_mode=letter_mode,
+            phrases=phrases if letter_mode == "custom" else None,
         )
     if preflight:
         problem = credential_gap(transport, preflight=True)
     elif send:
-        problem = live_send_refusal(transport, bind=engine(path))
+        problem = live_send_refusal(transport, bind=engine(path), letter=custom)
     else:
         problem = None
     if problem:
         return _render(
             request,
             path,
-            awards=chosen,
+            awards=picked,
             error=problem,
             transport=transport,
             delay=delay,
             redirect_to=redirect_to,
             include_sent=include_sent,
+            letter_mode=letter_mode,
+            phrases=phrases if letter_mode == "custom" else None,
         )
     params = {
-        "awards": [f"{vendor_id}:{tender_id}" for vendor_id, tender_id in chosen] if chosen else None,
+        "awards": [f"{vendor_id}:{tender_id}" for vendor_id, tender_id in picked],
         "send": send,
         "send_again": include_sent,
         "preflight": preflight,
         "transport": transport,
         "delay": delay,
         "redirect_to": redirect_to,
+        "letter": letter_mode,
     }
 
     def work(log, stop):
@@ -110,13 +157,14 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
             log,
             stop,
             database=path,
-            awards=chosen,
+            awards=picked,
             include_sent=include_sent,
             send=send,
             preflight=preflight,
             transport=transport,
             delay=delay,
             redirect_to=redirect_to,
+            letter=custom,
         )
 
     try:
@@ -144,24 +192,29 @@ async def post_letter(request: Request, path: Path = Depends(database_path)):
         return Response(snapshot.message, status_code=404, media_type="text/plain")
     form = await request.form()
     fields = {key: str(form.get(key) or "") for key in _LETTER_FIELDS}
+    awards = _awards(form.getlist("award")) or None
     campaign = load_campaign()
-    error = campaign.save_letter(
-        subject=fields["subject"],
-        body=fields["body"],
-        sender_name=fields["sender_name"],
-        sender_designation=fields["sender_designation"],
-        sender_org=fields["sender_org"],
-        sender_mobile=fields["sender_mobile"],
-        sender_email=fields["sender_email"],
-        bind=engine(path),
-    )
+    if str(form.get("restore") or "") in _ON:
+        error = campaign.restore_original_letter(bind=engine(path))
+    else:
+        error = campaign.save_letter(
+            subject=fields["subject"],
+            body=fields["body"],
+            sender_name=fields["sender_name"],
+            sender_designation=fields["sender_designation"],
+            sender_org=fields["sender_org"],
+            sender_mobile=fields["sender_mobile"],
+            sender_email=fields["sender_email"],
+            bind=engine(path),
+        )
     return _render(
         request,
         path,
-        awards=None,
+        awards=awards,
         error=error or "",
         saved=not error,
         draft=fields if error else None,
+        editing=True,
     )
 
 
@@ -179,7 +232,13 @@ async def post_attachment(request: Request, path: Path = Depends(database_path))
     else:
         data = await upload.read()
         error = campaign.add_attachment(filename, data, bind=engine(path))
-    return _render(request, path, awards=None, error=error or "", saved=not error)
+    return _render(
+        request,
+        path,
+        awards=_awards(form.getlist("award")) or None,
+        error=error or "",
+        saved=not error,
+    )
 
 
 @router.post("/mail/attachment/remove")
@@ -190,7 +249,13 @@ async def remove_attachment(request: Request, path: Path = Depends(database_path
     form = await request.form()
     campaign = load_campaign()
     error = campaign.remove_attachment(str(form.get("filename") or ""), bind=engine(path))
-    return _render(request, path, awards=None, error=error or "", saved=not error)
+    return _render(
+        request,
+        path,
+        awards=_awards(form.getlist("award")) or None,
+        error=error or "",
+        saved=not error,
+    )
 
 
 def _render(
@@ -205,6 +270,9 @@ def _render(
     include_sent: bool = False,
     saved: bool = False,
     draft: dict[str, str] | None = None,
+    letter_mode: str = "default",
+    phrases: dict[str, str] | None = None,
+    editing: bool = False,
 ):
     snapshot = load_home(path)
     waiting = 0
@@ -213,9 +281,13 @@ def _render(
     letter = None
     form = draft or {}
     sample_company = "Example Company"
+    sample_title = ""
+    sample_date = ""
     sample_subject = ""
     sample_body = ""
     files: list[dict[str, str]] = []
+    if letter_mode not in {"default", "custom"}:
+        letter_mode = "default"
     if snapshot.ready:
         campaign = load_campaign()
         bind = engine(path)
@@ -246,15 +318,15 @@ def _render(
         sent_keys = {(person.vendor_id, person.tender_id) for person in everyone} - {
             (person.vendor_id, person.tender_id) for person in unsent
         }
-        if awards is None:
-            mailable = queue
-        else:
+        if awards:
             wanted = set(awards)
             mailable = [
                 person for person in queue if (person.vendor_id, person.tender_id) in wanted
             ]
             already = len(wanted & sent_keys)
         sample_company = mailable[0].company if mailable else "Example Company"
+        sample_title = mailable[0].title if mailable else ""
+        sample_date = mailable[0].contract_date if mailable else ""
         shown = letter
         if draft is not None:
             shown = campaign.Letter(
@@ -267,7 +339,22 @@ def _render(
                 sender_email=form.get("sender_email", ""),
                 attachment_names=letter.attachment_names,
             )
-        sample_subject, sample_body = campaign.render_letter(shown, sample_company)
+        if phrases is None:
+            phrases = {
+                "subject": letter.subject,
+                "body": letter.body,
+                "sender_name": letter.sender_name,
+                "sender_designation": letter.sender_designation,
+                "sender_org": letter.sender_org,
+                "sender_mobile": letter.sender_mobile,
+                "sender_email": letter.sender_email,
+            }
+        sample_subject, sample_body = campaign.render_letter(
+            shown,
+            sample_company,
+            title=sample_title,
+            contract_date=sample_date,
+        )
         for name in letter.attachment_names:
             file_path = campaign.attachment_path(name)
             size = file_path.stat().st_size if file_path.is_file() else 0
@@ -291,15 +378,22 @@ def _render(
             "include_sent": include_sent,
             "mailable": mailable,
             "form": form,
+            "phrases": phrases or {},
             "files": files,
             "sample_company": sample_company,
             "sample_subject": sample_subject,
             "sample_body": sample_body,
+            "letter_mode": letter_mode,
+            "editing": editing,
             "transport": transport,
             "delay": delay,
             "redirect_to": redirect_to,
         },
     )
+
+
+def _phrases(form) -> dict[str, str]:
+    return {key: str(form.get(key) or "") for key in _LETTER_FIELDS}
 
 
 def _awards(values) -> list[tuple[int, str]]:

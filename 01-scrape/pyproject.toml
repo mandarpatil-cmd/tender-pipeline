@@ -21,12 +21,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-pipeline-core = { path = "../core", editable = true }
-
-# The whole pipeline shares one environment at the repo root (../requirements.txt).
-# This keeps `uv run` / `uv sync` from building a separate .venv in this folder.
-[tool.uv]
-managed = false
+pipeline-core = { workspace = true }
 
 [project.scripts]
 stage1-scrape = "stage1_scrape.cli:main"

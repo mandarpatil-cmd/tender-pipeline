@@ -1,0 +1,16 @@
+<ul class="companies">
+  {% for person in mailable %}
+  <li>
+    <span>{{ person.company }}</span>
+    <form method="post" action="/mail">
+      <input type="hidden" name="mode" value="remove">
+      {% for vendor_id, tender_id in selected %}
+      {% if vendor_id != person.vendor_id or tender_id != person.tender_id %}
+      <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
+      {% endif %}
+      {% endfor %}
+      <button class="quiet" type="submit">Remove</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>

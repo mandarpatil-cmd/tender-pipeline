@@ -1,7 +1,6 @@
 # tender-pipeline
 
-Finds companies that win Indian public tenders, works out how to contact them, and emails
-them. Three stages share one database.
+Finds companies that win Indian public tenders, looks up a public email and phone, and emails them once. Three stages share one database, `data/pipeline.sqlite3` (created by setup, never committed).
 
 ```text
   01-scrape          02-enrich            03-outreach
@@ -12,9 +11,6 @@ them. Three stages share one database.
   tenders                 ▼                outreach
   vendors ──────────► vendors.email ─────►  (sent log)
   awards              llm_runs
-      │                   │                   │
-      └───────────────────┴───────────────────┘
-                 data/pipeline.sqlite3
 ```
 
 | Path | What it is |
@@ -22,30 +18,23 @@ them. Three stages share one database.
 | [`01-scrape/`](01-scrape/) | Scrapes Award of Contract records from eprocure.gov.in |
 | [`02-enrich/`](02-enrich/) | Asks a model (with web search) for each company's public email and phone |
 | [`03-outreach/`](03-outreach/) | Emails every company that has an address, once |
-| [`core/`](core/) | The shared database schema and the `pipeline-db` command |
+| [`core/`](core/) | Shared database schema, and the `pipeline-db` command |
 | [`ui/`](ui/) | Local browser window. Reads the database and can start a scrape or a contact lookup |
-| `data/` | Created by setup: `pipeline.sqlite3`, the shared database (never committed) |
-| `requirements.txt` | Every dependency, for the one shared virtualenv |
 
-Each stage has its own README with the details.
+Each stage has its own README.
 
----
+## Setup
 
-## 1. Setup (once)
-
-Needs [uv](https://docs.astral.sh/uv/getting-started/installation/). It downloads Python
-3.13 by itself if you don't have it. From this folder:
+Requires [uv](https://docs.astral.sh/uv/getting-started/installation/). From this folder, uv reads `.python-version`, downloads Python 3.13 if needed, and installs the lockfile into `.venv`:
 
 ```powershell
-uv venv --python 3.13
-uv pip install -r requirements.txt
-uv run pipeline-db init
+uv sync --all-packages --frozen
+uv run --all-packages pipeline-db init
 ```
 
-This creates one `.venv` here that all three stages share, and an empty database in
-`data\`.
+`--all-packages` installs every stage, including stage 3's libraries. `--frozen` installs `uv.lock` as committed. `.venv` stays off git. `requirements.txt` is the old install list; sync does not read it.
 
-Then give each stage its settings file:
+Copy each example settings file and fill it in. `.env` files are secrets. Each stage reads only its own.
 
 ```powershell
 copy 01-scrape\.env.example   01-scrape\.env
@@ -53,187 +42,48 @@ copy 02-enrich\.env.example   02-enrich\.env
 copy 03-outreach\.env.example 03-outreach\.env
 ```
 
-and fill them in:
-
-| File | Fill in | Get it from |
-| --- | --- | --- |
-| `01-scrape\.env` | `OPENROUTER_API_KEY` (reads the portal's captcha) | <https://openrouter.ai/keys> |
-| `02-enrich\.env` | `OPENROUTER_API_KEY`, `MODEL` | the same account |
-| `03-outreach\.env` | A mailbox only: the Microsoft 365 values (Outlook, the default) or `GMAIL_USER` + `GMAIL_APP_PASSWORD`. The letter and signature are edited on the Mail page | [03-outreach/README.md](03-outreach/README.md) |
-
-`.env` files hold secrets and are never committed. Each stage reads only its own.
-
----
-
-## 2. Run
-
-Each stage is one command. It's configured by a `SETTINGS` / `CONFIG` block at the top of
-its `main.py`, so there are no flags to remember.
-
-```powershell
-cd 01-scrape     ; uv run python main.py   # scrape the portal
-cd ..\02-enrich  ; uv run python main.py   # find contacts for new companies
-cd ..\03-outreach; uv run python main.py   # preview (or send) the emails
-```
-
-Check the database at any point, from any folder:
-
-```powershell
-uv run pipeline-db status
-```
-
-### Operations window
-
-The same counts, in a browser on this machine, plus one row per award. The tender
-id opens that tender, its awards, the PDF clues, the model calls, and every mail
-attempt. Search and the filters run in the database. Excel and CSV download that
-filtered set; a blank cell in the file is `NA`. Awards is that table. Runs starts
-a scrape or a contact lookup. The window does not send mail.
-
-```powershell
-uv run ops-ui
-```
-
-Then open <http://127.0.0.1:8000>. It listens on this computer only.
-
-### What the first run does
-
-Everything is set so that a first run is cheap and sends nothing:
-
-| Stage | Default | Costs / reaches |
-| --- | --- | --- |
-| 01-scrape | fetches **1** tender (`MAX_TENDERS = 1`) | one OpenRouter call, to read the captcha |
-| 02-enrich | `DRY_RUN = True`: lists who is queued and stops | nothing |
-| 03-outreach | `SEND = False`: writes `previews\*.txt` and mails nobody | nothing |
-
-### Going further
-
-| To... | Change |
+| File | Fill in |
 | --- | --- |
-| Scrape more | `01-scrape/main.py`: raise `MAX_TENDERS` / `MAX_PAGES`, or set `FROM_DATE` / `TO_DATE` |
-| Research companies | `02-enrich/main.py`: `DRY_RUN = False`. Keep `LIMIT = 1` for the first real run, then raise it |
-| Send the emails | See **Before the first real send** below |
+| `01-scrape\.env` | `OPENROUTER_API_KEY`, used to read the portal captcha. <https://openrouter.ai/keys> |
+| `02-enrich\.env` | `OPENROUTER_API_KEY` and `MODEL`, same account |
+| `03-outreach\.env` | A mailbox: Microsoft 365 (Outlook, the default) or `GMAIL_USER` and `GMAIL_APP_PASSWORD`. The letter is edited on the Mail page. See [03-outreach/README.md](03-outreach/README.md) |
 
-### What costs money or reaches people
+## Run
 
-| Action | Cost |
-| --- | --- |
-| Any stage 1 run | one OpenRouter call to read the captcha |
-| Stage 2 with `DRY_RUN = False` | one paid model call (plus web search) **per company**, up to `LIMIT` |
-| Stage 3 `PREFLIGHT = True` | one real email, to your own mailbox |
-| Stage 3 `SEND = True` | real email to real companies |
-| `pipeline-db reset` / `prune` | deletes data (asks first) |
+Each stage is configured by the `SETTINGS` or `CONFIG` block at the top of its `main.py`.
 
----
-
-## 3. Before the first real send
-
-1. **Edit the letter on the Mail page.** Subject, letter, signature, and PDFs are
-   saved there. Leave `{{company}}` where each company's name should appear. How the
-   send works, including Outlook before a mailbox exists, is in
-   [learn/how-mail-works.md](learn/how-mail-works.md).
-2. **Save letter.** That does not mail anyone. Check "How one email will look".
-3. **Test on yourself.** Follow the order in [03-outreach/README.md](03-outreach/README.md).
-   Outlook (`TRANSPORT = "graph"`) is the default. Gmail sends the same letter and the
-   same files. It goes preflight, then previews, then one message redirected to you,
-   then the real thing.
-
-A live send refuses to start while a signature token is still blank, a PDF is missing,
-or the letter uses a token that cannot be filled in. Previews work regardless. A live
-Outlook send also refuses until `GRAPH_CLIENT_ID` and `GRAPH_TENANT_ID` are set. That
-check does not call Microsoft.
-
-**Live status:** stages 1 and 2 have been run against the real portal and OpenRouter.
-Stage 3 has not sent a real campaign yet: its mail transports are tested against a fake,
-so do step 3 carefully the first time.
-
----
-
-## How the stages share the database
-
-Five tables. Each one has a single writer, except `vendors`, and there the two writers
-touch different columns:
-
-```text
-                 tenders  vendors  awards  llm_runs  outreach
-01-scrape  read     *        .        .        .         .
-           write    *      * (id)     *        .         .
-02-enrich  read     .        *        *        .         .
-           write    .    * (contact)  .        *         .
-03-outreach read    .        *        .        .         *
-           write    .        .        .        .         *
+```powershell
+cd 01-scrape      ; uv run --all-packages python main.py
+cd ..\02-enrich   ; uv run --all-packages python main.py
+cd ..\03-outreach ; uv run --all-packages python main.py
+uv run --all-packages pipeline-db status
+uv run --all-packages ops-ui
 ```
 
-- **Stage 1 owns a company's identity** (`name_raw`, `name_norm`, `legal_form`, `city`,
-  `state`, `buyer_hint`, `source`). It also owns the *evidence* it finds in work-order
-  PDFs (`pdf_email`, `pdf_phone`).
-- **Stage 2 owns the contact block** (`email`, `phone`, `enrichment_status`,
-  `enriched_at`). Re-scraping a tender can never wipe a contact that cost money to find.
-- **Evidence is not an answer.** Contacts are read from the work order's embedded text
-  layer with `pypdf`. That is not OCR: a page which is purely a scanned image yields
-  nothing at all, which is the usual outcome. When text *is* present it is often a layer
-  the issuing department's own scanner produced before publishing, so the characters can
-  already be wrong — a PDF can read `acmctechworks0l@example.com` when the address is
-  `acmetechworks01@example.com`. So stage 2 hands PDF contacts to the model as a lead to
-  confirm, and stage 3 only ever mails `vendors.email`.
-- **`name_norm` is the unique key**, from `pipeline_core.naming.normalize_name`. Every
-  stage uses that one function. Change its rules and one company becomes two rows.
+Then open <http://127.0.0.1:8000>. The window listens on this computer only. It does not send mail.
 
-`vendors.enrichment_status` is stage 2's work queue:
+A first run is cheap and sends nothing:
 
-```text
-pending ──► done       an email and/or phone was found
-        ├─► not_found  the call worked; nothing is public. Not retried
-        └─► failed     the call errored. Safe to retry
-```
+| Stage | Default | What it spends |
+| --- | --- | --- |
+| 01-scrape | `MAX_TENDERS = 1` | one OpenRouter call, to read the captcha |
+| 02-enrich | `DRY_RUN = True` | nothing; it lists the queue and stops |
+| 03-outreach | `SEND = False` | nothing; it writes `previews\*.txt` |
 
-`pipeline-db` commands (run as `uv run pipeline-db <command>`):
+Raise those limits in the stage's `main.py`. Stage 2 with `DRY_RUN = False` spends one model call per company, up to `LIMIT`. Stage 3 with `SEND = True` emails real companies. Send only after the order in [03-outreach/README.md](03-outreach/README.md): previews, one message to yourself, then the real run. A live send refuses to start while the letter is incomplete.
 
-```text
-init          create the schema, or bring it up to date
-status        row counts, the work queues, and what each stage would do next
-import-xlsx   insert companies from a spreadsheet as vendors
-adopt <file>  take an existing SQLite file as the shared database
-prune         delete every vendor from one source (asks first)
-reset         DROP everything and recreate it empty (asks first)
-```
-
----
+`pipeline-db status` shows the queues. `import-xlsx` loads companies from a spreadsheet. `prune` and `reset` delete data and ask first.
 
 ## Tests
 
-No network, no API keys, no mail. Each suite runs against its own throwaway database, so
-it can never touch real data.
+No network, no API keys, no mail. Each suite uses its own throwaway database.
 
 ```powershell
-cd core          ; uv run python -m pytest -q
-cd ..\01-scrape  ; uv run python -m pytest -q
-cd ..\02-enrich  ; uv run python -m pytest -q
-cd ..\03-outreach; uv run python -m pytest -q
-cd ..\ui          ; uv run python -m pytest -q
+cd core           ; uv run --all-packages python -m pytest -q
+cd ..\01-scrape   ; uv run --all-packages python -m pytest -q
+cd ..\02-enrich   ; uv run --all-packages python -m pytest -q
+cd ..\03-outreach ; uv run --all-packages python -m pytest -q
+cd ..\ui          ; uv run --all-packages python -m pytest -q
 ```
 
----
-
-## Setup troubleshooting
-
-Two mistakes that are easy to make right after cloning:
-
-- **Don't run `uv init`**, here or in any folder above this one. The repo is already set
-  up. This folder has no `pyproject.toml`, so `uv run` searches the parent folders. If it
-  finds the one `uv init` made, it runs that empty project in its own `.venv` and skips
-  the shared one here.
-- **Don't use `uv add -r requirements.txt`.** That writes the pins into a `pyproject.toml`.
-  Install the shared venv with `uv pip install -r requirements.txt`, as in **1. Setup**.
-
-If you already ran `uv init`, delete everything it made in that folder: `pyproject.toml`,
-`.python-version`, `README.md`, `.gitignore`, `src\` and `.git\`. Keep the `.git\` inside
-`tender-pipeline\`, because that one is the repo. Then redo **1. Setup**.
-
-To check that `uv run` finds the shared venv, run this in any stage folder:
-
-```powershell
-uv run python -c "import sys; print(sys.prefix)"
-```
-
-It should print a path ending in `tender-pipeline\.venv`.
+If a command is using the wrong Python, `uv run python -c "import sys; print(sys.prefix)"` should end in `tender-pipeline\.venv`. Do not run `uv init` in this repo or in a parent folder.

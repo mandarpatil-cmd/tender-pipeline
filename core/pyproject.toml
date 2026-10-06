@@ -17,11 +17,6 @@ xlsx = ["pandas>=2.0", "openpyxl>=3.1"]
 [project.scripts]
 pipeline-db = "pipeline_core.cli:main"
 
-# The whole pipeline shares one environment at the repo root (../requirements.txt).
-# This keeps `uv run` / `uv sync` from building a separate .venv in this folder.
-[tool.uv]
-managed = false
-
 [tool.setuptools.packages.find]
 where = ["src"]
 

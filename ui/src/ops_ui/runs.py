@@ -308,11 +308,14 @@ def run_outreach(
     delay: float,
     redirect_to: str,
     vendor_ids: list[int] | None = None,
+    letter=None,
 ) -> int:
     """Preview, preflight, or send. A live send records each attempt before the next.
 
     ``vendor_ids`` remains so an older call still narrows by company. Mail from
-    the table passes ``awards`` instead, one entry per tender.
+    the table passes ``awards`` instead, one entry per tender. ``letter`` is a
+    one-off for this run. When it is omitted, the saved letter is used. Neither
+    path writes the saved letter.
     """
     from pipeline_core.emailcheck import EMAIL_RE
     from pipeline_core.queries import outreach_targets
@@ -328,6 +331,10 @@ def run_outreach(
             return 1
         return _captured(log, lambda: campaign.preflight(transport, bind=bind))
 
+    if not awards and not vendor_ids:
+        log.write("Choose companies on Awards. Nothing was sent.")
+        return 0
+
     with session(bind) as current:
         queue = outreach_targets(current, include_sent=include_sent)
     people = [person for person in queue if EMAIL_RE.match(person.email or "")]
@@ -339,14 +346,21 @@ def run_outreach(
         people = [person for person in people if person.vendor_id in wanted_vendors]
     if include_sent:
         log.write("Send again is on. Awards already sent are included.")
+    if letter is None:
+        log.write("Letter: the saved default.")
+    else:
+        log.write("Letter: phrases for this send. The saved default is unchanged.")
     log.write(f"{len(people)} message(s) can be mailed.")
     if not people:
         log.write("Nobody with an address is waiting. Nothing was sent.")
         return 0
     if not send:
-        return _captured(log, lambda: campaign.dry_run(people, override, bind=bind))
+        return _captured(
+            log,
+            lambda: campaign.dry_run(people, override, bind=bind, letter=letter),
+        )
 
-    refusal = live_send_refusal(transport, bind=bind)
+    refusal = live_send_refusal(transport, bind=bind, letter=letter)
     if refusal:
         log.write(refusal)
         return 1
@@ -363,6 +377,7 @@ def run_outreach(
             transport,
             should_stop=stop.is_set,
             bind=bind,
+            letter=letter,
         )
 
     code = _captured(log, deliver)
@@ -371,10 +386,13 @@ def run_outreach(
     return code
 
 
-def live_send_refusal(transport: str, bind=None) -> str | None:
+def live_send_refusal(transport: str, bind=None, source: str = "page", letter=None) -> str | None:
     """Why a live send must not start. Preview is allowed either way."""
     campaign = load_campaign()
-    problem = campaign.letter_refusal(bind)
+    if letter is None:
+        problem = campaign.letter_refusal(bind, source)
+    else:
+        problem = campaign.refusal_for(letter)
     if problem:
         return problem
     return credential_gap(transport)

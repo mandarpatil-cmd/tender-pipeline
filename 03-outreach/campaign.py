@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from pipeline_core.db import session
 from pipeline_core.emailcheck import EMAIL_RE
 from pipeline_core.models import OUTREACH_FAILED, OUTREACH_SENT, MailLetter
@@ -27,7 +27,8 @@ from transport import TransportError, build_transport
 BASE = Path(__file__).resolve().parent
 PREVIEW_DIR = BASE / "previews"
 
-load_dotenv(BASE / ".env")
+ENV_PATH = BASE / ".env"
+load_dotenv(ENV_PATH)
 
 #: Used only to seed the first saved letter. After that, the Mail page is the editor.
 #: SENDER_EMAIL is a line in the signature. It is not the From address.
@@ -36,6 +37,19 @@ SENDER_DESIGNATION = os.getenv("SENDER_DESIGNATION", "").strip()
 SENDER_ORG = os.getenv("SENDER_ORG", "").strip()
 SENDER_MOBILE = os.getenv("SENDER_MOBILE", "").strip()
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
+
+#: The Mail page chooses one of these. "page" is the saved letter. "program"
+#: is DEFAULT_SUBJECT, DEFAULT_BODY, and the signature read from .env at send time.
+LETTER_PAGE = "page"
+LETTER_PROGRAM = "program"
+
+_SENDER_ENV = (
+    ("sender_name", "SENDER_NAME"),
+    ("sender_designation", "SENDER_DESIGNATION"),
+    ("sender_org", "SENDER_ORG"),
+    ("sender_mobile", "SENDER_MOBILE"),
+    ("sender_email", "SENDER_EMAIL"),
+)
 
 ATTACHMENT_DIR = BASE / "attachments"
 DEFAULT_ATTACHMENT_NAMES = (
@@ -79,8 +93,9 @@ UNSUBSCRIBE = """---
 You received this one-off message because your address is published as a
 business contact. Reply with "unsubscribe" and I will not contact you again."""
 
-#: Tokens the letter may use. company comes from each recipient. The rest come
-#: from the signature saved with the letter. There is no person-name token.
+#: Tokens the letter may use. company, title, and contract_date come from each
+#: award. The rest come from the signature saved with the letter. There is no
+#: person-name token.
 SIGNATURE_FIELDS = (
     ("sender_name", "Your name"),
     ("sender_designation", "Job title"),
@@ -88,7 +103,8 @@ SIGNATURE_FIELDS = (
     ("sender_mobile", "Mobile"),
     ("sender_email", "Email"),
 )
-KNOWN_TOKENS = frozenset({"company", *(key for key, _label in SIGNATURE_FIELDS)})
+AWARD_TOKENS = ("company", "title", "contract_date")
+KNOWN_TOKENS = frozenset({*AWARD_TOKENS, *(key for key, _label in SIGNATURE_FIELDS)})
 _TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 
 
@@ -164,6 +180,44 @@ def load_letter(bind=None) -> Letter:
         return _letter_from(row)
 
 
+def sender_from_env() -> dict[str, str]:
+    """Signature for the program letter, read from .env on this call.
+
+    A value written in the file wins, including a blank. A name the file does
+    not mention falls back to the process environment.
+    """
+    parsed = dotenv_values(ENV_PATH)
+    signature = {}
+    for field, env_name in _SENDER_ENV:
+        if env_name in parsed and parsed[env_name] is not None:
+            signature[field] = str(parsed[env_name]).strip()
+        else:
+            signature[field] = os.getenv(env_name, "").strip()
+    return signature
+
+
+def program_letter() -> Letter:
+    """The letter in this file, with the signature from .env. Nothing is saved."""
+    signature = sender_from_env()
+    return Letter(
+        subject=DEFAULT_SUBJECT,
+        body=DEFAULT_BODY.strip(),
+        sender_name=signature["sender_name"],
+        sender_designation=signature["sender_designation"],
+        sender_org=signature["sender_org"],
+        sender_mobile=signature["sender_mobile"],
+        sender_email=signature["sender_email"],
+        attachment_names=existing_default_attachments(),
+    )
+
+
+def choose_letter(source: str | None = None, bind=None) -> Letter:
+    """`program` reads code and .env. Anything else is the saved letter."""
+    if source == LETTER_PROGRAM:
+        return program_letter()
+    return load_letter(bind)
+
+
 def tokens_in(text: str) -> list[str]:
     found = []
     for name in _TOKEN_RE.findall(text or ""):
@@ -181,7 +235,13 @@ def missing_signature_labels(subject: str, body: str, signature: dict[str, str])
     return [label for key, label in SIGNATURE_FIELDS if key in used and not signature.get(key, "").strip()]
 
 
-def letter_problem(subject: str, body: str, signature: dict[str, str]) -> str | None:
+def letter_problem(
+    subject: str,
+    body: str,
+    signature: dict[str, str],
+    *,
+    edited_on: str = "on the Mail page",
+) -> str | None:
     """Why this text cannot be saved or sent. None means it is usable."""
     if not subject.strip():
         return "Write a subject."
@@ -190,21 +250,21 @@ def letter_problem(subject: str, body: str, signature: dict[str, str]) -> str | 
     if PLACEHOLDER in subject or PLACEHOLDER in body:
         return (
             "Refusing to send: the letter still contains the placeholder. "
-            "Edit it on the Mail page. Preview still works."
+            f"Edit it {edited_on}. Preview still works."
         )
     unknown = unknown_tokens(subject + "\n" + body)
     if unknown:
         shown = ", ".join(f"{{{{{name}}}}}" for name in unknown)
         return (
             f"This letter uses {shown}, which cannot be filled in. "
-            "Use {{company}}, or the signature fields."
+            "Use {{company}}, {{title}}, {{contract_date}}, or the signature fields."
         )
     missing = missing_signature_labels(subject, body, signature)
     if missing:
         return (
             "Refusing to send: fill in "
             + ", ".join(missing)
-            + " on the Mail page. The letter uses them. Preview still works."
+            + f" {edited_on}. The letter uses them. Preview still works."
         )
     return None
 
@@ -221,13 +281,33 @@ def fill(text: str, values: dict[str, str]) -> str:
     return _TOKEN_RE.sub(replace, text)
 
 
-def render_letter(letter: Letter, company: str) -> tuple[str, str]:
-    values = {"company": company, **letter.signature()}
+def render_letter(
+    letter: Letter,
+    company: str,
+    *,
+    title: str = "",
+    contract_date: str = "",
+) -> tuple[str, str]:
+    values = {
+        "company": company,
+        "title": title,
+        "contract_date": contract_date,
+        **letter.signature(),
+    }
     subject = fill(letter.subject, values)
     body = fill(letter.body, values).rstrip()
     if 'Reply with "unsubscribe"' not in body:
         body = f"{body}\n\n{UNSUBSCRIBE}"
     return subject, body
+
+
+def render_for(letter: Letter, person: OutreachTarget) -> tuple[str, str]:
+    return render_letter(
+        letter,
+        person.company,
+        title=person.title or "",
+        contract_date=person.contract_date or "",
+    )
 
 
 def save_letter(
@@ -264,6 +344,21 @@ def save_letter(
         row.sender_email = signature["sender_email"]
         row.updated_at = utcnow()
     return None
+
+
+def restore_original_letter(bind=None) -> str | None:
+    """Put the program text back. The signature stays as it was saved."""
+    current = load_letter(bind)
+    return save_letter(
+        subject=DEFAULT_SUBJECT,
+        body=DEFAULT_BODY.strip(),
+        sender_name=current.sender_name,
+        sender_designation=current.sender_designation,
+        sender_org=current.sender_org,
+        sender_mobile=current.sender_mobile,
+        sender_email=current.sender_email,
+        bind=bind,
+    )
 
 
 def safe_pdf_name(raw: str) -> str:
@@ -344,24 +439,62 @@ def remove_attachment(filename: str, bind=None) -> str | None:
     return None
 
 
-def letter_refusal(bind=None) -> str | None:
-    """Why a live send must not start. Preview does not call this."""
-    letter = load_letter(bind)
-    problem = letter_problem(letter.subject, letter.body, letter.signature())
+def _oversize(letter: Letter) -> str | None:
+    total = 0
+    for name in letter.attachment_names:
+        path = attachment_path(name)
+        if not path.is_file():
+            continue
+        size = path.stat().st_size
+        if size > MAX_PDF_BYTES:
+            return (
+                f"Refusing to send: {name} is over 2 MB. Preview still works."
+            )
+        total += size
+    if total > MAX_TOTAL_BYTES:
+        return "Refusing to send: those PDFs together are over 2.5 MB. Preview still works."
+    return None
+
+
+def refusal_for(letter: Letter, *, edited_on: str = "on the Mail page") -> str | None:
+    """Why this letter cannot be sent. Preview does not call this."""
+    program = edited_on != "on the Mail page"
+    problem = letter_problem(
+        letter.subject, letter.body, letter.signature(), edited_on=edited_on
+    )
     if problem:
         return problem
     if not letter.attachment_names:
+        if program:
+            return (
+                "Refusing to send: the program letter has no PDF in "
+                "03-outreach/attachments/. Preview still works."
+            )
         return (
             "Refusing to send: add at least one PDF on the Mail page. Preview still works."
         )
     missing = [name for name in letter.attachment_names if not attachment_path(name).is_file()]
     if missing:
+        where = (
+            "Add them under 03-outreach/attachments/."
+            if program
+            else "Add them on the Mail page."
+        )
         return (
             "Refusing to send: attachment file(s) missing: "
             + ", ".join(missing)
-            + ". Add them on the Mail page. Preview still works."
+            + f". {where} Preview still works."
         )
-    return None
+    return _oversize(letter)
+
+
+def letter_refusal(bind=None, source: str = LETTER_PAGE) -> str | None:
+    """Why a live send of the saved or program letter must not start."""
+    program = source == LETTER_PROGRAM
+    return refusal_for(
+        choose_letter(source, bind),
+        edited_on="in 03-outreach/.env" if program else "on the Mail page",
+    )
 
 
 def saved_attachment_bytes(bind=None) -> list[tuple[str, bytes]]:
@@ -381,11 +514,19 @@ def saved_attachment_bytes(bind=None) -> list[tuple[str, bytes]]:
     return [(name, attachment_path(name).read_bytes()) for name in letter.attachment_names]
 
 
-def read_attachments(bind=None) -> list[tuple[str, bytes]]:
-    problem = letter_refusal(bind)
+def read_attachments(
+    bind=None,
+    source: str = LETTER_PAGE,
+    letter: Letter | None = None,
+) -> list[tuple[str, bytes]]:
+    if letter is None:
+        problem = letter_refusal(bind, source)
+        letter = choose_letter(source, bind)
+    else:
+        problem = refusal_for(letter)
     if problem:
         raise SystemExit(problem)
-    return saved_attachment_bytes(bind)
+    return [(name, attachment_path(name).read_bytes()) for name in letter.attachment_names]
 
 
 def load_recipients(
@@ -411,7 +552,7 @@ def load_recipients(
 
 
 def message_for(person: OutreachTarget, bind=None) -> tuple[str, str]:
-    return render_letter(load_letter(bind), person.company)
+    return render_for(load_letter(bind), person)
 
 
 def log_result(
@@ -493,14 +634,20 @@ def preflight(transport_name: str = "gmail", bind=None) -> int:
     return 0
 
 
-def dry_run(people: list[OutreachTarget], override_to: str | None, bind=None) -> None:
-    letter = load_letter(bind)
+def dry_run(
+    people: list[OutreachTarget],
+    override_to: str | None,
+    bind=None,
+    source: str = LETTER_PAGE,
+    letter: Letter | None = None,
+) -> None:
+    letter = letter if letter is not None else choose_letter(source, bind)
     PREVIEW_DIR.mkdir(exist_ok=True)
     for stale in PREVIEW_DIR.glob("*.txt"):
         stale.unlink()
     for i, person in enumerate(people, start=1):
         to = override_to or person.email
-        subject, body = render_letter(letter, person.company)
+        subject, body = render_for(letter, person)
         write_preview(i, person.company, to, subject, body, letter.attachment_names)
     print(f"DRY RUN: wrote {len(people)} previews to {PREVIEW_DIR}")
     print("Nothing was sent. Set SEND = True in main.py to transmit.")
@@ -527,9 +674,11 @@ def send_all(
     *,
     should_stop: Callable[[], bool] | None = None,
     bind=None,
+    source: str = LETTER_PAGE,
+    letter: Letter | None = None,
 ) -> None:
-    files = read_attachments(bind)
-    letter = load_letter(bind)
+    files = read_attachments(bind, source, letter)
+    letter = letter if letter is not None else choose_letter(source, bind)
 
     target_note = f" (all redirected to {override_to})" if override_to else ""
     print(f"Transport: {transport_name}")
@@ -543,7 +692,7 @@ def send_all(
                 stopped = True
                 break
             to = override_to or person.email
-            subject, body = render_letter(letter, person.company)
+            subject, body = render_for(letter, person)
             try:
                 transport.send(to, subject, body, attachments=files)
             except TransportError as err:

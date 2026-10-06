@@ -14,18 +14,18 @@ dependencies = [
     "python-multipart>=0.0.20",
     "openpyxl>=3.1",
     "pipeline-core",
+    "stage1-scrape",
+    "stage2-enrich",
 ]
 
 [project.scripts]
 ops-ui = "ops_ui.app:main"
 
 [tool.uv.sources]
-pipeline-core = { path = "../core", editable = true }
+pipeline-core = { workspace = true }
+stage1-scrape = { workspace = true }
+stage2-enrich = { workspace = true }
 
-# The whole pipeline shares one environment at the repo root (../requirements.txt).
-# This keeps `uv run` / `uv sync` from building a separate .venv in this folder.
-[tool.uv]
-managed = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
