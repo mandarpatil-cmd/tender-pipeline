@@ -48,6 +48,27 @@ copy 03-outreach\.env.example 03-outreach\.env
 | `02-enrich\.env` | `OPENROUTER_API_KEY` and `MODEL`, same account |
 | `03-outreach\.env` | A mailbox: Microsoft 365 (Outlook, the default) or `GMAIL_USER` and `GMAIL_APP_PASSWORD`. The letter is edited on the Mail page. See [03-outreach/README.md](03-outreach/README.md) |
 
+## Windows
+
+[Git](https://git-scm.com/install/windows) and [uv](https://docs.astral.sh/uv/getting-started/installation/) must be installed. Three `.bat` files in this folder are the clickable form of the commands above. Each one changes to its own folder, so a desktop shortcut still runs this project. An editor does not need to be open.
+
+| File | When |
+| --- | --- |
+| `setup.bat` | Once, after clone. Runs `uv sync --all-packages --frozen` and `pipeline-db init`. |
+| `start-ui.bat` | Opens the UI. Starts `ops-ui` in a window titled **Tender pipeline** and opens <http://127.0.0.1:8000> after a short wait. Leave that window open. Closing it stops the UI. |
+| `update.bat` | Gets new code with `git pull origin main`, then runs the same install and database update as `setup.bat`. Close the Tender pipeline window first. |
+
+The first clone is still a command. The `.bat` files arrive with the repo:
+
+```powershell
+git clone <repository url>
+cd tender-pipeline
+```
+
+Double-click `setup.bat`, fill in the `.env` files, then double-click `start-ui.bat`.
+
+`update.bat` pulls the `main` branch from the remote named `origin`. Change that line in the file if this checkout uses another remote or branch. `.env`, `.venv`, and `data/` are gitignored, so a pull leaves secrets and the database in place. `pipeline-db init` on an existing database updates the schema and keeps the rows. If a step fails, the window stays open.
+
 ## Run
 
 Each stage is configured by the `SETTINGS` or `CONFIG` block at the top of its `main.py`.
@@ -60,7 +81,7 @@ uv run --all-packages pipeline-db status
 uv run --all-packages ops-ui
 ```
 
-Then open <http://127.0.0.1:8000>. The window listens on this computer only. It does not send mail.
+Then open <http://127.0.0.1:8000>. On Windows, `start-ui.bat` runs that command and opens the browser. The window listens on this computer only. It does not send mail.
 
 A first run is cheap and sends nothing:
 
