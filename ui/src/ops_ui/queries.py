@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline_core.db import engine, ensure_schema, session
+from pipeline_core.db import BUSY_TIMEOUT_MS, engine, ensure_schema, session
+from pipeline_core.models import TABLES
 from pipeline_core.queries import (
     backfill_tender_documents,
     contact_breakdown,
@@ -18,6 +20,9 @@ INIT_HINT = "uv run pipeline-db init"
 
 #: First 16 bytes of every SQLite file. Opening anything else can create a database.
 _SQLITE_HEADER = b"SQLite format 3\x00"
+
+#: Tables that mean this file is already a pipeline database.
+_PIPELINE_TABLES = frozenset(table.__tablename__ for table in TABLES)
 
 
 @dataclass(frozen=True)
@@ -51,9 +56,23 @@ def load_home(path: Path) -> HomeSnapshot:
     if kind == "unreadable":
         return _unread(path, "The database could not be read. Nothing was changed.")
 
-    ensure_schema(engine(path))
-    backfill_tender_documents(path)
     try:
+        names = _table_names(path)
+    except sqlite3.OperationalError as exc:
+        return _unread(path, _operational_message(exc))
+    except sqlite3.DatabaseError:
+        return _unread(
+            path, "This file could not be read as a database. Nothing was changed."
+        )
+    if names.isdisjoint(_PIPELINE_TABLES):
+        return _unread(
+            path,
+            f"This file has no pipeline tables. From the repo root, run: {INIT_HINT}",
+        )
+
+    try:
+        ensure_schema(engine(path))
+        backfill_tender_documents(path)
         with session(engine(path)) as current:
             funnel = tuple(pipeline_funnel(current))
             phone_only = contact_breakdown(current)["phone_only"]
@@ -85,7 +104,21 @@ def _file_kind(path: Path) -> str:
     return "other"
 
 
-def _operational_message(exc: OperationalError) -> str:
+def _table_names(path: Path) -> set[str]:
+    """User table names. Read-only, so a foreign file is not switched to WAL."""
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    timeout = BUSY_TIMEOUT_MS / 1000
+    connection = sqlite3.connect(uri, uri=True, timeout=timeout)
+    try:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+        return {name for (name,) in rows}
+    finally:
+        connection.close()
+
+
+def _operational_message(exc: Exception) -> str:
     text = str(exc).lower()
     if "locked" in text or "busy" in text:
         return "The database is busy. Wait for the other run to finish, then reload."

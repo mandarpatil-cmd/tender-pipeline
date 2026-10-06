@@ -108,7 +108,7 @@ def write_sheet(
     except ImportError as exc:  # pragma: no cover - environment-dependent
         raise ExportError(
             "pandas/openpyxl are not installed. From the repo root, run: "
-            "uv pip install -r requirements.txt"
+            "uv sync --frozen"
         ) from exc
 
     export_dir = Path(out_dir) / "exports"

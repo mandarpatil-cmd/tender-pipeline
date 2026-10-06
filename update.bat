@@ -12,7 +12,7 @@ if errorlevel 1 (
 
 echo.
 echo Installing libraries and updating the database...
-uv sync --all-packages --frozen
+uv sync --frozen
 if errorlevel 1 (
   echo.
   echo Install failed. Leave this window open and send a picture of it.
@@ -20,7 +20,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-uv run --all-packages pipeline-db init
+uv run pipeline-db init
 if errorlevel 1 (
   echo.
   echo The database update failed. Leave this window open and send a picture of it.

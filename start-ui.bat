@@ -2,7 +2,7 @@
 cd /d "%~dp0"
 
 echo Starting the tender pipeline window...
-start "Tender pipeline" cmd /k "uv run --all-packages ops-ui"
+start "Tender pipeline" cmd /k "uv run ops-ui"
 
 echo Waiting for the server...
 timeout /t 4 /nobreak >nul

@@ -1040,6 +1040,7 @@ source = { editable = "ui" }
 dependencies = [
     { name = "fastapi" },
     { name = "jinja2" },
+    { name = "msal" },
     { name = "openpyxl" },
     { name = "pipeline-core" },
     { name = "python-multipart" },
@@ -1052,6 +1053,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "jinja2", specifier = ">=3.1" },
+    { name = "msal", specifier = ">=1.31" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pipeline-core", editable = "core" },
     { name = "python-multipart", specifier = ">=0.0.20" },
@@ -1718,9 +1720,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "ops-ui" },
-    { name = "pipeline-core" },
-    { name = "stage1-scrape" },
-    { name = "stage2-enrich" },
+    { name = "pipeline-core", extra = ["xlsx"] },
 ]
 
 [package.dev-dependencies]
@@ -1731,9 +1731,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "ops-ui", editable = "ui" },
-    { name = "pipeline-core", editable = "core" },
-    { name = "stage1-scrape", editable = "01-scrape" },
-    { name = "stage2-enrich", editable = "02-enrich" },
+    { name = "pipeline-core", extras = ["xlsx"], editable = "core" },
 ]
 
 [package.metadata.requires-dev]

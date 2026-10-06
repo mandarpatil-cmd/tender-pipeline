@@ -223,7 +223,7 @@ The best way to check a parser change against real markup.
 ```text
 .
 ├── main.py                     # one-command runner (constants block, no argparse)
-├── pyproject.toml              # package metadata; dependencies install from ../requirements.txt
+├── pyproject.toml              # package metadata; workspace member, installed by uv sync
 ├── .env.example                # secret template (commit this)
 ├── AGENTS.md                   # notes for coding agents
 ├── docs/

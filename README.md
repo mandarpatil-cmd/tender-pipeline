@@ -28,11 +28,11 @@ Each stage has its own README.
 Requires [uv](https://docs.astral.sh/uv/getting-started/installation/). From this folder, uv reads `.python-version`, downloads Python 3.13 if needed, and installs the lockfile into `.venv`:
 
 ```powershell
-uv sync --all-packages --frozen
-uv run --all-packages pipeline-db init
+uv sync --frozen
+uv run pipeline-db init
 ```
 
-`--all-packages` installs every stage, including stage 3's libraries. `--frozen` installs `uv.lock` as committed. `.venv` stays off git. `requirements.txt` is the old install list; sync does not read it.
+`uv sync --frozen` installs `uv.lock`, including mail and spreadsheets. `.venv` stays off git.
 
 Copy each example settings file and fill it in. `.env` files are secrets. Each stage reads only its own.
 
@@ -54,7 +54,7 @@ copy 03-outreach\.env.example 03-outreach\.env
 
 | File | When |
 | --- | --- |
-| `setup.bat` | Once, after clone. Runs `uv sync --all-packages --frozen` and `pipeline-db init`. |
+| `setup.bat` | Once, after clone. Runs `uv sync --frozen` and `pipeline-db init`. |
 | `start-ui.bat` | Opens the UI. Starts `ops-ui` in a window titled **Tender pipeline** and opens <http://127.0.0.1:8000> after a short wait. Leave that window open. Closing it stops the UI. |
 | `update.bat` | Gets new code with `git pull origin main`, then runs the same install and database update as `setup.bat`. Close the Tender pipeline window first. |
 
@@ -74,11 +74,11 @@ Double-click `setup.bat`, fill in the `.env` files, then double-click `start-ui.
 Each stage is configured by the `SETTINGS` or `CONFIG` block at the top of its `main.py`.
 
 ```powershell
-cd 01-scrape      ; uv run --all-packages python main.py
-cd ..\02-enrich   ; uv run --all-packages python main.py
-cd ..\03-outreach ; uv run --all-packages python main.py
-uv run --all-packages pipeline-db status
-uv run --all-packages ops-ui
+cd 01-scrape      ; uv run python main.py
+cd ..\02-enrich   ; uv run python main.py
+cd ..\03-outreach ; uv run python main.py
+uv run pipeline-db status
+uv run ops-ui
 ```
 
 Then open <http://127.0.0.1:8000>. On Windows, `start-ui.bat` runs that command and opens the browser. The window listens on this computer only. It does not send mail.
@@ -100,11 +100,11 @@ Raise those limits in the stage's `main.py`. Stage 2 with `DRY_RUN = False` spen
 No network, no API keys, no mail. Each suite uses its own throwaway database.
 
 ```powershell
-cd core           ; uv run --all-packages python -m pytest -q
-cd ..\01-scrape   ; uv run --all-packages python -m pytest -q
-cd ..\02-enrich   ; uv run --all-packages python -m pytest -q
-cd ..\03-outreach ; uv run --all-packages python -m pytest -q
-cd ..\ui          ; uv run --all-packages python -m pytest -q
+cd core           ; uv run python -m pytest -q
+cd ..\01-scrape   ; uv run python -m pytest -q
+cd ..\02-enrich   ; uv run python -m pytest -q
+cd ..\03-outreach ; uv run python -m pytest -q
+cd ..\ui          ; uv run python -m pytest -q
 ```
 
 If a command is using the wrong Python, `uv run python -c "import sys; print(sys.prefix)"` should end in `tender-pipeline\.venv`. Do not run `uv init` in this repo or in a parent folder.

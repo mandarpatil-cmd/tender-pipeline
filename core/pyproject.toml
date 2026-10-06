@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "pipeline-core"
 version = "0.1.0"
 description = "Shared schema and database access for the tender pipeline"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "SQLAlchemy>=2.0",
 ]

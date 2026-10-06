@@ -4,17 +4,13 @@ version = "0.1.0"
 description = "Find tender winners, look up contacts, and email them"
 requires-python = ">=3.13"
 dependencies = [
-    "pipeline-core",
-    "stage1-scrape",
-    "stage2-enrich",
     "ops-ui",
+    "pipeline-core[xlsx]",
 ]
 
 [tool.uv.sources]
-pipeline-core = { workspace = true }
-stage1-scrape = { workspace = true }
-stage2-enrich = { workspace = true }
 ops-ui = { workspace = true }
+pipeline-core = { workspace = true }
 
 [tool.uv.workspace]
 members = ["core", "01-scrape", "02-enrich", "03-outreach", "ui"]

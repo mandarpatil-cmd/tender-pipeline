@@ -106,7 +106,7 @@ def read_companies(path: Path | str) -> tuple[list[Company], int, int]:
     except ImportError as exc:  # pragma: no cover - environment-dependent
         raise ImportError_(
             "pandas and openpyxl are needed to read spreadsheets. From the repo root:\n"
-            "  uv pip install -r requirements.txt"
+            "  uv sync --frozen"
         ) from exc
 
     source = Path(path)

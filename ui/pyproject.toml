@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "ops-ui"
 version = "0.1.0"
 description = "Local browser window for the tender pipeline"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
@@ -16,6 +16,7 @@ dependencies = [
     "pipeline-core",
     "stage1-scrape",
     "stage2-enrich",
+    "msal>=1.31",
 ]
 
 [project.scripts]

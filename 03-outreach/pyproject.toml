@@ -3,7 +3,7 @@ name = "stage3-outreach"
 version = "0.1.0"
 description = "Mail the vendors the pipeline found an address for (stage 3)"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "msal>=1.31",
     "requests>=2.32",

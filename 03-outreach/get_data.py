@@ -48,8 +48,7 @@ def _require(*modules: "tuple[str, str]") -> None:
         "or call the venv interpreter directly:\n"
         "    ..\\.venv\\Scripts\\python.exe get_data.py\n\n"
         "If there is no .venv yet, create it from the repo root:\n"
-        "    uv venv --python 3.13\n"
-        "    uv pip install -r requirements.txt"
+        "    uv sync --frozen"
     )
 
 

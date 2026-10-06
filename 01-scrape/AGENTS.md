@@ -19,8 +19,8 @@ stage 2.
 
 ## Commands
 
-All four projects share one `.venv` at the repo root (`../requirements.txt`). Run these
-with it activated, or prefix each with `uv run`. Never create a venv in this folder.
+All four projects share one `.venv` at the repo root, built with `uv sync --frozen`.
+Run these with it activated, or prefix each with `uv run`. Never create a venv in this folder.
 
 ```powershell
 python main.py                 # scrape -> SQLite -> data/exports/vendors.csv
