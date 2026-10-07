@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -316,21 +316,20 @@ class PendingVendor:
         return bool(self.pdf_email or self.pdf_phone)
 
 
-def pending_vendors(
+def _vendor_rows(
     session: Session,
-    limit: int | None = None,
+    where,
     *,
     source: str | None = None,
     vendor_ids: Iterable[int] | None = None,
+    limit: int | None = None,
 ) -> list[PendingVendor]:
-    """Stage 2's work queue, oldest vendor first.
-
-    Only ever returns `pending` rows, so a vendor already answered -- `done` or
-    `not_found` -- is never handed out again and never re-paid for.
-
-    `source` narrows it to one origin ('scrape' / 'bideasy'), which is how you
-    work through what the scraper just found without touching the imported rows.
-    """
+    if vendor_ids is not None:
+        ids = list(vendor_ids)
+        if not ids:
+            return []
+    else:
+        ids = None
     context = (
         select(Award.work_title)
         .where(Award.vendor_id == Vendor.vendor_id)
@@ -348,19 +347,40 @@ def pending_vendors(
             Vendor.pdf_email,
             Vendor.pdf_phone,
         )
-        .where(Vendor.enrichment_status == STATUS_PENDING)
+        .where(where)
         .order_by(Vendor.vendor_id)
     )
     if source is not None:
         statement = statement.where(Vendor.source == source)
-    if vendor_ids is not None:
-        ids = list(vendor_ids)
-        if not ids:
-            return []
+    if ids is not None:
         statement = statement.where(Vendor.vendor_id.in_(ids))
     if limit is not None:
         statement = statement.limit(limit)
     return [PendingVendor(*row) for row in session.execute(statement).all()]
+
+
+def pending_vendors(
+    session: Session,
+    limit: int | None = None,
+    *,
+    source: str | None = None,
+    vendor_ids: Iterable[int] | None = None,
+) -> list[PendingVendor]:
+    """Stage 2's work queue, oldest vendor first.
+
+    Only ever returns `pending` rows, so a vendor already answered -- `done` or
+    `not_found` -- is never handed out again and never re-paid for.
+
+    `source` narrows it to one origin ('scrape' / 'bideasy'), which is how you
+    work through what the scraper just found without touching the imported rows.
+    """
+    return _vendor_rows(
+        session,
+        Vendor.enrichment_status == STATUS_PENDING,
+        source=source,
+        vendor_ids=vendor_ids,
+        limit=limit,
+    )
 
 
 def mark_enriched(
@@ -450,10 +470,27 @@ def reset_failed_ids(session: Session, vendor_ids: Iterable[int]) -> int:
     )
 
 
-def reset_not_found_ids(session: Session, vendor_ids: Iterable[int]) -> int:
-    """Put the ticked `not_found` companies back on the queue.
+def _blank(column):
+    return or_(column.is_(None), column == "")
 
-    Only makes sense after the lookup method itself has changed.
+
+def _no_contact():
+    """No contact email and no phone. PDF evidence is a different column."""
+    return and_(_blank(Vendor.email), _blank(Vendor.phone))
+
+
+def _filled(column):
+    return and_(column.is_not(None), column != "")
+
+
+def _has_contact():
+    return or_(_filled(Vendor.email), _filled(Vendor.phone))
+
+
+def reset_not_found_ids(session: Session, vendor_ids: Iterable[int]) -> int:
+    """Put ticked `not_found` companies with no email and no phone back on the queue.
+
+    A row that already has either contact stays `not_found`.
     """
     ids = list(vendor_ids)
     if not ids:
@@ -463,8 +500,140 @@ def reset_not_found_ids(session: Session, vendor_ids: Iterable[int]) -> int:
         .filter(
             Vendor.vendor_id.in_(ids),
             Vendor.enrichment_status == STATUS_NOT_FOUND,
+            _no_contact(),
         )
         .update({Vendor.enrichment_status: STATUS_PENDING}, synchronize_session=False)
+    )
+
+
+def not_found_with_contact(session: Session, vendor_ids: Iterable[int]) -> int:
+    """Ticked `not_found` companies that already have an email or a phone."""
+    ids = list(vendor_ids)
+    if not ids:
+        return 0
+    return int(
+        session.query(Vendor)
+        .filter(
+            Vendor.vendor_id.in_(ids),
+            Vendor.enrichment_status == STATUS_NOT_FOUND,
+            _has_contact(),
+        )
+        .count()
+    )
+
+
+@dataclass(frozen=True)
+class SelectionCounts:
+    """How the selected companies split, and which of them Enrich will look up."""
+
+    pending: int = 0
+    not_found: int = 0
+    failed: int = 0
+    done: int = 0
+    not_found_ready: int = 0
+    waiting_ids: tuple[int, ...] = ()
+    names: tuple[str, ...] = ()
+
+
+def _contact_empty(email: str | None, phone: str | None) -> bool:
+    return not (email or "").strip() and not (phone or "").strip()
+
+
+def classify_selection(session: Session, vendor_ids: Iterable[int]) -> SelectionCounts:
+    """One read of the selected companies.
+
+    The lookup list is pending, failed, and not_found with no email and no phone.
+    A not_found company that already has either contact stays out, and so does done.
+    """
+    ids = list(vendor_ids)
+    if not ids:
+        return SelectionCounts()
+    rows = session.execute(
+        select(
+            Vendor.vendor_id,
+            Vendor.name_raw,
+            Vendor.enrichment_status,
+            Vendor.email,
+            Vendor.phone,
+        )
+        .where(Vendor.vendor_id.in_(ids))
+        .order_by(Vendor.vendor_id)
+    ).all()
+    pending = not_found = failed = done = ready = 0
+    waiting_ids: list[int] = []
+    names: list[str] = []
+    for vendor_id, name, status, email, phone in rows:
+        if status == STATUS_PENDING:
+            pending += 1
+            waiting_ids.append(int(vendor_id))
+            names.append(name)
+        elif status == STATUS_NOT_FOUND:
+            not_found += 1
+            if _contact_empty(email, phone):
+                ready += 1
+                waiting_ids.append(int(vendor_id))
+                names.append(name)
+        elif status == STATUS_FAILED:
+            failed += 1
+            waiting_ids.append(int(vendor_id))
+            names.append(name)
+        elif status == STATUS_DONE:
+            done += 1
+    return SelectionCounts(
+        pending=pending,
+        not_found=not_found,
+        failed=failed,
+        done=done,
+        not_found_ready=ready,
+        waiting_ids=tuple(waiting_ids),
+        names=tuple(names),
+    )
+
+
+def count_not_found_ready(session: Session) -> int:
+    """`not_found` companies a requeue would move: no email and no phone."""
+    return int(
+        session.query(Vendor)
+        .filter(Vendor.enrichment_status == STATUS_NOT_FOUND, _no_contact())
+        .count()
+    )
+
+
+def count_not_found_ready_ids(session: Session, vendor_ids: Iterable[int]) -> int:
+    """How many of these companies are not_found with no email and no phone."""
+    ids = list(vendor_ids)
+    if not ids:
+        return 0
+    return int(
+        session.query(Vendor)
+        .filter(
+            Vendor.vendor_id.in_(ids),
+            Vendor.enrichment_status == STATUS_NOT_FOUND,
+            _no_contact(),
+        )
+        .count()
+    )
+
+
+def preview_lookup(session: Session, vendor_ids: Iterable[int]) -> list[PendingVendor]:
+    """Companies Enrich would look up. Does not change a status."""
+    return _vendor_rows(session, _lookup_where(), vendor_ids=vendor_ids)
+
+
+def prepare_lookup(session: Session, vendor_ids: Iterable[int]) -> list[PendingVendor]:
+    """Put failed, and not_found with no contact, onto the queue, then list pending.
+
+    A not_found company that already has an email or a phone stays not_found.
+    """
+    reset_failed_ids(session, vendor_ids)
+    reset_not_found_ids(session, vendor_ids)
+    return pending_vendors(session, vendor_ids=vendor_ids)
+
+
+def _lookup_where():
+    return or_(
+        Vendor.enrichment_status.in_((STATUS_PENDING, STATUS_FAILED)),
+        and_(Vendor.enrichment_status == STATUS_NOT_FOUND, _no_contact()),
     )
 
 
@@ -502,7 +671,7 @@ def reset_not_found(session: Session) -> int:
     """
     return int(
         session.query(Vendor)
-        .filter(Vendor.enrichment_status == STATUS_NOT_FOUND, Vendor.email.is_(None))
+        .filter(Vendor.enrichment_status == STATUS_NOT_FOUND, _no_contact())
         .update(
             {Vendor.enrichment_status: STATUS_PENDING}, synchronize_session=False
         )

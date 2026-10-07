@@ -13,7 +13,15 @@ from pathlib import Path
 from pipeline_core import settings
 from pipeline_core.cli import cmd_status
 from pipeline_core.db import session
-from pipeline_core.queries import pending_vendors, reset_failed, reset_not_found
+from pipeline_core.models import STATUS_FAILED, Vendor
+from pipeline_core.queries import (
+    count_not_found_ready,
+    pending_vendors,
+    prepare_lookup,
+    preview_lookup,
+    reset_failed,
+    reset_not_found,
+)
 
 from ops_ui.jobs import Log
 
@@ -91,16 +99,28 @@ def run_enrich(
     notes: list[str] = []
     with session(bind) as current:
         if retry_failed:
-            moved = reset_failed(current)
-            notes.append(f"Requeued {moved} failed companies.")
+            if dry_run:
+                count = _waiting_retry(current, STATUS_FAILED)
+                notes.append(_would_requeue(count, "failed"))
+            else:
+                moved = reset_failed(current)
+                notes.append(f"Requeued {moved} failed companies.")
         if retry_not_found:
             notes.append(
                 "Requeueing not_found. That only makes sense after the lookup method itself changed."
             )
-            moved = reset_not_found(current)
-            notes.append(f"Requeued {moved} not_found companies.")
+            if dry_run:
+                count = count_not_found_ready(current)
+                notes.append(_would_requeue(count, "not_found"))
+            else:
+                moved = reset_not_found(current)
+                notes.append(f"Requeued {moved} not_found companies.")
         if vendor_ids is not None:
-            work = pending_vendors(current, vendor_ids=vendor_ids)
+            work = (
+                preview_lookup(current, vendor_ids)
+                if dry_run
+                else prepare_lookup(current, vendor_ids)
+            )
         else:
             work = pending_vendors(current, limit, source=source)
     for note in notes:
@@ -262,6 +282,29 @@ def enrich_cost_line(count: int, dry_run: bool) -> str:
     if dry_run:
         return f"{count} companies would be listed. Nothing will be spent."
     return f"{count} companies. One paid model call each."
+
+
+def _would_requeue(count: int, status: str) -> str:
+    noun = "company" if count == 1 else "companies"
+    return f"Dry run. Would put {count} {status} {noun} back on the queue."
+
+
+def _waiting_retry(current, status: str) -> int:
+    """How many rows a requeue would move. Dry run counts them and writes nothing."""
+    return int(current.query(Vendor).filter(Vendor.enrichment_status == status).count())
+
+
+def portal_date(raw: str) -> str:
+    """The portal's dd/MM/yyyy. An ISO day from the date picker is converted."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+    return text
 
 
 def date_error(from_date: str, to_date: str, date_field: str) -> str | None:

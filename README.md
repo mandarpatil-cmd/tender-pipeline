@@ -23,6 +23,30 @@ Finds companies that win Indian public tenders, looks up a public email and phon
 
 Each stage has its own README.
 
+## What the counts are
+
+The Awards page is one row per award. The pager (`1–50 of N`) is that same award count. Both are winning companies on tenders, so N matches the **awards** card and will not match **tenders** or **vendors**.
+
+| Count | What it counts |
+| --- | --- |
+| tenders | One contract from the portal. Two winners on it are still one tender. |
+| awards | One winning company on one tender. This is a table row. |
+| vendors | The company, once, however many tenders it won. |
+| enriched | Companies where a contact lookup found an email or a phone. |
+| mailable | Companies with a contact email. These are the ones that can be mailed. |
+| phone-only | A phone and no email. Counted as enriched, and never mailed. |
+| sent | Companies that already have a successful send. |
+
+A tender with two awarded bidders is two awards and two rows. A company that wins two tenders is two awards, two rows, and one vendor. The scraper keeps the portal's awarded-bid list for that tender. When that list is empty it keeps the L1 bid, then a bid marked Accepted. It does not keep every bidder.
+
+A filter shrinks every card together. "Counts match the rows in this filter" describes the awards on screen, not the whole file. Tender status AOC plus enrichment pending is a common example: the file still holds the other statuses, and they stay off this view until the filter is cleared.
+
+## Who the mail goes to
+
+Mail uses the contact email on the company (`vendors.email`), the address the contact lookup stored. It does not use the PDF email. That text is evidence from a work order, and it is often wrong.
+
+One letter goes to one company about one tender. The same company with two wins gets two letters, one for each tender, and a tender already mailed to that company is skipped. A company with only a phone is not a recipient. Preview writes a file and sends nothing. Send is the action that mails the company.
+
 ## Setup
 
 Requires [uv](https://docs.astral.sh/uv/getting-started/installation/). From this folder, uv reads `.python-version`, downloads Python 3.13 if needed, and installs the lockfile into `.venv`:

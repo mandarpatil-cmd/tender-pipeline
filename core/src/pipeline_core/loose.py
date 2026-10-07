@@ -1,7 +1,8 @@
 """Read dates and amounts stored as text.
 
-The portal writes values like ``21-Sep-2026`` and ``INR 179,853.24``. A filter
-that cannot read one of those must leave the row on screen.
+The portal writes values like ``21-Sep-2026`` and ``INR 179,853.24``. A date
+filter that cannot read a contract date leaves that row on screen. A value
+filter drops a row whose amount cannot be read.
 """
 
 from __future__ import annotations

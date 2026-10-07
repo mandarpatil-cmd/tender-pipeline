@@ -12,7 +12,7 @@
 {% if not selected %}
 <div class="empty">
   <p>Choose companies on Awards.</p>
-  <p><a href="/">Awards</a></p>
+  <p><a href="{{ awards_href(request.cookies.get('awards_query', '')) }}">Awards</a></p>
 </div>
 {% else %}
 <h2>These companies</h2>
@@ -25,7 +25,7 @@
 {% else %}
 {% include "mail_companies.html" %}
 {% endif %}
-<p class="meta"><a href="/">Change the list</a></p>
+<p class="meta"><a href="{{ awards_href(request.cookies.get('awards_query', '')) }}">Change the list</a></p>
 <h2>The letter</h2>
 {% if mailable %}
 <p class="meta">Filled in for {{ sample_company }}. Send the default uses the saved letter. Change some phrases applies to this send only. The unsubscribe line at the end is added to every email and cannot be removed.</p>

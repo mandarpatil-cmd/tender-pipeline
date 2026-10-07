@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import date, timedelta
 from urllib.parse import unquote, urlencode
 
 from pipeline_core.grid import COLUMNS, FILE_COLUMNS, AwardQuery
+from pipeline_core.models import ENRICHMENT_STATUSES
+from pipeline_core.loose import loose_date
 from starlette.datastructures import QueryParams
 
 _BACK = re.compile(r"[A-Za-z0-9_%=&.+\-]*")
+DATE_PRESETS = ("7", "30", "60", "90")
 
 _FIELDS = (
     ("q", "text"),
     ("tender_status", "tender_status"),
-    ("enrichment_status", "enrichment_status"),
     ("outreach_status", "outreach_status"),
     ("source", "source"),
     ("state", "state"),
@@ -37,25 +40,124 @@ def back_href(raw: str) -> str:
     return "/?" + text
 
 
+def resolve_preset(
+    date_from: str,
+    date_to: str,
+    preset: str,
+    *,
+    to_mode: str = "",
+    today: date | None = None,
+) -> tuple[str, str]:
+    """A from-preset is that many days before the to date. Any leaves that end open.
+
+    A day count with no to date uses today, so the window still has an end.
+    """
+    preset = (preset or "").strip()
+    to_mode = (to_mode or "").strip()
+    date_from = (date_from or "").strip()
+    date_to = (date_to or "").strip()
+    if preset == "any":
+        date_from = ""
+    if preset in DATE_PRESETS:
+        end_iso = "" if to_mode == "any" else (loose_date(date_to) or "")
+        if not end_iso:
+            end_iso = (today or date.today()).isoformat()
+        end = date.fromisoformat(end_iso)
+        start = end - timedelta(days=int(preset))
+        return start.isoformat(), end.isoformat()
+    if to_mode == "any":
+        date_to = ""
+    return date_from, date_to
+
+
+def active_preset(date_from: str, date_to: str) -> str:
+    """Any when from is empty, a day count when it matches, otherwise a specific date."""
+    start = loose_date(date_from)
+    end = loose_date(date_to)
+    if not start:
+        return "any"
+    if not end:
+        return ""
+    days = (date.fromisoformat(end) - date.fromisoformat(start)).days
+    text = str(days)
+    return text if text in DATE_PRESETS else ""
+
+
+def shown_day(value: str) -> str:
+    """An ISO day for a date input. Unreadable text stays blank."""
+    return loose_date(value) or ""
+
+
 def query_from(params: QueryParams) -> AwardQuery:
     values = {field: (params.get(name) or "").strip() for name, field in _FIELDS}
+    values["date_from"], values["date_to"] = resolve_preset(
+        values["date_from"],
+        values["date_to"],
+        params.get("date_from_preset") or "",
+        to_mode=params.get("date_to_mode") or "",
+    )
+    values["scraped_from"], values["scraped_to"] = resolve_preset(
+        values["scraped_from"],
+        values["scraped_to"],
+        params.get("scraped_from_preset") or "",
+        to_mode=params.get("scraped_to_mode") or "",
+    )
     try:
         page = int(params.get("page") or "1")
     except ValueError:
         page = 1
+    listed = params.getlist("enrichment_status") if hasattr(params, "getlist") else []
+    fields = params.getlist("search_in") if hasattr(params, "getlist") else []
     return AwardQuery(
         **values,
+        enrichment_status=tuple(listed),
+        search_in=tuple(fields),
         sort=(params.get("sort") or "tender_id").strip(),
         direction=(params.get("dir") or "asc").strip(),
         page=page,
     ).normalized()
 
 
+def awards_href(raw: str) -> str:
+    """The Awards link. A cookie that is not our query string goes to the whole table."""
+    text = unquote(raw or "").strip()
+    if not text or _BACK.fullmatch(text) is None:
+        return "/"
+    return "/?" + text
+
+
+def widen_enrichment(query: AwardQuery, extra: tuple[str, ...]) -> AwardQuery:
+    """Any stays any. Otherwise add these statuses to the selection."""
+    if not query.enrichment_status:
+        return replace(query, page=1)
+    chosen = set(query.enrichment_status) | set(extra)
+    ordered = tuple(status for status in ENRICHMENT_STATUSES if status in chosen)
+    return replace(query, enrichment_status=ordered, page=1)
+
+
+def enrich_plan(pending: int, not_found: int, failed: int, ready: int) -> str:
+    """The sentence the combined list and the Enrich confirm page both show."""
+    return (
+        f"pending {pending}, not_found {not_found}, failed {failed}. "
+        f"{ready} not_found with no email and no phone. "
+        "Enrich looks up the pending companies, the failed companies, "
+        "and the not_found companies that have no email and no phone. "
+        "A not_found company that already has either contact stays not_found."
+    )
+
+
+def filter_token(query: AwardQuery) -> str:
+    """The filter to restore, without the page. Empty when the table is unfiltered."""
+    target = href(query, page="1")
+    if target == "/":
+        return ""
+    return target.split("?", 1)[1]
+
+
 def href(query: AwardQuery, **overrides: str) -> str:
     data = {
         "q": query.text,
         "tender_status": query.tender_status,
-        "enrichment_status": query.enrichment_status,
         "outreach_status": query.outreach_status,
         "source": query.source,
         "state": query.state,
@@ -73,35 +175,68 @@ def href(query: AwardQuery, **overrides: str) -> str:
     }
     data.update({key: str(value) for key, value in overrides.items()})
     defaults = {"sort": "tender_id", "dir": "asc", "page": "1"}
-    pairs = [
-        (key, value)
-        for key, value in data.items()
-        if value and defaults.get(key) != value
-    ]
+
+    def keep(key: str) -> bool:
+        value = data[key]
+        return bool(value) and defaults.get(key) != value
+
+    pairs: list[tuple[str, str]] = []
+    for key in ("q",):
+        if keep(key):
+            pairs.append((key, data[key]))
+    pairs.extend(("search_in", field) for field in query.search_in)
+    for key in ("tender_status",):
+        if keep(key):
+            pairs.append((key, data[key]))
+    pairs.extend(("enrichment_status", status) for status in query.enrichment_status)
+    for key in (
+        "outreach_status",
+        "source",
+        "state",
+        "organisation",
+        "date_from",
+        "date_to",
+        "scraped_from",
+        "scraped_to",
+        "value_min",
+        "value_max",
+        "mailable",
+        "sort",
+        "dir",
+        "page",
+    ):
+        if keep(key):
+            pairs.append((key, data[key]))
     encoded = urlencode(pairs)
     return f"/?{encoded}" if encoded else "/"
 
 
 def form_fields(query: AwardQuery) -> list[tuple[str, str]]:
     """The filter the table is showing, so a later POST selects that same set."""
-    return [
+    fields = [
         ("q", query.text),
-        ("tender_status", query.tender_status),
-        ("enrichment_status", query.enrichment_status),
-        ("outreach_status", query.outreach_status),
-        ("source", query.source),
-        ("state", query.state),
-        ("organisation", query.organisation),
-        ("date_from", query.date_from),
-        ("date_to", query.date_to),
-        ("scraped_from", query.scraped_from),
-        ("scraped_to", query.scraped_to),
-        ("value_min", query.value_min),
-        ("value_max", query.value_max),
-        ("mailable", query.mailable),
-        ("sort", query.sort),
-        ("dir", query.direction),
     ]
+    fields.extend(("search_in", field) for field in query.search_in)
+    fields.append(("tender_status", query.tender_status))
+    fields.extend(("enrichment_status", status) for status in query.enrichment_status)
+    fields.extend(
+        [
+            ("outreach_status", query.outreach_status),
+            ("source", query.source),
+            ("state", query.state),
+            ("organisation", query.organisation),
+            ("date_from", query.date_from),
+            ("date_to", query.date_to),
+            ("scraped_from", query.scraped_from),
+            ("scraped_to", query.scraped_to),
+            ("value_min", query.value_min),
+            ("value_max", query.value_max),
+            ("mailable", query.mailable),
+            ("sort", query.sort),
+            ("dir", query.direction),
+        ]
+    )
+    return fields
 
 
 def sort_href(query: AwardQuery, key: str) -> str:

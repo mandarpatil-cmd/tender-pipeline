@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from .loose import loose_date, loose_number
@@ -20,6 +20,9 @@ from .models import (
     OUTREACH_FAILED,
     OUTREACH_SENT,
     STATUS_DONE,
+    STATUS_FAILED,
+    STATUS_NOT_FOUND,
+    STATUS_PENDING,
     Award,
     Outreach,
     Tender,
@@ -109,6 +112,39 @@ COLUMNS: tuple[tuple[str, str, str, bool], ...] = (
 FILE_COLUMNS = frozenset({"gstin", "pdf_files"})
 SORTABLE = tuple(key for key, _, _, _ in COLUMNS if key not in FILE_COLUMNS)
 _SORT_KEYS = frozenset(SORTABLE)
+SEARCH_FIELDS = ("name", "vendor_id", "city")
+
+
+def _status_set(value: object) -> tuple[str, ...]:
+    """Keep each real enrichment status once. A string or a list both work."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        parts = [value] if value else []
+    else:
+        parts = list(value)
+    seen: list[str] = []
+    for item in parts:
+        text = str(item).strip()
+        if text in ENRICHMENT_STATUSES and text not in seen:
+            seen.append(text)
+    return tuple(seen)
+
+
+def _search_set(value: object) -> tuple[str, ...]:
+    """Keep each search field once. Empty means every column."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        parts = [value] if value else []
+    else:
+        parts = list(value)
+    seen: list[str] = []
+    for item in parts:
+        text = str(item).strip()
+        if text in SEARCH_FIELDS and text not in seen:
+            seen.append(text)
+    return tuple(seen)
 
 
 @dataclass(frozen=True)
@@ -117,7 +153,7 @@ class AwardQuery:
 
     text: str = ""
     tender_status: str = ""
-    enrichment_status: str = ""
+    enrichment_status: tuple[str, ...] = ()
     outreach_status: str = ""
     source: str = ""
     state: str = ""
@@ -130,6 +166,8 @@ class AwardQuery:
     value_max: str = ""
     #: "" any, "yes" has an email, "no" does not. Same meaning as the mailable count.
     mailable: str = ""
+    #: Empty means search every text column. Otherwise name, vendor_id, and/or city.
+    search_in: tuple[str, ...] = ()
     sort: str = "tender_id"
     direction: str = "asc"
     page: int = 1
@@ -138,17 +176,14 @@ class AwardQuery:
         sort = self.sort if self.sort in _SORT_KEYS else "tender_id"
         direction = "desc" if self.direction == "desc" else "asc"
         page = self.page if self.page >= 1 else 1
-        enrichment = (
-            self.enrichment_status
-            if self.enrichment_status in ENRICHMENT_STATUSES
-            else ""
-        )
+        enrichment = _status_set(self.enrichment_status)
         outreach = (
             self.outreach_status
             if self.outreach_status in {OUTREACH_SENT, OUTREACH_FAILED, "none"}
             else ""
         )
         mailable = self.mailable if self.mailable in {"yes", "no"} else ""
+        search_in = _search_set(self.search_in)
         scraped_from = _iso_day(self.scraped_from)
         scraped_to = _iso_day(self.scraped_to)
         if scraped_from and scraped_to and scraped_from > scraped_to:
@@ -161,6 +196,7 @@ class AwardQuery:
             enrichment_status=enrichment,
             outreach_status=outreach,
             mailable=mailable,
+            search_in=search_in,
             scraped_from=scraped_from,
             scraped_to=scraped_to,
         )
@@ -195,6 +231,9 @@ class ViewCounts:
     mailable: int
     sent: int
     phone_only: int
+    pending: int = 0
+    not_found: int = 0
+    failed: int = 0
 
 
 @dataclass
@@ -459,24 +498,13 @@ def _joined(statement, specific, legacy):
 
 def _filtered(statement, query: AwardQuery, specific, legacy):
     if query.text:
-        pattern = _like(query.text)
-        statement = statement.where(
-            or_(
-                _contains(Tender.tender_id, pattern),
-                _contains(Tender.title, pattern),
-                _contains(Tender.organisation, pattern),
-                _contains(Award.work_title, pattern),
-                _contains(Vendor.name_raw, pattern),
-                _contains(Vendor.city, pattern),
-                _contains(Vendor.state, pattern),
-                _contains(Vendor.email, pattern),
-                _contains(Vendor.phone, pattern),
-            )
-        )
+        statement = statement.where(_search_clause(query))
     if query.tender_status:
         statement = statement.where(Tender.status == query.tender_status)
     if query.enrichment_status:
-        statement = statement.where(Vendor.enrichment_status == query.enrichment_status)
+        statement = statement.where(
+            Vendor.enrichment_status.in_(query.enrichment_status)
+        )
     status = _prefer(specific, legacy, "status")
     if query.outreach_status == "none":
         statement = statement.where(status.is_(None))
@@ -504,6 +532,7 @@ def _filtered(statement, query: AwardQuery, specific, legacy):
         func.loose_number(Tender.contract_value),
         loose_number(query.value_min),
         loose_number(query.value_max),
+        keep_unparsed=False,
     )
     scraped_day = func.substr(Tender.scraped_at, 1, 10)
     if query.scraped_from:
@@ -523,8 +552,12 @@ def _iso_day(value: str) -> str:
         return ""
 
 
-def _range(statement, column, low, high):
-    """Keep a row whose value cannot be parsed, whatever the bounds are."""
+def _range(statement, column, low, high, *, keep_unparsed: bool = True):
+    """Apply inclusive bounds.
+
+    A contract date that cannot be parsed stays in the list. A contract value
+    that cannot be parsed does not: a high minimum is only known amounts.
+    """
     if low is None and high is None:
         return statement
     bounds = []
@@ -532,7 +565,10 @@ def _range(statement, column, low, high):
         bounds.append(column >= low)
     if high is not None:
         bounds.append(column <= high)
-    return statement.where(or_(column.is_(None), and_(*bounds)))
+    matched = and_(*bounds)
+    if keep_unparsed:
+        return statement.where(or_(column.is_(None), matched))
+    return statement.where(matched)
 
 
 def _totals(session: Session, query: AwardQuery, specific, legacy) -> tuple[int, ViewCounts]:
@@ -550,14 +586,25 @@ def _totals(session: Session, query: AwardQuery, specific, legacy) -> tuple[int,
             func.count(func.distinct(case((has_email, Vendor.vendor_id)))),
             func.sum(case((sent_award, 1), else_=0)),
             func.count(func.distinct(case((and_(~has_email, has_phone), Vendor.vendor_id)))),
+            func.count(
+                func.distinct(case((Vendor.enrichment_status == STATUS_PENDING, Vendor.vendor_id)))
+            ),
+            func.count(
+                func.distinct(
+                    case((Vendor.enrichment_status == STATUS_NOT_FOUND, Vendor.vendor_id))
+                )
+            ),
+            func.count(
+                func.distinct(case((Vendor.enrichment_status == STATUS_FAILED, Vendor.vendor_id)))
+            ),
         ),
         specific,
         legacy,
     )
     statement = _filtered(statement, query, specific, legacy)
-    awards, tenders, vendors, enriched, mailable, sent, phone_only = session.execute(
-        statement
-    ).one()
+    awards, tenders, vendors, enriched, mailable, sent, phone_only, pending, not_found, failed = (
+        session.execute(statement).one()
+    )
     return int(awards or 0), ViewCounts(
         tenders=int(tenders or 0),
         awards=int(awards or 0),
@@ -566,6 +613,9 @@ def _totals(session: Session, query: AwardQuery, specific, legacy) -> tuple[int,
         mailable=int(mailable or 0),
         sent=int(sent or 0),
         phone_only=int(phone_only or 0),
+        pending=int(pending or 0),
+        not_found=int(not_found or 0),
+        failed=int(failed or 0),
     )
 
 
@@ -574,6 +624,36 @@ def _order(query: AwardQuery, specific, legacy):
     column = columns[query.sort]
     primary = column.desc() if query.direction == "desc" else column.asc()
     return (primary, Award.tender_id.asc(), Award.bid_number.asc())
+
+
+def _search_clause(query: AwardQuery):
+    """Any searches every text column. A chosen field searches only that column."""
+    pattern = _like(query.text)
+    everything = (
+        _contains(Tender.tender_id, pattern),
+        _contains(Tender.title, pattern),
+        _contains(Tender.organisation, pattern),
+        _contains(Award.work_title, pattern),
+        _contains(Vendor.name_raw, pattern),
+        _contains(Vendor.city, pattern),
+        _contains(Vendor.state, pattern),
+        _contains(Vendor.email, pattern),
+        _contains(Vendor.phone, pattern),
+    )
+    if not query.search_in:
+        return or_(*everything)
+    clauses = []
+    if "name" in query.search_in:
+        clauses.append(_contains(Vendor.name_raw, pattern))
+    if "city" in query.search_in:
+        clauses.append(_contains(Vendor.city, pattern))
+    if "vendor_id" in query.search_in:
+        typed = query.text.strip()
+        if typed.isdigit():
+            clauses.append(Vendor.vendor_id == int(typed))
+        else:
+            clauses.append(false())
+    return or_(*clauses)
 
 
 def _contains(column, pattern: str):

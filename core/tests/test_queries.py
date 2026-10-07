@@ -449,9 +449,63 @@ def test_reset_not_found_requeues_only_unanswered_rows(bind):
         assert s.get(Vendor, found).enrichment_status == STATUS_DONE
 
 
-# --------------------------------------------------------------------------
-# Counting the queues — what `pipeline-db status` reports
-# --------------------------------------------------------------------------
+def test_reset_not_found_ids_leaves_a_stored_contact_email(bind):
+    from pipeline_core.queries import not_found_with_contact, reset_not_found_ids
+
+    with session(bind) as current:
+        known = upsert_vendor(current, name_raw="Known Absence")
+        phoned = upsert_vendor(current, name_raw="Phone Only Ltd")
+        empty = upsert_vendor(current, name_raw="No Contact Ltd")
+        current.get(Vendor, known).enrichment_status = STATUS_NOT_FOUND
+        current.get(Vendor, known).email = "known@example.com"
+        current.get(Vendor, phoned).enrichment_status = STATUS_NOT_FOUND
+        current.get(Vendor, phoned).phone = "9999999999"
+        current.get(Vendor, empty).enrichment_status = STATUS_NOT_FOUND
+        current.get(Vendor, empty).email = None
+
+    with session(bind) as current:
+        assert not_found_with_contact(current, [known, phoned, empty]) == 2
+        assert reset_not_found_ids(current, [known, phoned, empty]) == 1
+
+    with session(bind) as current:
+        assert current.get(Vendor, known).enrichment_status == STATUS_NOT_FOUND
+        assert current.get(Vendor, phoned).enrichment_status == STATUS_NOT_FOUND
+        assert current.get(Vendor, empty).enrichment_status == "pending"
+
+
+def test_prepare_lookup_moves_only_failed_and_empty_not_found(bind):
+    from pipeline_core.queries import prepare_lookup, preview_lookup
+
+    with session(bind) as current:
+        waiting = upsert_vendor(current, name_raw="Still Waiting Ltd")
+        failed = upsert_vendor(current, name_raw="Failed Roads")
+        empty = upsert_vendor(current, name_raw="No Contact Ltd")
+        known = upsert_vendor(current, name_raw="Known Absence")
+        done = upsert_vendor(current, name_raw="Already Done Ltd")
+        mark_failed(current, failed)
+        current.get(Vendor, empty).enrichment_status = STATUS_NOT_FOUND
+        current.get(Vendor, known).enrichment_status = STATUS_NOT_FOUND
+        current.get(Vendor, known).email = "known@example.com"
+        mark_enriched(current, done, email="done@example.com", phone=None)
+        ids = [waiting, failed, empty, known, done]
+
+    with session(bind) as current:
+        preview = [vendor.vendor_id for vendor in preview_lookup(current, ids)]
+    assert preview == [waiting, failed, empty]
+    with session(bind) as current:
+        assert current.get(Vendor, failed).enrichment_status == STATUS_FAILED
+        assert current.get(Vendor, empty).enrichment_status == STATUS_NOT_FOUND
+
+    with session(bind) as current:
+        prepared = [vendor.vendor_id for vendor in prepare_lookup(current, ids)]
+    assert prepared == [waiting, failed, empty]
+    with session(bind) as current:
+        assert current.get(Vendor, waiting).enrichment_status == STATUS_PENDING
+        assert current.get(Vendor, failed).enrichment_status == STATUS_PENDING
+        assert current.get(Vendor, empty).enrichment_status == STATUS_PENDING
+        assert current.get(Vendor, known).enrichment_status == STATUS_NOT_FOUND
+        assert current.get(Vendor, known).email == "known@example.com"
+        assert current.get(Vendor, done).enrichment_status == STATUS_DONE
 
 
 def test_enrichment_breakdown_can_narrow_to_one_source(bind):

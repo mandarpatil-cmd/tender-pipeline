@@ -12,15 +12,20 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=4">
+  <link rel="stylesheet" href="/static/app.css?v=7">
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
   {% set here = request.url.path %}
+  {% if awards_return is defined %}
+  {% set return_href = awards_return %}
+  {% else %}
+  {% set return_href = awards_href(request.cookies.get('awards_query', '')) %}
+  {% endif %}
   <header class="top sticky">
-    <a class="brand" href="/">Tender pipeline</a>
+    <a class="brand" href="{{ return_href }}">Tender pipeline</a>
     <nav class="nav">
-      <a href="/" {% if here == '/' or here == '/award' or here == '/selection' %}class="current" aria-current="page"{% endif %}>Awards</a>
+      <a href="{{ return_href }}" {% if here == '/' or here == '/award' or here == '/selection' %}class="current" aria-current="page"{% endif %}>Awards</a>
       <a href="/jobs" {% if here.startswith('/jobs') %}class="current" aria-current="page"{% endif %}>Runs</a>
       <a href="/mail" {% if here.startswith('/mail') %}class="current" aria-current="page"{% endif %}>Mail</a>
       <a href="/tender/new" {% if here.startswith('/tender') %}class="current" aria-current="page"{% endif %}>Add a tender</a>
@@ -46,6 +51,96 @@
         label();
       });
     })();
+  </script>
+  <script>
+    function shiftDays(isoDay, days) {
+      var parts = isoDay.split("-");
+      if (parts.length !== 3) return "";
+      var day = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+      if (isNaN(day.getTime())) return "";
+      day.setDate(day.getDate() - days);
+      var month = String(day.getMonth() + 1).padStart(2, "0");
+      var date = String(day.getDate()).padStart(2, "0");
+      return day.getFullYear() + "-" + month + "-" + date;
+    }
+    function syncDateRange(group, source) {
+      var preset = group.querySelector("[data-role=preset]");
+      var from = group.querySelector("[data-role=from]");
+      var toMode = group.querySelector("[data-role=to-mode]");
+      var to = group.querySelector("[data-role=to]");
+      if (!preset || !from || !to) return;
+      if (source && source.getAttribute("data-role") === "from") preset.value = "";
+      var mode = preset.value;
+      var specific = mode === "";
+      from.disabled = !specific;
+      from.hidden = !specific;
+      if (toMode) {
+        if (mode !== "any" && mode !== "" && toMode.value === "any") {
+          toMode.value = "";
+          if (!to.value) to.value = group.getAttribute("data-today") || "";
+        }
+        var toAny = toMode.value === "any";
+        to.disabled = toAny;
+        to.hidden = toAny;
+        if (!toAny && !to.value) to.value = group.getAttribute("data-today") || "";
+      }
+      if (specific || mode === "any") return;
+      var end = to.value || group.getAttribute("data-today") || "";
+      if (!end) return;
+      if (!to.value) to.value = end;
+      from.value = shiftDays(end, Number(mode));
+    }
+    function bindDateRanges(root) {
+      (root || document).querySelectorAll("[data-date-range]").forEach(function (group) {
+        syncDateRange(group, null);
+      });
+    }
+    document.addEventListener("change", function (event) {
+      var el = event.target;
+      if (!el.closest) return;
+      var search = el.closest("[data-search]");
+      if (search && el.type === "checkbox") {
+        var searchAny = search.querySelector("[data-search-any]");
+        var fields = search.querySelectorAll('input[name="search_in"]');
+        if (el === searchAny && searchAny.checked) {
+          fields.forEach(function (item) { item.checked = false; });
+        } else if (el.name === "search_in") {
+          var picked = false;
+          fields.forEach(function (item) { if (item.checked) picked = true; });
+          searchAny.checked = !picked;
+        }
+      }
+      var enrichment = el.closest("[data-enrichment]");
+      if (enrichment && el.type === "checkbox") {
+        var any = enrichment.querySelector("[data-enrichment-any]");
+        var statuses = enrichment.querySelectorAll('input[name="enrichment_status"]');
+        if (el === any && any.checked) {
+          statuses.forEach(function (item) { item.checked = false; });
+        } else if (el.name === "enrichment_status") {
+          var chosen = false;
+          statuses.forEach(function (item) { if (item.checked) chosen = true; });
+          any.checked = !chosen;
+        }
+      }
+      var group = el.closest("[data-date-range]");
+      if (!group || !el.getAttribute || !el.getAttribute("data-role")) return;
+      group.setAttribute("data-touched", "1");
+      syncDateRange(group, el);
+    });
+    document.addEventListener("submit", function (event) {
+      var form = event.target;
+      if (!form.querySelectorAll) return;
+      form.querySelectorAll("[data-date-range][data-suggested='1']").forEach(function (group) {
+        if (group.getAttribute("data-touched") === "1") return;
+        group.querySelectorAll("input, select").forEach(function (el) {
+          el.value = "";
+        });
+      });
+    }, true);
+    bindDateRanges(document);
+    document.addEventListener("htmx:afterSwap", function (event) {
+      bindDateRanges(event.target);
+    });
   </script>
 </body>
 </html>

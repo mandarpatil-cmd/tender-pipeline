@@ -4,7 +4,7 @@
 {% block body %}
 <p class="kicker">Awards</p>
 <h1>Tender pipeline</h1>
-<p class="lede">One row per award. The tender id opens everything stored for that tender and company. A scrape or a contact lookup starts from Runs. Mint columns are text taken from a PDF. They are not an address to mail.</p>
+<p class="lede">One row per award. The tender id opens everything stored for that tender and company. Enrich on this table uses the companies in the filter. Runs is the same enrich, with a limit and a delay. Mint columns are text taken from a PDF. They are not an address to mail.</p>
 
 {% if snapshot.ready %}
 <section class="strip" aria-label="Pipeline counts">
@@ -17,11 +17,20 @@
   {% endfor %}
 </section>
 <p class="sync">{% if filtered %}Counts match the rows in this filter.{% else %}Counts are the whole database. The table is one row per award.{% endif %}</p>
+{% if requeued_note %}<p class="sync" data-requeued="{{ requeued_count }}">{{ requeued_note }}</p>{% endif %}
+{% if combined_note %}<p class="sync" data-combined>{{ combined_note }}</p>{% endif %}
 
 <form class="filters" method="get" action="/" hx-boost="true">
-  <label class="wide">Search
+  <label class="wide search">Search tender, company, city, email, or phone
     <input name="q" value="{{ query.text }}" placeholder="Tender, company, city, email, phone">
   </label>
+  <fieldset class="choices" data-search>
+    <legend>Search in</legend>
+    <label class="choice"><input type="checkbox" data-search-any {% if not query.search_in %}checked{% endif %}> Any</label>
+    <label class="choice"><input type="checkbox" name="search_in" value="name" {% if 'name' in query.search_in %}checked{% endif %}> Company name</label>
+    <label class="choice"><input type="checkbox" name="search_in" value="vendor_id" {% if 'vendor_id' in query.search_in %}checked{% endif %}> Vendor id</label>
+    <label class="choice"><input type="checkbox" name="search_in" value="city" {% if 'city' in query.search_in %}checked{% endif %}> City</label>
+  </fieldset>
   <label>Tender status
     <select name="tender_status">
       <option value="">Any</option>
@@ -30,14 +39,13 @@
       {% endfor %}
     </select>
   </label>
-  <label>Enrichment
-    <select name="enrichment_status">
-      <option value="">Any</option>
-      {% for value in choices.enrichment_status %}
-      <option value="{{ value }}" {% if query.enrichment_status == value %}selected{% endif %}>{{ value }}</option>
-      {% endfor %}
-    </select>
-  </label>
+  <fieldset class="choices" data-enrichment>
+    <legend>Enrichment</legend>
+    <label class="choice"><input type="checkbox" name="enrichment_any" value="1" data-enrichment-any {% if not query.enrichment_status %}checked{% endif %}> Any</label>
+    {% for value in choices.enrichment_status %}
+    <label class="choice"><input type="checkbox" name="enrichment_status" value="{{ value }}" {% if value in query.enrichment_status %}checked{% endif %}> {{ value }}</label>
+    {% endfor %}
+  </fieldset>
   <label>Outreach
     <select name="outreach_status">
       <option value="">Any</option>
@@ -72,18 +80,44 @@
   <label>Organisation
     <input name="organisation" value="{{ query.organisation }}">
   </label>
-  <label>Contract date from
-    <input name="date_from" value="{{ query.date_from }}" placeholder="2026-01-01">
-  </label>
-  <label>Contract date to
-    <input name="date_to" value="{{ query.date_to }}" placeholder="2026-12-31">
-  </label>
-  <label>Scraped from
-    <input name="scraped_from" type="date" value="{{ query.scraped_from }}">
-  </label>
-  <label>Scraped to
-    <input name="scraped_to" type="date" value="{{ query.scraped_to }}">
-  </label>
+  <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="{{ '1' if contract_open else '0' }}">
+    <label>Contract date from
+      <select name="date_from_preset" data-role="preset">
+        <option value="any" {% if date_from_preset == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if date_from_preset == '' %}selected{% endif %}>Specific date</option>
+        {% for days in date_presets %}
+        <option value="{{ days }}" {% if date_from_preset == days|string %}selected{% endif %}>{{ days }} days before to</option>
+        {% endfor %}
+      </select>
+      <input name="date_from" type="date" data-role="from" value="{{ contract_from }}" {% if date_from_preset != '' %}hidden disabled{% endif %}>
+    </label>
+    <label>Contract date to
+      <select name="date_to_mode" data-role="to-mode">
+        <option value="any" {% if date_to_mode == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if date_to_mode == '' %}selected{% endif %}>Specific date</option>
+      </select>
+      <input name="date_to" type="date" data-role="to" value="{{ contract_to }}" {% if date_to_mode == 'any' %}hidden disabled{% endif %}>
+    </label>
+  </div>
+  <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="{{ '1' if scraped_open else '0' }}">
+    <label>Scraped from
+      <select name="scraped_from_preset" data-role="preset">
+        <option value="any" {% if scraped_from_preset == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if scraped_from_preset == '' %}selected{% endif %}>Specific date</option>
+        {% for days in date_presets %}
+        <option value="{{ days }}" {% if scraped_from_preset == days|string %}selected{% endif %}>{{ days }} days before to</option>
+        {% endfor %}
+      </select>
+      <input name="scraped_from" type="date" data-role="from" value="{{ scraped_from }}" {% if scraped_from_preset != '' %}hidden disabled{% endif %}>
+    </label>
+    <label>Scraped to
+      <select name="scraped_to_mode" data-role="to-mode">
+        <option value="any" {% if scraped_to_mode == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if scraped_to_mode == '' %}selected{% endif %}>Specific date</option>
+      </select>
+      <input name="scraped_to" type="date" data-role="to" value="{{ scraped_to }}" {% if scraped_to_mode == 'any' %}hidden disabled{% endif %}>
+    </label>
+  </div>
   <label>Contract value min
     <input name="value_min" value="{{ query.value_min }}">
   </label>
@@ -103,7 +137,10 @@
       <option value="desc" {% if query.direction == 'desc' %}selected{% endif %}>Descending</option>
     </select>
   </label>
-  <button type="submit">Apply</button>
+  <div class="actions">
+    <button type="submit">Apply</button>
+    <a class="quiet" href="/" hx-boost="false">Clear filters</a>
+  </div>
 </form>
 {% include "results.html" %}
 {% else %}

@@ -8,23 +8,29 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
 from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.manual import NeedsAttach, WinnerInput, save_manual_tender
-from pipeline_core.models import STATUS_DONE, Vendor
 from pipeline_core.queries import (
     ContactError,
-    pending_vendors,
-    reset_failed_ids,
-    reset_not_found_ids,
+    classify_selection,
     set_typed_contact,
 )
 
 from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
+from ops_ui.present import enrich_plan, href, query_from, widen_enrichment
 from ops_ui.queries import load_home
 from ops_ui.runs import enrich_cost_line, run_enrich
 from ops_ui.selection import selected_vendor_ids
 from ops_ui.templating import TEMPLATES
 
 router = APIRouter()
+
+
+def _show_combined(form, kind: str) -> RedirectResponse:
+    """Open this filter with that class included. Does not write the database."""
+    extra = ("pending", "not_found") if kind == "not_found" else ("pending", "failed")
+    target = href(widen_enrichment(query_from(form), extra), page="1")
+    joiner = "&" if "?" in target else "?"
+    return RedirectResponse(f"{target}{joiner}show={kind}", status_code=303)
 
 
 @router.get("/tender/new")
@@ -77,8 +83,12 @@ async def selection(request: Request):
     if not snapshot.ready:
         return Response(snapshot.message, status_code=404, media_type="text/plain")
     form = await request.form()
-    ids = selected_vendor_ids(form, path)
     action = str(form.get("action") or "")
+    if action == "show_not_found":
+        return _show_combined(form, "not_found")
+    if action == "show_failed":
+        return _show_combined(form, "failed")
+    ids = selected_vendor_ids(form, path)
     if not ids:
         message = (
             "No companies match this filter."
@@ -87,38 +97,20 @@ async def selection(request: Request):
         )
         return Response(message, status_code=400, media_type="text/plain")
     ensure_schema(engine(path))
-    if action == "requeue_failed":
-        with session(engine(path)) as current:
-            moved = reset_failed_ids(current, ids)
-        return RedirectResponse(f"/?requeued={moved}", status_code=303)
-    if action == "requeue_not_found" and form.get("confirm") != "yes":
-        return TEMPLATES.TemplateResponse(
-            request=request,
-            name="requeue_warn.html",
-            context={"ids": ids},
-        )
-    if action == "requeue_not_found":
-        with session(engine(path)) as current:
-            moved = reset_not_found_ids(current, ids)
-        return RedirectResponse(f"/?requeued={moved}", status_code=303)
     with session(engine(path)) as current:
-        waiting = pending_vendors(current, vendor_ids=ids)
-        done = 0
-        for vendor_id in ids:
-            vendor = current.get(Vendor, vendor_id)
-            if vendor is not None and vendor.enrichment_status == STATUS_DONE:
-                done += 1
-        names = [vendor.name_raw for vendor in waiting]
-        waiting_ids = [vendor.vendor_id for vendor in waiting]
+        queue = classify_selection(current, ids)
+    looked_up = len(queue.waiting_ids)
     return TEMPLATES.TemplateResponse(
         request=request,
         name="selection.html",
         context={
-            "ids": waiting_ids,
-            "names": names,
-            "skipped_done": done,
-            "cost": enrich_cost_line(len(waiting), dry_run=True),
-            "live_cost": enrich_cost_line(len(waiting), dry_run=False),
+            "ids": list(queue.waiting_ids),
+            "names": list(queue.names),
+            "queue": queue,
+            "skipped_done": queue.done,
+            "plan": enrich_plan(queue.pending, queue.not_found, queue.failed, queue.not_found_ready),
+            "cost": enrich_cost_line(looked_up, dry_run=True),
+            "live_cost": enrich_cost_line(looked_up, dry_run=False),
         },
     )
 

@@ -266,7 +266,63 @@ article.gap .label, article.gap .count { color: var(--accent-foreground); }
   gap: 0.55rem 0.65rem;
 }
 
-.filters .wide { grid-column: 1 / -1; }
+.filters label.wide { grid-column: 1 / -1; }
+
+.filters label.wide input {
+  min-height: 2.7rem;
+  font-size: 1rem;
+  padding: 0.65rem 0.75rem;
+}
+
+.filters fieldset.choices {
+  grid-column: span 2;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  align-items: center;
+}
+.filters fieldset.choices legend {
+  width: 100%;
+  padding: 0;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.filters .actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+}
+.filters a.quiet {
+  display: inline-block;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0.5rem 0.8rem;
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.status {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 4px);
+}
+.status.pending { border-color: var(--primary); }
+.status.not_found { border-color: var(--muted-foreground); }
+.status.failed { border-color: var(--accent); }
+
+.date-pair { display: contents; }
 
 .filters label, .panel label, .entry label, .contact label {
   display: flex;
@@ -276,6 +332,25 @@ article.gap .label, article.gap .count { color: var(--accent-foreground); }
   font-size: 0.7rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.filters label.search {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.95rem;
+  font-family: var(--font-sans);
+  color: var(--foreground);
+}
+
+.filters fieldset.choices label {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.9rem;
+  font-family: var(--font-sans);
+  color: var(--foreground);
 }
 
 .entry {

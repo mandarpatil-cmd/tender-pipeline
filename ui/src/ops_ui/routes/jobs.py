@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -23,10 +24,12 @@ from ops_ui.jobs import (
     start_job,
     submit_captcha,
 )
+from ops_ui.present import DATE_PRESETS, resolve_preset
 from ops_ui.queries import load_home
 from ops_ui.runs import (
     date_error,
     enrich_cost,
+    portal_date,
     run_enrich,
     run_fetch_pdfs,
     run_scrape,
@@ -66,6 +69,8 @@ def jobs_page(request: Request, path: Path = Depends(database_path)):
             "status_cost": status_cost(),
             "enrich_cost_text": waiting,
             "scrape_cost_text": scrape_cost(max_tenders=1, probe=False),
+            "today": date.today().isoformat(),
+            "date_presets": DATE_PRESETS,
         },
     )
 
@@ -137,8 +142,14 @@ async def post_enrich(request: Request, path: Path = Depends(database_path)):
 async def post_scrape(request: Request, path: Path = Depends(database_path)):
     form = await request.form()
     uncapped = form.get("no_cap") in {"on", "true", "1"}
-    from_date = str(form.get("from_date") or "")
-    to_date = str(form.get("to_date") or "")
+    from_date, to_date = resolve_preset(
+        str(form.get("from_date") or ""),
+        str(form.get("to_date") or ""),
+        str(form.get("from_date_preset") or ""),
+        to_mode=str(form.get("to_date_mode") or ""),
+    )
+    from_date = portal_date(from_date)
+    to_date = portal_date(to_date)
     date_field = str(form.get("date_field") or "contract")
     if uncapped:
         if not from_date.strip() or not to_date.strip():

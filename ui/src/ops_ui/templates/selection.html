@@ -1,9 +1,15 @@
 {% extends "base.html" %}
-{% block title %}Look up contacts{% endblock %}
+{% block title %}Enrich{% endblock %}
 {% block body %}
 <p class="kicker">Awards</p>
-<h1>Look up these companies</h1>
-{% if skipped_done %}<p>{{ skipped_done }} already answered and will not be looked up again.</p>{% endif %}
+<h1>Enrich</h1>
+<p class="meta">
+  <span class="status pending">pending <span data-count="pending">{{ queue.pending }}</span></span>
+  <span class="status not_found">not_found <span data-count="not_found">{{ queue.not_found }}</span></span>
+  <span class="status failed">failed <span data-count="failed">{{ queue.failed }}</span></span>
+</p>
+<p class="sync" data-enrich-plan>{{ plan }}</p>
+{% if skipped_done %}<p>{{ skipped_done }} already answered and will not be enriched again.</p>{% endif %}
 {% if names %}
 <ul>{% for name in names %}<li>{{ name }}</li>{% endfor %}</ul>
 <p class="cost">{{ cost }}</p>
@@ -16,6 +22,6 @@
   <button type="submit">Start</button>
 </form>
 {% else %}
-<p>None of the ticked companies are still waiting. Answered companies are not looked up again.</p>
+<p>None of the ticked companies are still waiting. Answered companies are not enriched again.</p>
 {% endif %}
 {% endblock %}

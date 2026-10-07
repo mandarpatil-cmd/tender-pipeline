@@ -4,6 +4,9 @@
   <a href="{{ excel_href }}" hx-boost="false">Excel</a>
   <a href="{{ csv_href }}" hx-boost="false">CSV</a>
   <span class="legend">Mint columns are PDF evidence</span>
+  <span class="status pending">pending <span data-count="pending">{{ view.counts.pending }}</span></span>
+  <span class="status not_found">not_found <span data-count="not_found">{{ view.counts.not_found }}</span></span>
+  <span class="status failed">failed <span data-count="failed">{{ view.counts.failed }}</span></span>
 </div>
 
 <form method="post" action="/selection">
@@ -43,9 +46,9 @@
 </div>
 <p class="meta">
   <label class="choice"><input type="checkbox" name="select_all" value="1"> All companies in this filter ({{ view.counts.vendors }})</label>
-  <button type="submit" name="action" value="lookup">Look up contacts</button>
-  <button class="quiet" type="submit" name="action" value="requeue_failed">Put failed back on the queue</button>
-  <button class="quiet" type="submit" name="action" value="requeue_not_found">Put not_found back on the queue</button>
+  <button type="submit" name="action" value="lookup">Enrich</button>
+  <button class="quiet" type="submit" name="action" value="show_failed">Show failed in this filter</button>
+  <button class="quiet" type="submit" name="action" value="show_not_found">Show not_found in this filter</button>
   <button type="submit" name="action" value="mail" formaction="/mail/from-table">Mail these</button>
 </p>
 </form>

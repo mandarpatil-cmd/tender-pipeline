@@ -7,7 +7,14 @@ import threading
 from fastapi.testclient import TestClient
 from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.models import CONTACT_TYPED, Vendor
-from pipeline_core.queries import mark_enriched, replace_awards, upsert_tender, upsert_vendor, utcnow
+from pipeline_core.queries import (
+    mark_enriched,
+    mark_failed,
+    replace_awards,
+    upsert_tender,
+    upsert_vendor,
+    utcnow,
+)
 
 from ops_ui.app import create_app
 from ops_ui.jobs import get_job
@@ -152,3 +159,181 @@ def test_select_all_uses_the_filter_and_ignores_the_page(tmp_path):
     assert page.status_code == 200
     assert "Bihar Roads Ltd" in page.text
     assert "Assam Electricals" not in page.text
+    assert "<h1>Enrich</h1>" in page.text
+
+
+def _award(current, tender_id, vendor_id, name, *, state="Goa"):
+    upsert_tender(current, tender_id=tender_id, title=name, scraped_at=utcnow())
+    replace_awards(
+        current,
+        tender_id,
+        [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+    )
+
+
+def test_show_not_found_opens_the_combined_list_and_writes_nothing(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        waiting = upsert_vendor(current, name_raw="Still Waiting Ltd", state="Goa")
+        empty = upsert_vendor(current, name_raw="No Contact Ltd", state="Goa")
+        known = upsert_vendor(current, name_raw="Known Absence", state="Goa")
+        other = upsert_vendor(current, name_raw="Other State Ltd", state="Bihar")
+        current.get(Vendor, empty).enrichment_status = "not_found"
+        current.get(Vendor, known).enrichment_status = "not_found"
+        current.get(Vendor, known).email = "known@example.com"
+        current.get(Vendor, other).enrichment_status = "not_found"
+        _award(current, "W-1", waiting, "Still Waiting Ltd")
+        _award(current, "N-1", empty, "No Contact Ltd")
+        _award(current, "K-1", known, "Known Absence")
+        _award(current, "B-1", other, "Other State Ltd")
+    client = TestClient(create_app(path))
+    opened = client.post(
+        "/selection",
+        data={"action": "show_not_found", "enrichment_status": "pending", "state": "Goa"},
+        follow_redirects=False,
+    )
+    location = opened.headers["location"]
+    assert opened.status_code == 303
+    assert "enrichment_status=pending" in location
+    assert "enrichment_status=not_found" in location
+    assert "state=Goa" in location
+    assert "show=not_found" in location
+    page = client.get(location).text
+    assert "Still Waiting Ltd" in page
+    assert "No Contact Ltd" in page
+    assert "Known Absence" in page
+    assert "Other State Ltd" not in page
+    assert "pending 1, not_found 2, failed 0" in page
+    assert "1 not_found with no email and no phone" in page
+    assert "Enrich looks up the pending companies" in page
+    with session(engine(path)) as current:
+        assert current.get(Vendor, waiting).enrichment_status == "pending"
+        assert current.get(Vendor, empty).enrichment_status == "not_found"
+        assert current.get(Vendor, known).enrichment_status == "not_found"
+        assert current.get(Vendor, known).email == "known@example.com"
+
+
+def test_show_failed_adds_failed_to_a_pending_filter(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        waiting = upsert_vendor(current, name_raw="Still Waiting Ltd", state="Bihar")
+        failed = upsert_vendor(current, name_raw="Failed Roads", state="Bihar")
+        mark_failed(current, failed)
+        _award(current, "W-1", waiting, "Still Waiting Ltd")
+        _award(current, "F-1", failed, "Failed Roads")
+    client = TestClient(create_app(path))
+    opened = client.post(
+        "/selection",
+        data={"action": "show_failed", "enrichment_status": "pending", "state": "Bihar"},
+        follow_redirects=False,
+    )
+    location = opened.headers["location"]
+    assert "enrichment_status=pending" in location
+    assert "enrichment_status=failed" in location
+    assert "state=Bihar" in location
+    assert "show=failed" in location
+    page = client.get(location).text
+    assert "pending 1, not_found 0, failed 1" in page
+    assert "0 not_found with no email and no phone" in page
+    assert 'value="failed" checked' in page
+    with session(engine(path)) as current:
+        assert current.get(Vendor, failed).enrichment_status == "failed"
+
+
+def test_show_not_found_leaves_any_as_the_whole_list(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        waiting = upsert_vendor(current, name_raw="Still Waiting Ltd")
+        _award(current, "W-1", waiting, "Still Waiting Ltd")
+    client = TestClient(create_app(path))
+    opened = client.post(
+        "/selection",
+        data={"action": "show_not_found"},
+        follow_redirects=False,
+    )
+    location = opened.headers["location"]
+    assert "enrichment_status=" not in location
+    assert location.endswith("?show=not_found") or "show=not_found" in location
+    page = client.get(location).text
+    assert "Still Waiting Ltd" in page
+    assert "pending 1, not_found 0, failed 0" in page
+
+
+def test_enrich_confirm_names_who_will_be_looked_up(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        waiting = upsert_vendor(current, name_raw="Still Waiting Ltd", state="Goa")
+        failed = upsert_vendor(current, name_raw="Failed Roads", state="Goa")
+        empty = upsert_vendor(current, name_raw="No Contact Ltd", state="Goa")
+        phoned = upsert_vendor(current, name_raw="Phone Only Ltd", state="Goa")
+        mark_failed(current, failed)
+        for vendor_id, email, phone in (
+            (empty, None, None),
+            (phoned, None, "9999999999"),
+        ):
+            vendor = current.get(Vendor, vendor_id)
+            vendor.enrichment_status = "not_found"
+            vendor.email = email
+            vendor.phone = phone
+        for tender_id, vendor_id, name in (
+            ("W-1", waiting, "Still Waiting Ltd"),
+            ("F-1", failed, "Failed Roads"),
+            ("N-1", empty, "No Contact Ltd"),
+            ("P-1", phoned, "Phone Only Ltd"),
+        ):
+            upsert_tender(current, tender_id=tender_id, title=name, scraped_at=utcnow())
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
+        done = upsert_vendor(current, name_raw="Already Done Ltd", state="Goa")
+        mark_enriched(current, done, email="done@example.com", phone=None)
+        _award(current, "D-1", done, "Already Done Ltd")
+    ids = [str(waiting), str(failed), str(empty), str(phoned), str(done)]
+    client = TestClient(create_app(path))
+    page = client.post("/selection", data={"action": "lookup", "vendor_id": ids})
+    assert page.status_code == 200
+    assert _count(page.text, "pending") == "1"
+    assert _count(page.text, "not_found") == "2"
+    assert _count(page.text, "failed") == "1"
+    assert "pending 1, not_found 2, failed 1" in page.text
+    assert "1 not_found with no email and no phone" in page.text
+    assert "Failed Roads" in page.text
+    assert "No Contact Ltd" in page.text
+    assert "Still Waiting Ltd" in page.text
+    assert f'value="{phoned}"' not in page.text
+    assert f'value="{done}"' not in page.text
+    assert "Already Done Ltd" not in page.text
+    started = client.post(
+        "/selection/lookup",
+        data={"vendor_id": [str(waiting), str(failed), str(empty)], "dry_run": "on"},
+        follow_redirects=False,
+    )
+    job_id = int(started.headers["location"].rsplit("/", 1)[-1])
+    text = ""
+    for _ in range(50):
+        job = get_job(path, job_id)
+        text = job.log or ""
+        if "Dry run" in text:
+            break
+        threading.Event().wait(0.05)
+    assert "Still Waiting Ltd" in text
+    assert "Failed Roads" in text
+    assert "No Contact Ltd" in text
+    with session(engine(path)) as current:
+        assert current.get(Vendor, waiting).enrichment_status == "pending"
+        assert current.get(Vendor, failed).enrichment_status == "failed"
+        assert current.get(Vendor, empty).enrichment_status == "not_found"
+        assert current.get(Vendor, phoned).enrichment_status == "not_found"
+        assert current.get(Vendor, phoned).phone == "9999999999"
+
+
+def _count(html: str, key: str) -> str:
+    marker = f'data-count="{key}">'
+    start = html.index(marker) + len(marker)
+    return html[start : html.index("<", start)].strip()

@@ -3,7 +3,7 @@
 {% block body %}
 <p class="kicker">Runs</p>
 <h1>Runs</h1>
-<p class="lede">Start a scrape or a contact lookup. One run of each kind can go at a time. Mail is not sent from here.</p>
+<p class="lede">Start a scrape or an enrich run. One run of each kind can go at a time. Mail is not sent from here.</p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% else %}
@@ -16,7 +16,8 @@
 </section>
 
 <form id="enrich-form" class="panel" method="post" action="/jobs/enrich">
-  <h2>Find contacts</h2>
+  <h2>Enrich</h2>
+  <p class="cost">Same enrich as Awards. Limit is how many waiting companies this run takes. Delay is the pause between them. Awards uses the filter on that page and does not ask for these.</p>
   <div class="grid">
     <label>Limit
       <input name="limit" type="number" min="1" value="1">
@@ -35,7 +36,7 @@
   <label class="check"><input type="checkbox" name="retry_failed"> Put failed companies back on the queue</label>
   <label class="check"><input type="checkbox" name="retry_not_found"> Put not_found companies back on the queue</label>
   <p class="cost" id="enrich-cost" hx-get="/jobs/enrich-cost" hx-trigger="change from:#enrich-form" hx-include="#enrich-form" hx-swap="innerHTML">{{ enrich_cost_text }}</p>
-  <button type="submit">Find contacts</button>
+  <button type="submit">Enrich</button>
 </form>
 
 <form class="panel" method="post" action="/jobs/scrape">
@@ -56,12 +57,25 @@
         <option value="published">published</option>
       </select>
     </label>
-    <label>From date
-      <input name="from_date" placeholder="dd/MM/yyyy">
-    </label>
-    <label>To date
-      <input name="to_date" placeholder="dd/MM/yyyy">
-    </label>
+    <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
+      <label>From date
+        <select name="from_date_preset" data-role="preset">
+          <option value="any" selected>Any</option>
+          <option value="">Specific date</option>
+          {% for days in date_presets %}
+          <option value="{{ days }}">{{ days }} days before to</option>
+          {% endfor %}
+        </select>
+        <input name="from_date" type="date" data-role="from" hidden disabled>
+      </label>
+      <label>To date
+        <select name="to_date_mode" data-role="to-mode">
+          <option value="any" selected>Any</option>
+          <option value="">Specific date</option>
+        </select>
+        <input name="to_date" type="date" data-role="to" value="{{ today }}" hidden disabled>
+      </label>
+    </div>
   </div>
   <label class="check"><input type="checkbox" name="no_cap"> No cap — every tender in this date range</label>
   <label class="check"><input type="checkbox" name="download_pdfs" checked> Download PDFs</label>

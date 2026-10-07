@@ -8,7 +8,8 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 from pipeline_core.db import engine, ensure_schema
-from pipeline_core.queries import upsert_vendor
+from pipeline_core.models import Vendor
+from pipeline_core.queries import mark_failed, upsert_vendor
 
 from ops_ui.app import create_app
 from ops_ui.jobs import Busy, get_job, start_job
@@ -90,6 +91,58 @@ def test_enrich_dry_run_lists_the_company_and_does_not_spend(tmp_path):
 
         vendor = current.query(Vendor).one()
         assert vendor.enrichment_status == "pending"
+
+
+def test_enrich_page_names_the_limit_and_the_delay(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    html = TestClient(create_app(path)).get("/jobs").text
+
+    assert "<h2>Enrich</h2>" in html
+    assert "Find contacts" not in html
+    assert "Limit is how many waiting companies" in html
+    assert "60 days before to" in html
+    assert 'name="to_date"' in html
+    assert 'type="date"' in html
+
+
+def test_enrich_dry_run_does_not_requeue(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        failed = upsert_vendor(current, name_raw="Failed Works")
+        known = upsert_vendor(current, name_raw="Known Absence")
+        mark_failed(current, failed)
+        vendor = current.get(Vendor, known)
+        vendor.enrichment_status = "not_found"
+        vendor.email = "known@example.com"
+    client = TestClient(create_app(path))
+    response = client.post(
+        "/jobs/enrich",
+        data={
+            "limit": "1",
+            "delay": "0",
+            "source": "scrape",
+            "dry_run": "on",
+            "retry_failed": "on",
+            "retry_not_found": "on",
+        },
+        follow_redirects=False,
+    )
+    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    text = ""
+    for _ in range(50):
+        page = client.get(f"/jobs/{job_id}")
+        if "Dry run" in page.text and "Would put" in page.text:
+            text = page.text
+            break
+        threading.Event().wait(0.05)
+
+    assert "Would put 1 failed company back on the queue." in text
+    assert "Would put 0 not_found companies back on the queue." in text
+    with session(engine(path)) as current:
+        assert current.get(Vendor, failed).enrichment_status == "failed"
+        assert current.get(Vendor, known).enrichment_status == "not_found"
 
 
 def test_typed_captcha_reaches_the_same_run(tmp_path):
@@ -240,6 +293,35 @@ def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
     assert params["max_pages"] is None
     assert params["from_date"] == "01/01/2026"
     assert params["to_date"] == "31/01/2026"
+
+
+def test_scrape_preset_is_measured_from_the_to_date(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+
+    def fake(log, stop, **params):
+        log.write("listed")
+        return 0
+
+    monkeypatch.setattr("ops_ui.routes.jobs.run_scrape", fake)
+    client = TestClient(create_app(path))
+    response = client.post(
+        "/jobs/scrape",
+        data={
+            "no_cap": "on",
+            "to_date": "2026-10-07",
+            "from_date_preset": "60",
+            "date_field": "contract",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job = get_job(path, job_id)
+    params = json.loads(job.params_json)
+    assert params["from_date"] == "08/08/2026"
+    assert params["to_date"] == "07/10/2026"
 
 
 def test_runs_list_pages_and_filters(tmp_path):
