@@ -480,9 +480,12 @@ def _assert_query(current, catalogue, query):
     expected = matching_keys(catalogue, query)
     got = {(row["tender_id"], str(row["bid_number"])) for row in view.rows}
     assert got == expected, query
-    assert view.counts.awards == len(expected)
+    assert view.counts.awards == len(view.rows) == len(expected)
     assert view.counts.tenders == len({tender_id for tender_id, _bid in expected})
     assert view.counts.vendors == len({row["vendor_id"] for row in view.rows})
+    for status in ("pending", "not_found", "failed"):
+        rows = sum(1 for row in view.rows if row["enrichment_status"] == status)
+        assert getattr(view.counts, status) == rows, (status, query)
 
 
 def test_every_filter_pair_matches_the_oracle(bind):
@@ -569,3 +572,43 @@ def test_every_search_scope_matches_the_oracle(bind):
                     catalogue,
                     AwardQuery(text=text, search_in=scope),
                 )
+
+
+def test_failed_chip_counts_each_award_of_the_same_company(bind):
+    with session(bind) as current:
+        twice = upsert_vendor(current, name_raw="Twice Failed Ltd")
+        once = upsert_vendor(current, name_raw="Once Failed Ltd")
+        for tender_id, vendor_id, name, status in (
+            ("A", twice, "Twice Failed Ltd", "AOC"),
+            ("B", twice, "Twice Failed Ltd", "Retender"),
+            ("C", once, "Once Failed Ltd", "AOC"),
+        ):
+            upsert_tender(
+                current,
+                tender_id=tender_id,
+                title=name,
+                organisation="Office",
+                status=status,
+                contract_date="01-Jan-2026",
+                contract_value="INR 10",
+                scraped_at=utcnow(),
+            )
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
+        mark_failed(current, twice)
+        mark_failed(current, once)
+    with session(bind) as current:
+        failed = award_view(current, AwardQuery(enrichment_status=("failed",)), page_size=None)
+        narrowed = award_view(
+            current,
+            AwardQuery(enrichment_status=("failed",), tender_status="AOC"),
+            page_size=None,
+        )
+    assert failed.counts.failed == failed.total == 3
+    assert failed.counts.vendors == 2
+    assert {row["tender_id"] for row in failed.rows} == {"A", "B", "C"}
+    assert narrowed.counts.failed == narrowed.total == 2
+    assert {row["tender_id"] for row in narrowed.rows} == {"A", "C"}

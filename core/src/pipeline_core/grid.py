@@ -586,17 +586,9 @@ def _totals(session: Session, query: AwardQuery, specific, legacy) -> tuple[int,
             func.count(func.distinct(case((has_email, Vendor.vendor_id)))),
             func.sum(case((sent_award, 1), else_=0)),
             func.count(func.distinct(case((and_(~has_email, has_phone), Vendor.vendor_id)))),
-            func.count(
-                func.distinct(case((Vendor.enrichment_status == STATUS_PENDING, Vendor.vendor_id)))
-            ),
-            func.count(
-                func.distinct(
-                    case((Vendor.enrichment_status == STATUS_NOT_FOUND, Vendor.vendor_id))
-                )
-            ),
-            func.count(
-                func.distinct(case((Vendor.enrichment_status == STATUS_FAILED, Vendor.vendor_id)))
-            ),
+            func.sum(case((Vendor.enrichment_status == STATUS_PENDING, 1), else_=0)),
+            func.sum(case((Vendor.enrichment_status == STATUS_NOT_FOUND, 1), else_=0)),
+            func.sum(case((Vendor.enrichment_status == STATUS_FAILED, 1), else_=0)),
         ),
         specific,
         legacy,

@@ -451,3 +451,39 @@ def test_combination_urls_show_the_same_tenders_as_the_query(tmp_path):
         shown = {tender_id for tender_id in _TENDERS if f">{tender_id}</a>" in html}
         assert shown == {row["tender_id"] for row in view.rows}
         assert _count(html, "awards") == str(view.total)
+
+
+def test_failed_chip_matches_the_award_rows_including_tender_status(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        twice = upsert_vendor(current, name_raw="Twice Failed Ltd")
+        once = upsert_vendor(current, name_raw="Once Failed Ltd")
+        for tender_id, vendor_id, name, status in (
+            ("A", twice, "Twice Failed Ltd", "AOC"),
+            ("B", twice, "Twice Failed Ltd", "Retender"),
+            ("C", once, "Once Failed Ltd", "AOC"),
+        ):
+            upsert_tender(
+                current,
+                tender_id=tender_id,
+                title=name,
+                organisation="Office",
+                status=status,
+                contract_date="01-Jan-2026",
+                contract_value="INR 10",
+                scraped_at=utcnow(),
+            )
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
+        mark_failed(current, twice)
+        mark_failed(current, once)
+    client = TestClient(create_app(path))
+    failed = client.get("/?enrichment_status=failed").text
+    assert _count(failed, "failed") == _count(failed, "awards") == "3"
+    narrowed = client.get("/?enrichment_status=failed&tender_status=AOC").text
+    assert _count(narrowed, "failed") == _count(narrowed, "awards") == "2"

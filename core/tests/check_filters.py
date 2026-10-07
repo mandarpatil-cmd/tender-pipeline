@@ -40,13 +40,30 @@ def main() -> int:
             view = award_view(current, query, page_size=None)
             expected = matching_keys(catalogue, query)
             got = {(row["tender_id"], str(row["bid_number"])) for row in view.rows}
-            if got == expected and view.counts.awards == len(expected):
+            chips = {
+                status: sum(1 for row in view.rows if row["enrichment_status"] == status)
+                for status in ("pending", "not_found", "failed")
+            }
+            chips_match = (
+                view.counts.pending == chips["pending"]
+                and view.counts.not_found == chips["not_found"]
+                and view.counts.failed == chips["failed"]
+                and view.counts.awards == len(view.rows)
+            )
+            if got == expected and view.counts.awards == len(expected) and chips_match:
                 print(f"ok    {label}  expected {len(expected)}  returned {view.total}")
                 continue
             failed += 1
             extra = sorted(tender for tender, _bid in got - expected)
             missing = sorted(tender for tender, _bid in expected - got)
             print(f"MISS  {label}  expected {len(expected)}  returned {view.total}")
+            if not chips_match:
+                print(
+                    "      chips "
+                    f"pending {view.counts.pending}/{chips['pending']} "
+                    f"not_found {view.counts.not_found}/{chips['not_found']} "
+                    f"failed {view.counts.failed}/{chips['failed']}"
+                )
             if extra:
                 print(f"      extra {extra[:20]}")
             if missing:
