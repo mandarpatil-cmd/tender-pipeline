@@ -68,7 +68,7 @@ def _seed(path, json_path: str):
 def test_row_links_to_the_award(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path, json_path="")
-    html = TestClient(create_app(path)).get("/").text
+    html = TestClient(create_app(path)).get("/scrape").text
     assert "tender_id=LARGE" in html
     assert "bid=1" in html
     assert ">LARGE</a>" in html

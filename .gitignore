@@ -13,6 +13,7 @@
 # and every spreadsheet or CSV hold real company contact details.
 # ---------------------------------------------------------------
 data/
+downloads/
 debug/
 archive/
 outputs/

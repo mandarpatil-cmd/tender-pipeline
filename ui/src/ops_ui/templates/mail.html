@@ -1,19 +1,19 @@
 {% extends "base.html" %}
 {% block title %}Mail{% endblock %}
+{% block main_class %}wide{% endblock %}
 {% block body %}
 <p class="kicker">Mail</p>
 <h1>Mail</h1>
-<p class="lede">Mail the companies you picked on Awards. One message per tender, to <code>vendors.email</code> only. Sending does not change the saved default letter.</p>
+<p class="lede">Companies with an email that have not been sent yet. One message per tender, to <code>vendors.email</code> only. A phone alone is not mailed. Sending does not change the saved default letter.</p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% else %}
+{% include "stage_filters.html" %}
+{% if view %}{% include "results.html" %}{% endif %}
 {% if error %}<p class="warn">{{ error }}</p>{% endif %}
 {% if saved and not error %}<p class="cost">Saved. Nothing was sent.</p>{% endif %}
 {% if not selected %}
-<div class="empty">
-  <p>Choose companies on Awards.</p>
-  <p><a href="{{ awards_href(request.cookies.get('awards_query', '')) }}">Awards</a></p>
-</div>
+<p class="meta">Tick rows in the table, then Mail these.</p>
 {% else %}
 <h2>These companies</h2>
 <p class="cost">{{ mailable|length }} message(s) will be mailed.{% if already %} {{ already }} already sent are left out unless Send again is ticked.{% endif %}</p>
@@ -25,7 +25,7 @@
 {% else %}
 {% include "mail_companies.html" %}
 {% endif %}
-<p class="meta"><a href="{{ awards_href(request.cookies.get('awards_query', '')) }}">Change the list</a></p>
+<p class="meta"><a href="{{ stage_path }}">Change the list</a></p>
 <h2>The letter</h2>
 {% if mailable %}
 <p class="meta">Filled in for {{ sample_company }}. Send the default uses the saved letter. Change some phrases applies to this send only. The unsubscribe line at the end is added to every email and cannot be removed.</p>

@@ -1,7 +1,8 @@
 """One row per award, filtered and paged in the database.
 
-The window and its export both call this. A date or amount that cannot be
-read stays in the result: dropping it would hide a row the operator can see.
+The window and its export both call this. Amounts are integer hundredths and
+calendar dates are ISO text, so a filter compares the column. A blank date
+stays in a date range. A blank amount does not stay in a value range.
 """
 
 from __future__ import annotations
@@ -14,7 +15,8 @@ from typing import Any
 from sqlalchemy import and_, case, false, func, or_, select
 from sqlalchemy.orm import Session
 
-from .loose import loose_date, loose_number
+from .loose import loose_date
+from .money import format_amount, parse_money
 from .models import (
     ENRICHMENT_STATUSES,
     OUTREACH_FAILED,
@@ -79,6 +81,7 @@ COLUMNS: tuple[tuple[str, str, str, bool], ...] = (
     ("status", "Status", "Tender", False),
     ("contract_date", "Contract date", "Tender", False),
     ("contract_value", "Contract value", "Tender", False),
+    ("contract_currency", "Contract currency", "Tender", False),
     ("scraped_at", "Scraped", "Tender", False),
     ("bid_number", "Bid", "Award", False),
     ("rank", "Rank", "Award", False),
@@ -317,7 +320,7 @@ def award_view(
     if limit is not None:
         statement = statement.limit(limit).offset(offset)
 
-    rows = [dict(zip(columns, row, strict=True)) for row in session.execute(statement)]
+    rows = [_shown(dict(zip(columns, row, strict=True))) for row in session.execute(statement)]
     for row in rows:
         row.setdefault("gstin", "")
         row.setdefault("pdf_files", "")
@@ -443,6 +446,7 @@ def _row_columns(specific, legacy) -> dict[str, Any]:
         "status": Tender.status,
         "contract_date": Tender.contract_date,
         "contract_value": Tender.contract_value,
+        "contract_currency": Tender.contract_currency,
         "scraped_at": Tender.scraped_at,
         "bid_number": Award.bid_number,
         "rank": Award.rank,
@@ -523,15 +527,15 @@ def _filtered(statement, query: AwardQuery, specific, legacy):
         statement = statement.where(_contains(Tender.organisation, _like(query.organisation)))
     statement = _range(
         statement,
-        func.loose_date(Tender.contract_date),
+        Tender.contract_date,
         loose_date(query.date_from),
         loose_date(query.date_to),
     )
     statement = _range(
         statement,
-        func.loose_number(Tender.contract_value),
-        loose_number(query.value_min),
-        loose_number(query.value_max),
+        Tender.contract_value,
+        _money_bound(query.value_min),
+        _money_bound(query.value_max),
         keep_unparsed=False,
     )
     scraped_day = func.substr(Tender.scraped_at, 1, 10)
@@ -611,11 +615,27 @@ def _totals(session: Session, query: AwardQuery, specific, legacy) -> tuple[int,
     )
 
 
+def _shown(row: dict) -> dict:
+    """Hundredths become a number. The currency stays in its own column."""
+    for key in ("contract_value", "quoted_value", "awarded_value"):
+        row[key] = format_amount(row.get(key))
+    return row
+
+
+def _money_bound(text: str) -> int | None:
+    """A typed rupee amount, as hundredths. ``1000000`` is ten lakh rupees."""
+    if not text:
+        return None
+    hundredths, _currency = parse_money(text)
+    return hundredths
+
+
 def _order(query: AwardQuery, specific, legacy):
     columns = _row_columns(specific, legacy)
     column = columns[query.sort]
     primary = column.desc() if query.direction == "desc" else column.asc()
-    return (primary, Award.tender_id.asc(), Award.bid_number.asc())
+    blank_last = case((column.is_(None), 1), else_=0)
+    return (blank_last.asc(), primary, Award.tender_id.asc(), Award.bid_number.asc())
 
 
 def _search_clause(query: AwardQuery):

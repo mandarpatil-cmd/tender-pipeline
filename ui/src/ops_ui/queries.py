@@ -7,12 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline_core.db import BUSY_TIMEOUT_MS, engine, ensure_schema, session
-from pipeline_core.models import TABLES
-from pipeline_core.queries import (
-    backfill_tender_documents,
-    contact_breakdown,
-    pipeline_funnel,
-)
+from pipeline_core.models import STATUS_PENDING, TABLES, Tender, Vendor
+from pipeline_core.queries import backfill_tender_documents, outreach_targets
+from sqlalchemy import func, select
 from sqlalchemy.exc import DatabaseError, OperationalError
 
 #: Shown when creating the schema is the way forward.
@@ -31,9 +28,11 @@ class HomeSnapshot:
 
     path: Path
     ready: bool
-    funnel: tuple[tuple[str, int, str], ...] = ()
-    phone_only: int = 0
     message: str = ""
+    tenders: int = 0
+    companies: int = 0
+    waiting: int = 0
+    to_mail: int = 0
 
 
 def load_home(path: Path) -> HomeSnapshot:
@@ -74,8 +73,17 @@ def load_home(path: Path) -> HomeSnapshot:
         ensure_schema(engine(path))
         backfill_tender_documents(path)
         with session(engine(path)) as current:
-            funnel = tuple(pipeline_funnel(current))
-            phone_only = contact_breakdown(current)["phone_only"]
+            tenders = int(current.scalar(select(func.count()).select_from(Tender)) or 0)
+            companies = int(current.scalar(select(func.count()).select_from(Vendor)) or 0)
+            waiting = int(
+                current.scalar(
+                    select(func.count())
+                    .select_from(Vendor)
+                    .where(Vendor.enrichment_status == STATUS_PENDING)
+                )
+                or 0
+            )
+            to_mail = len(outreach_targets(current))
     except OperationalError as exc:
         return _unread(path, _operational_message(exc))
     except DatabaseError:
@@ -83,7 +91,14 @@ def load_home(path: Path) -> HomeSnapshot:
             path, "This file could not be read as a database. Nothing was changed."
         )
 
-    return HomeSnapshot(path=path, ready=True, funnel=funnel, phone_only=phone_only)
+    return HomeSnapshot(
+        path=path,
+        ready=True,
+        tenders=tenders,
+        companies=companies,
+        waiting=waiting,
+        to_mail=to_mail,
+    )
 
 
 def _unread(path: Path, message: str) -> HomeSnapshot:

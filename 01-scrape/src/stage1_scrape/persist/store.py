@@ -18,6 +18,7 @@ from typing import Any
 from pipeline_core import settings as core_settings
 from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.models import SOURCE_SCRAPE, Award, Tender, TenderDocument, Vendor
+from pipeline_core.money import format_amount
 from pipeline_core.naming import buyer_tail, infer_city_state
 from pipeline_core.queries import (
     backfill_tender_documents,
@@ -52,7 +53,7 @@ AWARD_SEED_COLUMNS = (
     Award.rank,
     Award.awarded_value,
     Award.awarded_currency,
-    Award.contract_date,
+    Tender.contract_date,
     Award.work_title,
 )
 
@@ -145,10 +146,11 @@ class Store:
             for seed in seeds:
                 awards = current.execute(
                     select(*AWARD_SEED_COLUMNS)
+                    .join(Tender, Tender.tender_id == Award.tender_id)
                     .where(Award.vendor_id == seed["vendor_id"])
                     .order_by(Award.tender_id)
                 ).mappings().all()
-                seed["awards"] = [dict(award) for award in awards]
+                seed["awards"] = [_shown_award(award) for award in awards]
             tender_ids = {
                 award["tender_id"] for seed in seeds for award in seed["awards"]
             }
@@ -192,8 +194,6 @@ class Store:
                     "quoted_value": (quote.value if quote else None) or "",
                     "awarded_value": row.value or record.aoc.get("Total Contract Value", ""),
                     "awarded_currency": row.currency or "",
-                    "contract_date": record.aoc.get("Contract Date", ""),
-                    "contract_value": record.aoc.get("Total Contract Value", ""),
                     "work_title": listing.title_and_ref,
                 }
             )
@@ -246,6 +246,12 @@ def _extracts_by_tender(current: Session, tender_ids: set[str]) -> dict[str, lis
             }
         )
     return grouped
+
+
+def _shown_award(row) -> dict:
+    shown = dict(row)
+    shown["awarded_value"] = format_amount(shown.get("awarded_value"))
+    return shown
 
 
 def listing_status(status: str | None, tender_stage: str | None) -> str:

@@ -17,6 +17,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from .money import iso_day, parse_money
 from .models import (
     CONTACT_MODEL,
     CONTACT_TYPED,
@@ -61,7 +62,12 @@ def last_scraped_at(session: Session) -> str | None:
 
 
 def upsert_tender(session: Session, **values: Any) -> None:
-    """Insert or replace one tender. `tender_id` and `scraped_at` are required."""
+    """Insert or replace one tender. `tender_id` and `scraped_at` are required.
+
+    A portal date and an amount string are parsed here. The row stores an ISO
+    day and integer hundredths, never ``21-Sep-2026`` or ``INR 179,853.24``.
+    """
+    values = _stored_tender(values)
     statement = sqlite_insert(Tender).values(**values)
     session.execute(
         statement.on_conflict_do_update(
@@ -117,15 +123,50 @@ def upsert_vendor(
 
 
 def replace_awards(session: Session, tender_id: str, rows: Iterable[dict[str, Any]]) -> int:
-    """Rewrite every award for one tender. Returns how many were written."""
+    """Rewrite every award for one tender. Returns how many were written.
+
+    Quoted and awarded amounts are parsed to hundredths. Contract date and
+    contract value are not copied onto the award; the tender row holds them.
+    """
     session.query(Award).filter(Award.tender_id == tender_id).delete(
         synchronize_session=False
     )
     written = 0
     for row in rows:
-        session.execute(sqlite_insert(Award).values(tender_id=tender_id, **row))
+        session.execute(sqlite_insert(Award).values(tender_id=tender_id, **_stored_award(row)))
         written += 1
     return written
+
+
+def _stored_tender(values: dict[str, Any]) -> dict[str, Any]:
+    values = dict(values)
+    if "contract_date" in values:
+        values["contract_date"] = iso_day(values.get("contract_date"))
+    if "contract_value" in values:
+        explicit = str(values.get("contract_currency") or "").strip() or None
+        hundredths, found = parse_money(values.get("contract_value"))
+        values["contract_value"] = hundredths
+        if hundredths is None:
+            values["contract_currency"] = explicit
+        else:
+            values["contract_currency"] = explicit or found or "INR"
+    return values
+
+
+def _stored_award(row: dict[str, Any]) -> dict[str, Any]:
+    explicit = str(row.get("awarded_currency") or "").strip() or None
+    quoted, _quoted_currency = parse_money(row.get("quoted_value"))
+    awarded, found = parse_money(row.get("awarded_value"))
+    return {
+        "bid_number": row.get("bid_number") or "",
+        "vendor_id": row.get("vendor_id"),
+        "bidder_name": row.get("bidder_name") or "",
+        "rank": row.get("rank"),
+        "quoted_value": quoted,
+        "awarded_value": awarded,
+        "awarded_currency": explicit or found,
+        "work_title": row.get("work_title"),
+    }
 
 
 def join_clues(values: Iterable[Any] | None) -> str:
@@ -533,6 +574,7 @@ class SelectionCounts:
     not_found_ready: int = 0
     waiting_ids: tuple[int, ...] = ()
     names: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
 
 
 def _contact_empty(email: str | None, phone: str | None) -> bool:
@@ -562,6 +604,7 @@ def classify_selection(session: Session, vendor_ids: Iterable[int]) -> Selection
     pending = not_found = failed = done = ready = 0
     waiting_ids: list[int] = []
     names: list[str] = []
+    skipped: list[str] = []
     for vendor_id, name, status, email, phone in rows:
         if status == STATUS_PENDING:
             pending += 1
@@ -573,12 +616,15 @@ def classify_selection(session: Session, vendor_ids: Iterable[int]) -> Selection
                 ready += 1
                 waiting_ids.append(int(vendor_id))
                 names.append(name)
+            else:
+                skipped.append(name)
         elif status == STATUS_FAILED:
             failed += 1
             waiting_ids.append(int(vendor_id))
             names.append(name)
         elif status == STATUS_DONE:
             done += 1
+            skipped.append(name)
     return SelectionCounts(
         pending=pending,
         not_found=not_found,
@@ -587,6 +633,7 @@ def classify_selection(session: Session, vendor_ids: Iterable[int]) -> Selection
         not_found_ready=ready,
         waiting_ids=tuple(waiting_ids),
         names=tuple(names),
+        skipped=tuple(skipped),
     )
 
 

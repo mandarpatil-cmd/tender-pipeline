@@ -12,23 +12,19 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=7">
+  <link rel="stylesheet" href="/static/app.css?v=10">
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
   {% set here = request.url.path %}
-  {% if awards_return is defined %}
-  {% set return_href = awards_return %}
-  {% else %}
-  {% set return_href = awards_href(request.cookies.get('awards_query', '')) %}
-  {% endif %}
   <header class="top sticky">
-    <a class="brand" href="{{ return_href }}">Tender pipeline</a>
+    <a class="brand" href="/">Tender pipeline</a>
     <nav class="nav">
-      <a href="{{ return_href }}" {% if here == '/' or here == '/award' or here == '/selection' %}class="current" aria-current="page"{% endif %}>Awards</a>
+      <a href="/" {% if here == '/' %}class="current" aria-current="page"{% endif %}>Home</a>
+      <a href="{{ stage_href('scrape', request.cookies.get('scrape_query', '')) }}" {% if here.startswith('/scrape') or here.startswith('/tender') %}class="current" aria-current="page"{% endif %}>Scrape</a>
+      <a href="{{ stage_href('enrich', request.cookies.get('enrich_query', '')) }}" {% if here.startswith('/enrich') or here == '/selection' %}class="current" aria-current="page"{% endif %}>Enrich</a>
+      <a href="{{ stage_href('mail', request.cookies.get('mail_query', '')) }}" {% if here.startswith('/mail') %}class="current" aria-current="page"{% endif %}>Mail</a>
       <a href="/jobs" {% if here.startswith('/jobs') %}class="current" aria-current="page"{% endif %}>Runs</a>
-      <a href="/mail" {% if here.startswith('/mail') %}class="current" aria-current="page"{% endif %}>Mail</a>
-      <a href="/tender/new" {% if here.startswith('/tender') %}class="current" aria-current="page"{% endif %}>Add a tender</a>
     </nav>
     <button type="button" class="quiet theme" id="theme">Dark</button>
   </header>
@@ -98,30 +94,6 @@
     document.addEventListener("change", function (event) {
       var el = event.target;
       if (!el.closest) return;
-      var search = el.closest("[data-search]");
-      if (search && el.type === "checkbox") {
-        var searchAny = search.querySelector("[data-search-any]");
-        var fields = search.querySelectorAll('input[name="search_in"]');
-        if (el === searchAny && searchAny.checked) {
-          fields.forEach(function (item) { item.checked = false; });
-        } else if (el.name === "search_in") {
-          var picked = false;
-          fields.forEach(function (item) { if (item.checked) picked = true; });
-          searchAny.checked = !picked;
-        }
-      }
-      var enrichment = el.closest("[data-enrichment]");
-      if (enrichment && el.type === "checkbox") {
-        var any = enrichment.querySelector("[data-enrichment-any]");
-        var statuses = enrichment.querySelectorAll('input[name="enrichment_status"]');
-        if (el === any && any.checked) {
-          statuses.forEach(function (item) { item.checked = false; });
-        } else if (el.name === "enrichment_status") {
-          var chosen = false;
-          statuses.forEach(function (item) { if (item.checked) chosen = true; });
-          any.checked = !chosen;
-        }
-      }
       var group = el.closest("[data-date-range]");
       if (!group || !el.getAttribute || !el.getAttribute("data-role")) return;
       group.setAttribute("data-touched", "1");

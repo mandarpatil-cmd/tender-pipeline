@@ -119,6 +119,40 @@ def test_get_retries_a_dropped_connection(monkeypatch):
     assert response.text == "ok"
 
 
+def test_get_retries_a_stalled_read_on_a_fresh_connection(monkeypatch):
+    client = GePNICClient(delay=0)
+    calls = {"n": 0, "closed": 0}
+    seen_timeouts: list[object] = []
+
+    class Response:
+        url = "https://eprocure.gov.in/ok"
+        text = "ok"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def get(url, headers, timeout):
+        calls["n"] += 1
+        seen_timeouts.append(timeout)
+        if calls["n"] < 3:
+            raise requests.ReadTimeout("Read timed out.")
+        return Response()
+
+    def close() -> None:
+        calls["closed"] += 1
+
+    client.session.get = get
+    client.session.close = close
+    monkeypatch.setattr("stage1_scrape.scraping.client.time.sleep", lambda _seconds: None)
+
+    response = client.get("https://eprocure.gov.in/eprocure/app")
+
+    assert calls["n"] == 3
+    assert calls["closed"] == 2
+    assert seen_timeouts == [(10.0, 90.0), (10.0, 90.0), (10.0, 90.0)]
+    assert response.text == "ok"
+
+
 def test_get_does_not_retry_a_non_connection_error(monkeypatch):
     client = GePNICClient(delay=0)
     calls = {"n": 0}

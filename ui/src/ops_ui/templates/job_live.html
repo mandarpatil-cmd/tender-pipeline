@@ -1,11 +1,17 @@
-<div id="live" {% if job.state == 'running' or job.state == 'waiting' %}hx-get="/jobs/{{ job.job_id }}/live" hx-trigger="every 1s" hx-swap="outerHTML"{% endif %}>
+<div id="live" {% if job.state == 'running' or job.state == 'waiting' %}hx-get="/jobs/{{ job.job_id }}/live" hx-trigger="every 1s [document.activeElement == null || document.activeElement.id != 'captcha-code']" hx-swap="outerHTML"{% endif %}>
   <p class="meta">{{ job.state }}{% if job.finished_at %} · {{ job.finished_at }}{% endif %}</p>
   {% if job.state == 'waiting' %}
-  <img class="captcha" src="/jobs/{{ job.job_id }}/captcha" alt="Captcha: type these 6 characters">
-  <form method="post" action="/jobs/{{ job.job_id }}/captcha">
-    <input name="code" maxlength="6" minlength="6" pattern=".{6}" required autocomplete="off" placeholder="6 characters">
-    <button type="submit">Continue</button>
-  </form>
+  <div id="captcha-box" class="panel captcha-box" hx-preserve="true">
+    <p class="label">Captcha</p>
+    <img class="captcha" src="/jobs/{{ job.job_id }}/captcha" alt="Captcha: type these 6 characters">
+    <form method="post" action="/jobs/{{ job.job_id }}/captcha">
+      <label for="captcha-code">Type the 6 characters
+        <input id="captcha-code" class="captcha-code" name="code" type="text" inputmode="text" maxlength="6" minlength="6" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="6 characters" autofocus>
+      </label>
+      <button type="submit">Continue</button>
+    </form>
+    <p class="note">The characters stay in this box while the log updates.</p>
+  </div>
   {% endif %}
   {% if job.state == 'running' or job.state == 'waiting' %}
   <form method="post" action="/jobs/{{ job.job_id }}/stop">

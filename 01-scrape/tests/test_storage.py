@@ -76,7 +76,7 @@ def test_store_writes_vendor_and_award(tmp_path):
         ).fetchone()
         status = conn.execute("SELECT status FROM tenders").fetchone()
     assert vendor == ("Kanta enterprises", "trade", "Nagpur", "Maharashtra", "pending")
-    assert award == ("Kanta enterprises", "L1", "59934.56", "59,935", "INR")
+    assert award == ("Kanta enterprises", "L1", 5993456, 5993500, "INR")
     assert status == ("AOC",)
 
 

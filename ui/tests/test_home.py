@@ -74,13 +74,14 @@ def test_home_counts_match_the_database(tmp_path):
     assert response.status_code == 200
     html = response.text
     assert _count(html, "tenders") == "1"
-    assert _count(html, "awards") == "1"
-    assert _count(html, "vendors") == "3"
-    assert _count(html, "enriched") == "2"
-    assert _count(html, "mailable") == "1"
-    assert _count(html, "sent") == "1"
-    assert _count(html, "phone-only") == "1"
-    assert "can never be mailed" in html
+    assert _count(html, "companies") == "3"
+    assert _count(html, "waiting") == "1"
+    assert _count(html, "to-mail") == "0"
+    assert "award winners stored" in html
+    assert "phone-only" not in html
+    assert "can never be mailed" not in html
+    assert 'data-count="enriched"' not in html
+    assert 'data-count="awards"' not in html
     assert str(path) in html
 
 
@@ -91,8 +92,10 @@ def test_empty_database_shows_zeros(tmp_path):
 
     assert response.status_code == 200
     html = response.text
-    for key in ("tenders", "awards", "vendors", "enriched", "mailable", "sent", "phone-only"):
+    for key in ("tenders", "companies", "waiting", "to-mail"):
         assert _count(html, key) == "0"
+    assert 'data-count="phone-only"' not in html
+    assert 'data-count="enriched"' not in html
 
 
 def test_missing_database_is_not_created(tmp_path):

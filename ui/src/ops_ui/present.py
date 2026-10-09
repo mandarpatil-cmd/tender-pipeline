@@ -8,12 +8,82 @@ from datetime import date, timedelta
 from urllib.parse import unquote, urlencode
 
 from pipeline_core.grid import COLUMNS, FILE_COLUMNS, AwardQuery
-from pipeline_core.models import ENRICHMENT_STATUSES
 from pipeline_core.loose import loose_date
 from starlette.datastructures import QueryParams
 
 _BACK = re.compile(r"[A-Za-z0-9_%=&.+\-]*")
+_STAGE_BACK = re.compile(r"^/(scrape|enrich|mail)(\?[A-Za-z0-9_%=&.+\-]*)?$")
 DATE_PRESETS = ("7", "30", "60", "90")
+
+STAGE_PATHS = {"scrape": "/scrape", "enrich": "/enrich", "mail": "/mail"}
+
+#: Columns each stage table shows, in that order. Email and phone stay on Scrape
+#: so a later tender for a known company shows the contact already stored.
+STAGE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "scrape": (
+        "tender_id",
+        "title",
+        "organisation",
+        "status",
+        "contract_date",
+        "contract_value",
+        "contract_currency",
+        "bid_number",
+        "rank",
+        "quoted_value",
+        "awarded_value",
+        "awarded_currency",
+        "work_title",
+        "name_raw",
+        "city",
+        "state",
+        "email",
+        "phone",
+        "source",
+        "scraped_at",
+    ),
+    "enrich": (
+        "name_raw",
+        "city",
+        "state",
+        "tender_id",
+        "enrichment_status",
+        "email",
+        "phone",
+        "pdf_email",
+        "pdf_phone",
+    ),
+    "mail": (
+        "name_raw",
+        "email",
+        "tender_id",
+        "title",
+        "outreach_status",
+        "last_attempt_at",
+        "attempts",
+    ),
+}
+
+_STAGE_KEYS = {
+    "scrape": frozenset(
+        {
+            "q",
+            "tender_status",
+            "scraped_from",
+            "scraped_to",
+            "scraped_from_preset",
+            "scraped_to_mode",
+            "organisation",
+            "value_min",
+            "value_max",
+            "sort",
+            "dir",
+            "page",
+        }
+    ),
+    "enrich": frozenset({"q", "enrichment_status", "source", "sort", "dir", "page"}),
+    "mail": frozenset({"q", "outreach_status", "sort", "dir", "page"}),
+}
 
 _FIELDS = (
     ("q", "text"),
@@ -33,11 +103,11 @@ _FIELDS = (
 
 
 def back_href(raw: str) -> str:
-    """A link back to the table. Anything that is not our own query string is dropped."""
+    """A link back to the stage table. Anything else opens Scrape."""
     text = unquote(raw or "").strip()
-    if not text or _BACK.fullmatch(text) is None:
-        return "/"
-    return "/?" + text
+    if _STAGE_BACK.fullmatch(text):
+        return text
+    return "/scrape"
 
 
 def resolve_preset(
@@ -118,21 +188,54 @@ def query_from(params: QueryParams) -> AwardQuery:
     ).normalized()
 
 
-def awards_href(raw: str) -> str:
-    """The Awards link. A cookie that is not our query string goes to the whole table."""
+def _only(params, keys: frozenset[str]) -> QueryParams:
+    """The parameters this stage is allowed to read. The rest are dropped."""
+    pairs: list[tuple[str, str]] = []
+    listed = getattr(params, "getlist", None)
+    for key in keys:
+        values = listed(key) if listed is not None else []
+        if not values:
+            single = params.get(key) if hasattr(params, "get") else None
+            values = [single] if single else []
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                pairs.append((key, text))
+    return QueryParams(pairs)
+
+
+def stage_query(stage: str, params) -> AwardQuery:
+    """The award query for one stage page.
+
+    Enrich opens on companies still waiting. Mail opens on addresses not yet
+    sent. A parameter that belongs to another stage does not change the rows.
+    """
+    query = query_from(_only(params, _STAGE_KEYS[stage]))
+    if stage == "enrich":
+        chosen = query.enrichment_status if len(query.enrichment_status) == 1 else ("pending",)
+        query = replace(query, enrichment_status=chosen)
+    elif stage == "mail":
+        outreach = query.outreach_status if query.outreach_status in {"sent", "failed", "none"} else "none"
+        query = replace(
+            query,
+            outreach_status=outreach,
+            mailable="yes" if outreach == "none" else "",
+        )
+    allowed = tuple(key for key in STAGE_COLUMNS[stage] if key not in FILE_COLUMNS)
+    if query.sort not in allowed:
+        query = replace(query, sort="tender_id", direction="asc")
+    return query.normalized()
+
+
+def stage_href(stage: str, raw: str) -> str:
+    """The nav link for a stage. A cookie that is not our query string is dropped."""
+    path = STAGE_PATHS[stage]
     text = unquote(raw or "").strip()
     if not text or _BACK.fullmatch(text) is None:
-        return "/"
-    return "/?" + text
-
-
-def widen_enrichment(query: AwardQuery, extra: tuple[str, ...]) -> AwardQuery:
-    """Any stays any. Otherwise add these statuses to the selection."""
-    if not query.enrichment_status:
-        return replace(query, page=1)
-    chosen = set(query.enrichment_status) | set(extra)
-    ordered = tuple(status for status in ENRICHMENT_STATUSES if status in chosen)
-    return replace(query, enrichment_status=ordered, page=1)
+        return path
+    return f"{path}?{text}"
 
 
 def enrich_plan(pending: int, not_found: int, failed: int, ready: int) -> str:
@@ -146,15 +249,15 @@ def enrich_plan(pending: int, not_found: int, failed: int, ready: int) -> str:
     )
 
 
-def filter_token(query: AwardQuery) -> str:
-    """The filter to restore, without the page. Empty when the table is unfiltered."""
-    target = href(query, page="1")
-    if target == "/":
+def filter_token(query: AwardQuery, path: str = "/") -> str:
+    """The filter to restore, without the page. Empty when nothing was narrowed."""
+    target = href(query, path=path, page="1")
+    if "?" not in target:
         return ""
     return target.split("?", 1)[1]
 
 
-def href(query: AwardQuery, **overrides: str) -> str:
+def href(query: AwardQuery, path: str = "/", **overrides: str) -> str:
     data = {
         "q": query.text,
         "tender_status": query.tender_status,
@@ -208,47 +311,49 @@ def href(query: AwardQuery, **overrides: str) -> str:
         if keep(key):
             pairs.append((key, data[key]))
     encoded = urlencode(pairs)
-    return f"/?{encoded}" if encoded else "/"
+    base = path if path.startswith("/") else "/"
+    return f"{base}?{encoded}" if encoded else base
 
 
-def form_fields(query: AwardQuery) -> list[tuple[str, str]]:
-    """The filter the table is showing, so a later POST selects that same set."""
-    fields = [
-        ("q", query.text),
-    ]
-    fields.extend(("search_in", field) for field in query.search_in)
-    fields.append(("tender_status", query.tender_status))
-    fields.extend(("enrichment_status", status) for status in query.enrichment_status)
-    fields.extend(
-        [
-            ("outreach_status", query.outreach_status),
-            ("source", query.source),
-            ("state", query.state),
-            ("organisation", query.organisation),
-            ("date_from", query.date_from),
-            ("date_to", query.date_to),
-            ("scraped_from", query.scraped_from),
-            ("scraped_to", query.scraped_to),
-            ("value_min", query.value_min),
-            ("value_max", query.value_max),
-            ("mailable", query.mailable),
-            ("sort", query.sort),
-            ("dir", query.direction),
-        ]
-    )
+def stage_form_fields(stage: str, query: AwardQuery) -> list[tuple[str, str]]:
+    """Hidden fields for a stage table action. Other stages' filters are left out."""
+    fields = [("stage", stage), ("q", query.text)]
+    if stage == "scrape":
+        fields.extend(
+            [
+                ("tender_status", query.tender_status),
+                ("scraped_from", query.scraped_from),
+                ("scraped_to", query.scraped_to),
+                ("organisation", query.organisation),
+                ("value_min", query.value_min),
+                ("value_max", query.value_max),
+            ]
+        )
+    elif stage == "enrich":
+        fields.extend(("enrichment_status", status) for status in query.enrichment_status)
+        fields.append(("source", query.source))
+    elif stage == "mail":
+        fields.extend(
+            [
+                ("outreach_status", query.outreach_status),
+                ("mailable", query.mailable),
+            ]
+        )
+    fields.extend([("sort", query.sort), ("dir", query.direction)])
     return fields
 
 
-def sort_href(query: AwardQuery, key: str) -> str:
+def sort_href(query: AwardQuery, key: str, path: str = "/") -> str:
     direction = "desc" if query.sort == key and query.direction == "asc" else "asc"
-    return href(query, sort=key, dir=direction, page="1")
+    return href(query, path=path, sort=key, dir=direction, page="1")
 
 
-def export_href(query: AwardQuery, suffix: str) -> str:
-    target = href(query, page="1")
-    if target == "/":
-        return f"/export.{suffix}"
-    return f"/export.{suffix}?{target.split('?', 1)[1]}"
+def export_href(query: AwardQuery, suffix: str, path: str = "/") -> str:
+    target = href(query, path=path, page="1")
+    base = f"/export.{suffix}" if path in {"", "/"} else f"{path}/export.{suffix}"
+    if "?" not in target:
+        return base
+    return f"{base}?{target.split('?', 1)[1]}"
 
 
 @dataclass(frozen=True)
@@ -261,16 +366,21 @@ class Header:
     key: str
 
 
-def headers(query: AwardQuery) -> list[Header]:
+def headers(
+    query: AwardQuery,
+    path: str = "/",
+    keys: tuple[str, ...] | None = None,
+) -> list[Header]:
+    by_key = {key: (label, group, evidence) for key, label, group, evidence in COLUMNS}
+    chosen = keys or tuple(key for key, _label, _group, _evidence in COLUMNS)
     built = []
-    for key, label, group, evidence in COLUMNS:
+    for key in chosen:
+        label, group, evidence = by_key[key]
         if key in FILE_COLUMNS:
             built.append(Header(label, group, evidence, None, "", key))
             continue
-        mark = ""
-        if query.sort == key:
-            mark = query.direction
-        built.append(Header(label, group, evidence, sort_href(query, key), mark, key))
+        mark = query.direction if query.sort == key else ""
+        built.append(Header(label, group, evidence, sort_href(query, key, path), mark, key))
     return built
 
 
@@ -284,20 +394,3 @@ def groups(columns: list[Header]) -> list[tuple[str, int, bool]]:
             grouped.append((column.group, 1, column.evidence))
     return grouped
 
-
-def strip_cards(snapshot, view, filtered: bool) -> list[tuple[str, int, str]]:
-    if filtered and view is not None:
-        counts = view.counts
-        note = "in this view"
-        return [
-            ("tenders", counts.tenders, note),
-            ("awards", counts.awards, note),
-            ("vendors", counts.vendors, note),
-            ("enriched", counts.enriched, note),
-            ("mailable", counts.mailable, note),
-            ("sent", counts.sent, note),
-            ("phone-only", counts.phone_only, "answered, but can never be mailed"),
-        ]
-    cards = [(label, count, note) for label, count, note in snapshot.funnel]
-    cards.append(("phone-only", snapshot.phone_only, "answered, but can never be mailed"))
-    return cards

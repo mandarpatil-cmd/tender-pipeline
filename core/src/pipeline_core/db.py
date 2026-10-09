@@ -6,6 +6,7 @@ belt-and-braces rather than a concurrency design.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -122,8 +123,18 @@ def ensure_schema(bind: Engine | None = None) -> SchemaReport:
 
     Only nullable columns can be added this way; a new NOT NULL column needs a
     backfill and so is refused rather than half-applied.
+
+    Amounts used to be text (``INR 179,853.24``). SQLite cannot change that
+    column to an integer, so a file that still holds text amounts is copied to
+    ``<name>.bak`` and replaced with an empty database of the current schema.
+    Contacts and mail history stay in the copy.
     """
     eng = bind or engine()
+    if _has_text_amounts(eng):
+        _backup_and_reset(eng)
+        report = SchemaReport()
+        report.created_tables = sorted(inspect(eng).get_table_names())
+        return report
     report = SchemaReport()
 
     before = set(inspect(eng).get_table_names())
@@ -159,6 +170,54 @@ def ensure_schema(bind: Engine | None = None) -> SchemaReport:
             report.created_indexes.append(index.name or "<unnamed>")
 
     return report
+
+
+def _has_text_amounts(eng: Engine) -> bool:
+    """True when a stored amount is still text, such as ``INR 10``."""
+    inspector = inspect(eng)
+    names = set(inspector.get_table_names())
+    checks: list[str] = []
+    if "tenders" in names:
+        columns = {col["name"] for col in inspector.get_columns("tenders")}
+        if "contract_value" in columns:
+            checks.append(
+                "SELECT 1 FROM tenders WHERE typeof(contract_value) = 'text' LIMIT 1"
+            )
+    if "awards" in names:
+        columns = {col["name"] for col in inspector.get_columns("awards")}
+        parts = [
+            f"typeof({name}) = 'text'"
+            for name in ("quoted_value", "awarded_value", "contract_value")
+            if name in columns
+        ]
+        if parts:
+            checks.append(f"SELECT 1 FROM awards WHERE {' OR '.join(parts)} LIMIT 1")
+    if not checks:
+        return False
+    with eng.connect() as conn:
+        return any(conn.exec_driver_sql(sql).first() for sql in checks)
+
+
+def _sqlite_path(eng: Engine) -> Path | None:
+    raw = eng.url.database
+    if not raw or raw == ":memory:":
+        return None
+    return Path(raw)
+
+
+def _backup_and_reset(eng: Engine) -> None:
+    """Copy the file aside, then create the empty typed schema in its place."""
+    path = _sqlite_path(eng)
+    if path is not None and path.exists():
+        bak = Path(str(path) + ".bak")
+        if not bak.exists():
+            with eng.begin() as conn:
+                conn.exec_driver_sql("PRAGMA wal_checkpoint(FULL)")
+            shutil.copy2(path, bak)
+            if not bak.exists():
+                raise RuntimeError(f"Could not copy {path} to {bak}.")
+    drop_all(eng)
+    create_all(eng)
 
 
 def table_counts(bind: Engine | None = None) -> dict[str, int]:

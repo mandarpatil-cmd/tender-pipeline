@@ -16,21 +16,13 @@ from pipeline_core.queries import (
 
 from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
-from ops_ui.present import enrich_plan, href, query_from, widen_enrichment
+from ops_ui.present import enrich_plan
 from ops_ui.queries import load_home
 from ops_ui.runs import enrich_cost_line, run_enrich
 from ops_ui.selection import selected_vendor_ids
 from ops_ui.templating import TEMPLATES
 
 router = APIRouter()
-
-
-def _show_combined(form, kind: str) -> RedirectResponse:
-    """Open this filter with that class included. Does not write the database."""
-    extra = ("pending", "not_found") if kind == "not_found" else ("pending", "failed")
-    target = href(widen_enrichment(query_from(form), extra), page="1")
-    joiner = "&" if "?" in target else "?"
-    return RedirectResponse(f"{target}{joiner}show={kind}", status_code=303)
 
 
 @router.get("/tender/new")
@@ -83,11 +75,6 @@ async def selection(request: Request):
     if not snapshot.ready:
         return Response(snapshot.message, status_code=404, media_type="text/plain")
     form = await request.form()
-    action = str(form.get("action") or "")
-    if action == "show_not_found":
-        return _show_combined(form, "not_found")
-    if action == "show_failed":
-        return _show_combined(form, "failed")
     ids = selected_vendor_ids(form, path)
     if not ids:
         message = (
@@ -108,6 +95,7 @@ async def selection(request: Request):
             "names": list(queue.names),
             "queue": queue,
             "skipped_done": queue.done,
+            "skipped": list(queue.skipped),
             "plan": enrich_plan(queue.pending, queue.not_found, queue.failed, queue.not_found_ready),
             "cost": enrich_cost_line(looked_up, dry_run=True),
             "live_cost": enrich_cost_line(looked_up, dry_run=False),
@@ -185,7 +173,7 @@ async def _save_tender(request: Request, *, attach: bool):
             status_code=400,
             context={"snapshot": snapshot, "error": str(exc)},
         )
-    return RedirectResponse(f"/?q={tender_id}", status_code=303)
+    return RedirectResponse(f"/scrape?q={tender_id}", status_code=303)
 
 
 def _ids(values) -> list[int]:

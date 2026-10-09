@@ -1,0 +1,21 @@
+<form id="enrich-form" class="panel" method="post" action="/jobs/enrich">
+  <h2>Look up contacts</h2>
+  <p class="cost">Limit is how many waiting companies this run takes. Delay is the pause between them. A company that already has an email or a phone is left as it is.</p>
+  <div class="grid">
+    <label>Limit
+      <input name="limit" type="number" min="1" value="1">
+    </label>
+    <label>Delay seconds
+      <input name="delay" type="number" min="0" step="0.1" value="1">
+    </label>
+    <label>Source
+      <select name="source">
+        <option value="scrape" selected>scrape</option>
+        <option value="all">all</option>
+      </select>
+    </label>
+  </div>
+  <label class="check"><input type="checkbox" name="dry_run" checked> Dry run — list the queue and spend nothing</label>
+  <p class="cost" id="enrich-cost" hx-get="/jobs/enrich-cost" hx-trigger="change from:#enrich-form" hx-include="#enrich-form" hx-swap="innerHTML">{{ enrich_cost_text }}</p>
+  <button type="submit">Enrich</button>
+</form>

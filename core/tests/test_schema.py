@@ -135,6 +135,68 @@ def test_wal_and_foreign_keys_are_on(tmp_path):
     assert int(fks) == 1
 
 
+def test_a_new_database_stores_amounts_as_integers(tmp_path):
+    bind = engine(tmp_path / "fresh.sqlite3")
+    ensure_schema(bind)
+
+    tenders = {
+        col["name"]: str(col["type"]).upper()
+        for col in inspect(bind).get_columns("tenders")
+    }
+    awards = {
+        col["name"]: str(col["type"]).upper()
+        for col in inspect(bind).get_columns("awards")
+    }
+    assert "INT" in tenders["contract_value"]
+    assert "contract_currency" in tenders
+    assert "INT" in awards["quoted_value"]
+    assert "INT" in awards["awarded_value"]
+    assert "contract_date" not in awards
+    assert "contract_value" not in awards
+
+
+def test_text_amounts_are_copied_aside_and_the_file_starts_empty(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE tenders ("
+        "tender_id TEXT PRIMARY KEY, contract_value TEXT, scraped_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO tenders (tender_id, contract_value, scraped_at) "
+        "VALUES ('T-1', 'INR 10', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.execute(
+        "CREATE TABLE vendors ("
+        "vendor_id INTEGER PRIMARY KEY, name_raw TEXT NOT NULL, "
+        "name_norm TEXT NOT NULL UNIQUE, "
+        "enrichment_status TEXT NOT NULL DEFAULT 'pending')"
+    )
+    conn.execute("INSERT INTO vendors (name_raw, name_norm) VALUES ('Kept Ltd', 'KEPT LTD')")
+    conn.commit()
+    conn.close()
+
+    bind = engine(path)
+    ensure_schema(bind)
+
+    bak = path.with_name(path.name + ".bak")
+    assert bak.exists()
+    old = sqlite3.connect(bak)
+    assert old.execute("SELECT contract_value FROM tenders").fetchone()[0] == "INR 10"
+    assert old.execute("SELECT name_raw FROM vendors").fetchone()[0] == "Kept Ltd"
+    old.close()
+
+    awards = {col["name"] for col in inspect(bind).get_columns("awards")}
+    assert "contract_date" not in awards
+    assert "contract_value" not in awards
+    assert table_counts(bind)["tenders"] == 0
+    assert table_counts(bind)["vendors"] == 0
+
+    again = ensure_schema(bind)
+    assert not again.changed
+    assert table_counts(bind)["vendors"] == 0
+
+
 def test_adding_a_not_null_column_is_refused(tmp_path, monkeypatch):
     """A NOT NULL column needs a backfill, so it must not be half-applied."""
     from sqlalchemy import Column, Text

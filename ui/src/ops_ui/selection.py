@@ -9,7 +9,7 @@ from pipeline_core.grid import filtered_award_keys, filtered_vendor_ids
 from pipeline_core.models import Award
 from sqlalchemy import select
 
-from ops_ui.present import query_from
+from ops_ui.present import query_from, stage_query
 
 _ON = {"1", "on", "true", "yes"}
 
@@ -22,7 +22,7 @@ def selected_vendor_ids(form, path: Path) -> list[int]:
     """
     if str(form.get("select_all") or "") in _ON:
         with session(engine(path)) as current:
-            return filtered_vendor_ids(current, query_from(form))
+            return filtered_vendor_ids(current, _table_query(form))
     ids = []
     for value in form.getlist("vendor_id"):
         vendor_id, _tender_id = _split(str(value))
@@ -35,7 +35,7 @@ def selected_awards(form, path: Path) -> list[tuple[int, str]]:
     """Ticked awards, or every award in the filter. One company on two tenders is two."""
     if str(form.get("select_all") or "") in _ON:
         with session(engine(path)) as current:
-            return filtered_award_keys(current, query_from(form))
+            return filtered_award_keys(current, _table_query(form))
     chosen: list[tuple[int, str]] = []
     seen: set[tuple[int, str]] = set()
     bare: list[int] = []
@@ -63,6 +63,13 @@ def selected_awards(form, path: Path) -> list[tuple[int, str]]:
                     seen.add(key)
                     chosen.append(key)
     return chosen
+
+
+def _table_query(form):
+    stage = str(form.get("stage") or "")
+    if stage in {"scrape", "enrich", "mail"}:
+        return stage_query(stage, form)
+    return query_from(form)
 
 
 def _split(value: str) -> tuple[int | None, str]:

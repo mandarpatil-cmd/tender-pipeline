@@ -1,0 +1,63 @@
+<form class="panel" method="post" action="/jobs/scrape">
+  <h2>Scrape portal</h2>
+  <p class="cost">The portal search is AOC, Award of Contract. That is the awarded list.</p>
+  <div class="grid">
+    <label>Max new tenders
+      <input name="max_tenders" type="number" min="1" value="1">
+    </label>
+    <label>Max pages
+      <input name="max_pages" type="number" min="1" value="1">
+    </label>
+    <label>Pause between portal requests (seconds)
+      <input name="delay" type="number" min="1.5" step="0.1" value="1.5">
+    </label>
+  </div>
+  <p class="note">Each page and each tender waits at least this long. The shortest pause is 1.5 seconds.</p>
+  <div class="grid">
+    <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
+      <label>Contract from
+        <select name="contract_from_preset" data-role="preset">
+          <option value="any" selected>Any</option>
+          <option value="">Specific date</option>
+          {% for days in date_presets %}
+          <option value="{{ days }}">{{ days }} days before to</option>
+          {% endfor %}
+        </select>
+        <input name="contract_from" type="date" data-role="from" hidden disabled>
+      </label>
+      <label>Contract to
+        <select name="contract_to_mode" data-role="to-mode">
+          <option value="any" selected>Any</option>
+          <option value="">Specific date</option>
+        </select>
+        <input name="contract_to" type="date" data-role="to" value="{{ today }}" hidden disabled>
+      </label>
+    </div>
+    <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
+      <label>Published from
+        <select name="published_from_preset" data-role="preset">
+          <option value="any" selected>Any</option>
+          <option value="">Specific date</option>
+          {% for days in date_presets %}
+          <option value="{{ days }}">{{ days }} days before to</option>
+          {% endfor %}
+        </select>
+        <input name="published_from" type="date" data-role="from" hidden disabled>
+      </label>
+      <label>Published to
+        <select name="published_to_mode" data-role="to-mode">
+          <option value="any" selected>Any</option>
+          <option value="">Specific date</option>
+        </select>
+        <input name="published_to" type="date" data-role="to" value="{{ today }}" hidden disabled>
+      </label>
+    </div>
+  </div>
+  <p class="note">Contract dates fill fromDate and toDate. Published dates fill publishedFromDate and publishedToDate. Leave a pair empty to leave that portal field blank.</p>
+  <label class="check"><input type="checkbox" name="no_cap"> No cap — every tender in the date range that is set</label>
+  <label class="check"><input type="checkbox" name="download_pdfs" checked> Download PDFs</label>
+  <label class="check"><input type="checkbox" name="refresh"> Re-fetch tenders already saved — fetch and store each one again, including awards and PDFs</label>
+  <label class="check"><input type="checkbox" name="probe"> Probe only — one listing page, no tenders stored</label>
+  <p class="cost">Starts with one tender. If the automatic reader fails, the image appears on the run page.</p>
+  <button type="submit">Scrape</button>
+</form>

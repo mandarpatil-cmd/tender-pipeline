@@ -39,7 +39,7 @@ def test_blank_tender_id_is_manual_and_shows_in_the_table(tmp_path):
         follow_redirects=False,
     )
     assert response.status_code == 303
-    page = client.get("/").text
+    page = client.get(response.headers["location"]).text
     assert "MANUAL-" in page
     assert "Fresh Electricals" in page
 
@@ -171,11 +171,10 @@ def _award(current, tender_id, vendor_id, name, *, state="Goa"):
     )
 
 
-def test_show_not_found_opens_the_combined_list_and_writes_nothing(tmp_path):
+def test_a_ticked_not_found_company_is_looked_up_only_when_it_has_no_contact(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     ensure_schema(engine(path))
     with session(engine(path)) as current:
-        waiting = upsert_vendor(current, name_raw="Still Waiting Ltd", state="Goa")
         empty = upsert_vendor(current, name_raw="No Contact Ltd", state="Goa")
         known = upsert_vendor(current, name_raw="Known Absence", state="Goa")
         other = upsert_vendor(current, name_raw="Other State Ltd", state="Bihar")
@@ -183,83 +182,77 @@ def test_show_not_found_opens_the_combined_list_and_writes_nothing(tmp_path):
         current.get(Vendor, known).enrichment_status = "not_found"
         current.get(Vendor, known).email = "known@example.com"
         current.get(Vendor, other).enrichment_status = "not_found"
-        _award(current, "W-1", waiting, "Still Waiting Ltd")
         _award(current, "N-1", empty, "No Contact Ltd")
         _award(current, "K-1", known, "Known Absence")
         _award(current, "B-1", other, "Other State Ltd")
     client = TestClient(create_app(path))
+    page = client.get("/enrich?enrichment_status=not_found").text
+    assert "No Contact Ltd" in page
+    assert "Put not_found companies back on the queue" not in page
+    assert "Put failed companies back on the queue" not in page
+    assert 'value="lookup">Enrich</button>' in page
     opened = client.post(
         "/selection",
-        data={"action": "show_not_found", "enrichment_status": "pending", "state": "Goa"},
-        follow_redirects=False,
+        data={
+            "stage": "enrich",
+            "enrichment_status": "pending",
+            "vendor_id": [f"{empty}:N-1", f"{known}:K-1"],
+        },
     )
-    location = opened.headers["location"]
-    assert opened.status_code == 303
-    assert "enrichment_status=pending" in location
-    assert "enrichment_status=not_found" in location
-    assert "state=Goa" in location
-    assert "show=not_found" in location
-    page = client.get(location).text
-    assert "Still Waiting Ltd" in page
-    assert "No Contact Ltd" in page
-    assert "Known Absence" in page
-    assert "Other State Ltd" not in page
-    assert "pending 1, not_found 2, failed 0" in page
-    assert "1 not_found with no email and no phone" in page
-    assert "Enrich looks up the pending companies" in page
+    assert "No Contact Ltd" in opened.text
+    assert "Known Absence" in opened.text.split('id="skipped"', 1)[1]
+    assert f'value="{empty}"' in opened.text
+    assert f'value="{known}"' not in opened.text
+    assert "Other State Ltd" not in opened.text
     with session(engine(path)) as current:
-        assert current.get(Vendor, waiting).enrichment_status == "pending"
         assert current.get(Vendor, empty).enrichment_status == "not_found"
         assert current.get(Vendor, known).enrichment_status == "not_found"
         assert current.get(Vendor, known).email == "known@example.com"
+        assert current.get(Vendor, other).enrichment_status == "not_found"
 
 
-def test_show_failed_adds_failed_to_a_pending_filter(tmp_path):
+def test_a_ticked_failed_company_does_not_move_the_others(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     ensure_schema(engine(path))
     with session(engine(path)) as current:
-        waiting = upsert_vendor(current, name_raw="Still Waiting Ltd", state="Bihar")
         failed = upsert_vendor(current, name_raw="Failed Roads", state="Bihar")
+        other = upsert_vendor(current, name_raw="Other Failed Ltd", state="Bihar")
         mark_failed(current, failed)
-        _award(current, "W-1", waiting, "Still Waiting Ltd")
+        mark_failed(current, other)
         _award(current, "F-1", failed, "Failed Roads")
+        _award(current, "F-2", other, "Other Failed Ltd")
     client = TestClient(create_app(path))
+    failed_page = client.get("/enrich?enrichment_status=failed").text
+    assert "Failed Roads" in failed_page
+    assert "Other Failed Ltd" in failed_page
+    assert 'value="lookup">Enrich</button>' in failed_page
+    assert "Put failed companies back on the queue" not in failed_page
+    for url in ("/", "/scrape", "/enrich", "/mail", "/jobs"):
+        assert "Put failed companies back on the queue" not in client.get(url).text
+        assert "Put not_found companies back on the queue" not in client.get(url).text
     opened = client.post(
         "/selection",
-        data={"action": "show_failed", "enrichment_status": "pending", "state": "Bihar"},
-        follow_redirects=False,
+        data={"stage": "enrich", "enrichment_status": "pending", "vendor_id": f"{failed}:F-1"},
     )
-    location = opened.headers["location"]
-    assert "enrichment_status=pending" in location
-    assert "enrichment_status=failed" in location
-    assert "state=Bihar" in location
-    assert "show=failed" in location
-    page = client.get(location).text
-    assert "pending 1, not_found 0, failed 1" in page
-    assert "0 not_found with no email and no phone" in page
-    assert 'value="failed" checked' in page
+    assert "Failed Roads" in opened.text
+    assert "Other Failed Ltd" not in opened.text
+    assert f'value="{failed}"' in opened.text
+    assert f'value="{other}"' not in opened.text
     with session(engine(path)) as current:
         assert current.get(Vendor, failed).enrichment_status == "failed"
+        assert current.get(Vendor, other).enrichment_status == "failed"
 
 
-def test_show_not_found_leaves_any_as_the_whole_list(tmp_path):
+def test_enrich_opens_on_companies_still_waiting(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     ensure_schema(engine(path))
     with session(engine(path)) as current:
         waiting = upsert_vendor(current, name_raw="Still Waiting Ltd")
         _award(current, "W-1", waiting, "Still Waiting Ltd")
-    client = TestClient(create_app(path))
-    opened = client.post(
-        "/selection",
-        data={"action": "show_not_found"},
-        follow_redirects=False,
-    )
-    location = opened.headers["location"]
-    assert "enrichment_status=" not in location
-    assert location.endswith("?show=not_found") or "show=not_found" in location
-    page = client.get(location).text
+    page = TestClient(create_app(path)).get("/enrich").text
     assert "Still Waiting Ltd" in page
-    assert "pending 1, not_found 0, failed 0" in page
+    assert "Put failed companies back on the queue" not in page
+    assert "Put not_found companies back on the queue" not in page
 
 
 def test_enrich_confirm_names_who_will_be_looked_up(tmp_path):
@@ -308,7 +301,10 @@ def test_enrich_confirm_names_who_will_be_looked_up(tmp_path):
     assert "Still Waiting Ltd" in page.text
     assert f'value="{phoned}"' not in page.text
     assert f'value="{done}"' not in page.text
-    assert "Already Done Ltd" not in page.text
+    skipped = page.text.split('id="skipped"', 1)[1]
+    assert "Already Done Ltd" in skipped
+    assert "Phone Only Ltd" in skipped
+    assert "Skipped, because they already have a contact" in page.text
     started = client.post(
         "/selection/lookup",
         data={"vendor_id": [str(waiting), str(failed), str(empty)], "dry_run": "on"},

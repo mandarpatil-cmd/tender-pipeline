@@ -104,8 +104,6 @@ def save_manual_tender(
                 "quoted_value": winner.quoted_value.strip() or None,
                 "awarded_value": winner.awarded_value.strip() or None,
                 "awarded_currency": winner.awarded_currency.strip() or None,
-                "contract_date": contract_date.strip() or None,
-                "contract_value": contract_value.strip() or None,
                 "work_title": winner.work_title.strip() or title.strip() or None,
             }
         )

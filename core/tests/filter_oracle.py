@@ -8,7 +8,8 @@ to share.
 from __future__ import annotations
 
 from pipeline_core.grid import AwardQuery
-from pipeline_core.loose import loose_date, loose_number
+from pipeline_core.loose import loose_date
+from pipeline_core.money import parse_money
 
 
 def matching_keys(rows: list[dict], query: AwardQuery) -> set[tuple[str, str]]:
@@ -38,12 +39,17 @@ def _keeps(row: dict, query: AwardQuery) -> bool:
         return False
     if query.organisation and not _contains(row.get("organisation"), query.organisation):
         return False
-    if not _span(loose_date(row.get("contract_date")), query.date_from, query.date_to, keep_unparsed=True):
+    if not _span(
+        loose_date(row.get("contract_date")),
+        loose_date(query.date_from) if query.date_from else None,
+        loose_date(query.date_to) if query.date_to else None,
+        keep_unparsed=True,
+    ):
         return False
     if not _span(
-        loose_number(row.get("contract_value")),
-        loose_number(query.value_min) if query.value_min else None,
-        loose_number(query.value_max) if query.value_max else None,
+        _amount(row.get("contract_value")),
+        _amount(query.value_min) if query.value_min else None,
+        _amount(query.value_max) if query.value_max else None,
         keep_unparsed=False,
     ):
         return False
@@ -78,6 +84,11 @@ def _search(row: dict, query: AwardQuery) -> bool:
         typed = query.text.strip()
         matched = matched or (typed.isdigit() and int(row.get("vendor_id") or -1) == int(typed))
     return matched
+
+
+def _amount(value) -> int | None:
+    hundredths, _currency = parse_money(value)
+    return hundredths
 
 
 def _contains(value, text: str) -> bool:

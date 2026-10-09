@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from pipeline_core.db import engine, ensure_schema, session
-from pipeline_core.grid import AwardQuery, award_view
+from pipeline_core.grid import award_view
 from pipeline_core.models import Tender
 from pipeline_core.queries import (
     mark_enriched,
@@ -86,7 +86,7 @@ def _count(html: str, key: str) -> str:
 def test_filter_narrows_the_table_and_the_counts(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path)
-    response = TestClient(create_app(path)).get("/?q=electrical")
+    response = TestClient(create_app(path)).get("/scrape?q=electrical")
 
     assert response.status_code == 200
     html = response.text
@@ -94,18 +94,6 @@ def test_filter_narrows_the_table_and_the_counts(tmp_path):
     assert "SMALL" not in html
     assert _count(html, "awards") == "1"
     assert _count(html, "vendors") == "1"
-    assert "Counts match the rows in this filter." in html
-    assert 'class="evidence"' in html
-
-
-def test_high_value_hides_an_unreadable_amount(tmp_path):
-    path = tmp_path / "pipeline.sqlite3"
-    _seed(path)
-    html = TestClient(create_app(path)).get("/?value_min=100").text
-
-    assert ">LARGE</a>" in html
-    assert ">ODD</a>" not in html
-    assert "SMALL" not in html
 
 
 def test_evidence_comes_from_the_database(tmp_path):
@@ -117,39 +105,52 @@ def test_evidence_comes_from_the_database(tmp_path):
             "LARGE",
             [{"filename": "work-order.pdf", "gstins": ["27ABCDE1234F1Z5"]}],
         )
-    html = TestClient(create_app(path)).get("/?q=electrical").text
+    html = TestClient(create_app(path)).get("/award?tender_id=LARGE&bid=1").text
 
     assert "27ABCDE1234F1Z5" in html
     assert "work-order.pdf" in html
 
 
-def test_filters_offer_mailable_state_and_order(tmp_path):
+def test_each_stage_offers_only_its_own_filters(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path)
-    html = TestClient(create_app(path)).get("/").text
+    client = TestClient(create_app(path))
+    scrape = client.get("/scrape").text
+    enrich = client.get("/enrich").text
+    mail = client.get("/mail").text
 
-    assert 'name="mailable"' in html
-    assert "Maharashtra" in html
-    assert "Ascending" in html
-    assert "Descending" in html
-    assert 'name="scraped_from"' in html
-    assert 'name="scraped_to"' in html
-    assert "All companies in this filter" in html
-    assert "Mail these" in html
-    assert ">Enrich</button>" in html
-    assert "Look up contacts" not in html
-    assert "Organisation" in html
-    assert "Tender status" in html
-    assert "Contract value min" in html
-    assert "60 days before to" in html
-    assert 'aria-label="Select rows on this page"' in html
+    assert 'name="scraped_from"' in scrape
+    assert 'name="scraped_to"' in scrape
+    assert "Stored status" in scrape
+    assert "Add a tender" in scrape
+    assert "60 days before to" in scrape
+    assert 'name="mailable"' not in scrape
+    assert "Contract value min" in scrape
+    assert 'name="organisation"' in scrape
+    assert "Contract value min" not in enrich
+    assert 'name="organisation"' not in enrich
+    assert 'name="enrichment_status"' not in scrape
+    assert 'name="enrichment_status"' in enrich
+    assert 'name="source"' in enrich
+    assert ">Enrich</button>" in enrich
+    assert "Mail these" not in enrich
+    assert "Look up contacts" in enrich
+    assert "To send" in mail
+    assert "Mail these" in mail
+    assert 'aria-label="Select rows on this page"' in enrich
+    assert 'name="sort"' in enrich
+    assert "company name, city, state, email, or phone" in enrich
+    assert "pin-name" not in enrich
+    assert "Put failed companies back on the queue" not in scrape
+    assert "Put failed companies back on the queue" not in enrich
+    assert "Put not_found companies back on the queue" not in mail
 
 
 def test_scraped_range_is_kept_on_the_export_link(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path)
     html = TestClient(create_app(path)).get(
-        "/?scraped_from=1999-01-01&scraped_to=1999-01-02"
+        "/scrape?scraped_from=1999-01-01&scraped_to=1999-01-02"
     ).text
 
     assert "No awards match." in html
@@ -162,19 +163,29 @@ def test_export_matches_the_filter_and_writes_na_for_blanks(tmp_path):
     _seed(path)
     client = TestClient(create_app(path))
 
-    workbook = load_workbook(BytesIO(client.get("/export.xlsx?q=electrical").content))
-    sheet = workbook.active
-    assert sheet.max_row == 2
-    assert sheet.max_column == 33
+    master = load_workbook(BytesIO(client.get("/export.xlsx").content))
+    sheet = master.active
+    assert sheet.max_row == 4
+    assert sheet.max_column == 34
     headers = [cell.value for cell in sheet[1]]
     assert headers[0] == "Tender"
     assert "PDF email" in headers
+    assert "GSTIN" in headers
+
+    workbook = load_workbook(BytesIO(client.get("/scrape/export.xlsx?q=electrical").content))
+    sheet = workbook.active
+    assert sheet.max_row == 2
+    assert sheet.max_column == 20
+    headers = [cell.value for cell in sheet[1]]
+    assert headers[0] == "Tender"
+    assert "Contract value" in headers
+    assert "Awarded" in headers
+    assert "GSTIN" not in headers
     values = {headers[index]: sheet.cell(2, index + 1).value for index in range(len(headers))}
     assert values["Tender"] == "LARGE"
     assert values["Email"] == "NA"
-    assert values["GSTIN"] == "NA"
 
-    csv_text = client.get("/export.csv?q=electrical").content.decode("utf-8-sig")
+    csv_text = client.get("/scrape/export.csv?q=electrical").content.decode("utf-8-sig")
     assert csv_text.splitlines()[1].startswith("LARGE,")
     assert "NA" in csv_text
 
@@ -242,44 +253,33 @@ def _shown(html: str) -> set[str]:
 
 
 @pytest.mark.parametrize(
-    ("query", "expected"),
+    ("url", "expected"),
     [
-        ("q=electrical", {"LARGE"}),
-        ("q=%25", set()),
-        ("tender_status=Retender", {"ODD"}),
-        ("enrichment_status=pending", {"SMALL"}),
-        ("enrichment_status=done", {"LARGE"}),
-        ("enrichment_status=not_found", {"ODD"}),
-        ("enrichment_status=failed", {"FAIL"}),
-        ("outreach_status=sent", {"LARGE"}),
-        ("outreach_status=failed", {"FAIL"}),
-        ("outreach_status=none", {"SMALL", "ODD"}),
-        ("source=manual", {"ODD"}),
-        ("source=bideasy", {"FAIL"}),
-        ("source=scrape", {"SMALL", "LARGE"}),
-        ("mailable=yes", {"LARGE"}),
-        ("mailable=no", {"SMALL", "ODD", "FAIL"}),
-        ("state=Bihar", {"SMALL"}),
-        ("state=Bih", set()),
-        ("organisation=Durgapur", {"LARGE"}),
-        ("date_from=2026-01-01", {"LARGE", "ODD"}),
-        ("date_to=2020-12-31", {"SMALL", "ODD"}),
-        ("value_min=100000", {"LARGE"}),
-        ("value_max=20", {"SMALL"}),
-        ("value_min=100&mailable=yes", {"LARGE"}),
-        ("enrichment_status=pending&mailable=yes", set()),
-        ("enrichment_status=pending&outreach_status=sent", set()),
-        ("enrichment_status=failed&outreach_status=failed", {"FAIL"}),
-        ("enrichment_status=pending&enrichment_status=failed", {"SMALL", "FAIL"}),
-        ("enrichment_status=pending&enrichment_status=not_found&enrichment_status=failed", {"SMALL", "ODD", "FAIL"}),
-        ("scraped_from=2026-09-21&scraped_to=2026-09-21", {"LARGE"}),
-        ("date_to=2026-09-21&date_from_preset=60", {"LARGE", "ODD"}),
+        ("/scrape?q=electrical", {"LARGE"}),
+        ("/scrape?q=%25", set()),
+        ("/scrape?tender_status=Retender", {"ODD"}),
+        ("/scrape?scraped_from=2026-09-21&scraped_to=2026-09-21", {"LARGE"}),
+        ("/scrape?enrichment_status=failed", {"SMALL", "LARGE", "ODD", "FAIL"}),
+        ("/enrich", {"SMALL"}),
+        ("/enrich?enrichment_status=pending", {"SMALL"}),
+        ("/enrich?enrichment_status=done", {"LARGE"}),
+        ("/enrich?enrichment_status=not_found", {"ODD"}),
+        ("/enrich?enrichment_status=failed", {"FAIL"}),
+        ("/enrich?enrichment_status=not_found&source=manual", {"ODD"}),
+        ("/enrich?enrichment_status=failed&source=bideasy", {"FAIL"}),
+        ("/enrich?source=scrape", {"SMALL"}),
+        ("/enrich?tender_status=Retender", {"SMALL"}),
+        ("/mail", set()),
+        ("/mail?outreach_status=sent", {"LARGE"}),
+        ("/mail?outreach_status=failed", {"FAIL"}),
+        ("/mail?outreach_status=none", set()),
+        ("/mail?mailable=no", set()),
     ],
 )
-def test_each_filter_shows_the_same_awards_the_query_returns(tmp_path, query, expected):
+def test_each_filter_shows_the_same_awards_the_query_returns(tmp_path, url, expected):
     path = tmp_path / "pipeline.sqlite3"
     _rich(path)
-    html = TestClient(create_app(path)).get(f"/?{query}").text
+    html = TestClient(create_app(path)).get(url).text
 
     assert _shown(html) == expected
     assert _count(html, "awards") == str(len(expected))
@@ -319,42 +319,55 @@ def test_high_value_mail_list_is_the_filtered_companies(tmp_path):
         "/mail/from-table",
         data={"select_all": "1", "value_min": "100000", "mailable": "yes"},
     ).text
+    picked = html[html.index('id="picked"'):html.index("</ul>", html.index('id="picked"'))]
 
-    assert "Large Electricals" in html
-    assert "Odd Annex Works" not in html
-    assert "Small Roads Ltd" not in html
+    assert "Large Electricals" in picked
+    assert "Odd Annex Works" not in picked
+    assert "Small Roads Ltd" not in picked
 
 
-def test_awards_filter_is_still_there_after_leaving_the_table(tmp_path):
+def test_stage_filter_is_still_there_after_leaving_the_table(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path)
     client = TestClient(create_app(path))
-    client.get("/?enrichment_status=pending&state=Bihar")
-    saved = 'href="/?enrichment_status=pending&amp;state=Bihar"'
+    client.get("/enrich?enrichment_status=failed")
+    saved = 'href="/enrich?enrichment_status=failed"'
 
-    for path_ in ("/jobs", "/mail", "/tender/new"):
+    for path_ in ("/jobs", "/mail", "/"):
         page = client.get(path_)
         assert page.status_code == 200
         assert saved in page.text
 
-    client.get("/")
-    assert saved not in client.get("/jobs").text
-    home = client.get("/")
-    assert 'value="pending" selected' not in home.text
+    client.get("/enrich")
+    assert "enrichment_status=failed" not in client.get("/jobs").text
 
 
-def test_combined_enrichment_filter_shows_class_counts(tmp_path):
+def test_enrich_status_is_one_list_at_a_time(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _rich(path)
-    html = TestClient(create_app(path)).get(
-        "/?enrichment_status=pending&enrichment_status=not_found"
-    ).text
-
-    assert _shown(html) == {"SMALL", "ODD"}
-    assert _count(html, "pending") == "1"
-    assert _count(html, "not_found") == "1"
-    assert _count(html, "failed") == "0"
-    assert _count(html, "awards") == "2"
+    client = TestClient(create_app(path))
+    pending = client.get("/enrich").text
+    assert _shown(pending) == {"SMALL"}
+    assert _count(pending, "pending") == "1"
+    missed = client.get("/enrich?enrichment_status=not_found").text
+    assert _shown(missed) == {"ODD"}
+    assert _count(missed, "not_found") == "1"
+    assert "Put not_found companies back on the queue" not in missed
+    assert 'value="lookup">Enrich</button>' in missed
+    done = client.get("/enrich?enrichment_status=done").text
+    assert _shown(done) == {"LARGE"}
+    assert 'value="lookup"' not in done
+    assert 'name="vendor_id"' not in done
+    failed = client.get("/enrich?enrichment_status=failed").text
+    assert _shown(failed) == {"FAIL"}
+    assert 'value="lookup">Enrich</button>' in failed
+    thead = failed.split("<thead>", 1)[1].split("</thead>", 1)[0]
+    assert "<a " not in thead
+    assert "pin-name" not in failed
+    assert "class=\"tick\"" in failed
+    assert 'name="sort"' in failed
+    assert 'name="dir"' in failed
+    assert "company name, city, state, email, or phone" in failed
 
 
 def test_from_preset_is_measured_from_the_to_date():
@@ -368,22 +381,20 @@ def test_from_preset_is_measured_from_the_to_date():
     )
 
 
-def test_any_enrichment_is_the_whole_table_and_filters_can_clear(tmp_path):
+def test_home_holds_the_master_export_and_scrape_can_clear(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _rich(path)
     client = TestClient(create_app(path))
     home = client.get("/")
-    assert "Clear filters" in home.text
-    assert 'href="/"' in home.text
-    assert "Search tender, company, city, email, or phone" in home.text
-    assert 'data-enrichment-any' in home.text
-    assert _shown(home.text) == {"SMALL", "LARGE", "ODD", "FAIL"}
-    narrowed = client.get("/?enrichment_status=pending&enrichment_status=failed")
-    assert _shown(narrowed.text) == {"SMALL", "FAIL"}
-    opened = client.get("/?date_from_preset=any&date_to_mode=any")
-    assert 'href="/export.xlsx"' in opened.text
-    assert _shown(opened.text) == {"SMALL", "LARGE", "ODD", "FAIL"}
-    cleared = client.get("/")
+    assert 'href="/export.xlsx"' in home.text
+    assert 'href="/export.csv"' in home.text
+    assert _shown(home.text) == set()
+    scrape = client.get("/scrape")
+    assert "Clear" in scrape.text
+    assert _shown(scrape.text) == {"SMALL", "LARGE", "ODD", "FAIL"}
+    narrowed = client.get("/scrape?tender_status=Retender")
+    assert _shown(narrowed.text) == {"ODD"}
+    cleared = client.get("/scrape")
     assert _shown(cleared.text) == {"SMALL", "LARGE", "ODD", "FAIL"}
 
 
@@ -425,32 +436,57 @@ def test_company_name_search_skips_a_title_mention(tmp_path):
             [{"bid_number": "1", "vendor_id": other, "bidder_name": "ANZEN PROJECTS PRIVATE LIMITED"}],
         )
     client = TestClient(create_app(path))
-    broad = client.get("/?q=APSARA").text
-    named = client.get("/?q=APSARA&search_in=name").text
+    broad = client.get("/scrape?q=APSARA").text
+    ignored = client.get("/scrape?q=APSARA&search_in=name").text
     assert ">NAME</a>" in broad and ">TITLE</a>" in broad
-    assert ">NAME</a>" in named
-    assert ">TITLE</a>" not in named
-    assert 'value="name" checked' in named
+    assert ">NAME</a>" in ignored and ">TITLE</a>" in ignored
 
 
 def test_combination_urls_show_the_same_tenders_as_the_query(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _rich(path)
     client = TestClient(create_app(path))
+    from starlette.datastructures import QueryParams
+
+    from ops_ui.present import stage_query
+
     cases = (
-        ("value_min=100&mailable=yes", AwardQuery(value_min="100", mailable="yes")),
-        (
-            "q=roads&search_in=name&enrichment_status=pending",
-            AwardQuery(text="roads", search_in=("name",), enrichment_status=("pending",)),
-        ),
+        ("scrape", "/scrape?q=road&tender_status=AOC"),
+        ("enrich", "/enrich?enrichment_status=failed&source=bideasy&outreach_status=sent"),
+        ("mail", "/mail?outreach_status=sent&enrichment_status=pending"),
     )
-    for query_string, query in cases:
-        html = client.get(f"/?{query_string}").text
+    for stage, url in cases:
+        html = client.get(url).text
+        query = stage_query(stage, QueryParams(url.split("?", 1)[1]))
         with session(engine(path)) as current:
             view = award_view(current, query, page_size=None)
         shown = {tender_id for tender_id in _TENDERS if f">{tender_id}</a>" in html}
         assert shown == {row["tender_id"] for row in view.rows}
         assert _count(html, "awards") == str(view.total)
+
+
+def test_scrape_organisation_and_contract_value_match_the_query(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    _rich(path)
+    client = TestClient(create_app(path))
+    from starlette.datastructures import QueryParams
+
+    from ops_ui.present import stage_query
+
+    cases = (
+        ("scrape", "/scrape?organisation=Durgapur", {"LARGE"}),
+        ("scrape", "/scrape?value_min=100000", {"LARGE"}),
+        ("enrich", "/enrich?organisation=Durgapur&value_min=100000", {"SMALL"}),
+        ("mail", "/mail?organisation=Durgapur&value_min=1", set()),
+    )
+    for stage, url, expected in cases:
+        html = client.get(url).text
+        query = stage_query(stage, QueryParams(url.split("?", 1)[1]))
+        with session(engine(path)) as current:
+            view = award_view(current, query, page_size=None)
+        shown = {tender_id for tender_id in _TENDERS if f">{tender_id}</a>" in html}
+        assert shown == expected
+        assert shown == {row["tender_id"] for row in view.rows}
 
 
 def test_failed_chip_matches_the_award_rows_including_tender_status(tmp_path):
@@ -483,7 +519,10 @@ def test_failed_chip_matches_the_award_rows_including_tender_status(tmp_path):
         mark_failed(current, twice)
         mark_failed(current, once)
     client = TestClient(create_app(path))
-    failed = client.get("/?enrichment_status=failed").text
+    failed = client.get("/enrich?enrichment_status=failed").text
     assert _count(failed, "failed") == _count(failed, "awards") == "3"
-    narrowed = client.get("/?enrichment_status=failed&tender_status=AOC").text
-    assert _count(narrowed, "failed") == _count(narrowed, "awards") == "2"
+    ignored = client.get("/enrich?enrichment_status=failed&tender_status=AOC").text
+    assert _count(ignored, "failed") == _count(ignored, "awards") == "3"
+    aoc = client.get("/scrape?tender_status=AOC").text
+    assert _count(aoc, "awards") == "2"
+    assert ">B</a>" not in aoc

@@ -46,4 +46,8 @@ AWARDED_BIDS_HEADING = "Awarded Bids List"
 PDF_MAGIC = b"%PDF"
 
 DEFAULT_DELAY_SECONDS = 1.5
-DEFAULT_TIMEOUT_SECONDS = 45.0
+# Connect fails fast. Read stays long: GePNIC often accepts the socket and
+# then sits silent while Tapestry builds the page. A single float would apply
+# the same budget to both, so a slow page and a dead network look identical.
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
+DEFAULT_READ_TIMEOUT_SECONDS = 90.0

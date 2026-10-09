@@ -25,11 +25,6 @@ from pipeline_core.queries import (
 
 from ops_ui.jobs import Log
 
-#: Portal field names, the same pairs 01-scrape/main.py sends.
-_DATE_FIELDS = {
-    "contract": ("fromDate", "toDate"),
-    "published": ("publishedFromDate", "publishedToDate"),
-}
 _SCRAPE_DELAY_FLOOR = 1.5
 _MAIL_DELAY_FLOOR = 5.0
 
@@ -172,19 +167,24 @@ def run_scrape(
     download_pdfs: bool,
     refresh: bool,
     probe: bool,
-    from_date: str,
-    to_date: str,
-    date_field: str,
+    fromDate: str = "",
+    toDate: str = "",
+    publishedFromDate: str = "",
+    publishedToDate: str = "",
 ) -> int:
     from stage1_scrape.app.run import run_scrape as scrape
     from stage1_scrape.domain.errors import CaptchaError
 
     delay = max(delay, _SCRAPE_DELAY_FLOOR)
-    extra = _dates(from_date, to_date, date_field, log)
-    if extra is None:
+    extra, error = portal_fields(fromDate, toDate, publishedFromDate, publishedToDate)
+    if error:
+        log.write(error)
         return 1
     from ops_ui.jobs import CaptchaTimedOut, wait_for_captcha
 
+    log.write("Search is AOC, Award of Contract.")
+    if extra:
+        log.write("Portal dates: " + ", ".join(f"{key} {value}" for key, value in extra.items()))
     log.write(scrape_cost(max_tenders=max_tenders, probe=probe))
     log.write("Captcha is read automatically. If that fails, type it on this page.")
 
@@ -307,35 +307,43 @@ def portal_date(raw: str) -> str:
     return text
 
 
-def date_error(from_date: str, to_date: str, date_field: str) -> str | None:
-    """The same date checks a scrape refuses before it starts."""
-    if date_field not in _DATE_FIELDS:
-        return "Date field must be contract or published."
-    parsed = {}
-    for label, raw in (("From", from_date.strip()), ("To", to_date.strip())):
-        if not raw:
-            continue
-        try:
-            parsed[label] = datetime.strptime(raw, "%d/%m/%Y")
-        except ValueError:
-            return f"{label} date {raw!r} is not dd/MM/yyyy."
-    if len(parsed) == 2 and parsed["From"] > parsed["To"]:
-        return "From date is after to date."
-    return None
+def portal_fields(
+    contract_from: str,
+    contract_to: str,
+    published_from: str,
+    published_to: str,
+) -> tuple[dict[str, str], str | None]:
+    """Portal date fields that were filled. Empty dates are left out."""
+    pairs = (
+        ("Contract", "fromDate", "toDate", contract_from, contract_to),
+        ("Published", "publishedFromDate", "publishedToDate", published_from, published_to),
+    )
+    fields: dict[str, str] = {}
+    for label, start_key, end_key, start, end in pairs:
+        start = (start or "").strip()
+        end = (end or "").strip()
+        parsed: dict[str, datetime] = {}
+        for side, raw in (("from", start), ("to", end)):
+            if not raw:
+                continue
+            try:
+                parsed[side] = datetime.strptime(raw, "%d/%m/%Y")
+            except ValueError:
+                return {}, f"{label} {side} date {raw!r} is not dd/MM/yyyy."
+        if "from" in parsed and "to" in parsed and parsed["from"] > parsed["to"]:
+            return {}, f"{label} from date is after to date."
+        if start:
+            fields[start_key] = start
+        if end:
+            fields[end_key] = end
+    return fields, None
 
 
-def _dates(from_date: str, to_date: str, date_field: str, log: Log) -> dict[str, str] | None:
-    error = date_error(from_date, to_date, date_field)
-    if error:
-        log.write(error)
-        return None
-    start, end = _DATE_FIELDS[date_field]
-    fields = {}
-    if from_date.strip():
-        fields[start] = from_date.strip()
-    if to_date.strip():
-        fields[end] = to_date.strip()
-    return fields
+def range_is_bounded(fields: dict[str, str]) -> bool:
+    """A no-cap scrape needs one complete portal date pair."""
+    return ("fromDate" in fields and "toDate" in fields) or (
+        "publishedFromDate" in fields and "publishedToDate" in fields
+    )
 
 
 def run_outreach(

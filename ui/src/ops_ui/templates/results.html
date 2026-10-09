@@ -1,57 +1,90 @@
 <section class="table-card">
 <div class="meta">
-  <span>{{ view.start }}–{{ view.end }} of {{ view.total }}</span>
+  <span>{{ view.start }}–{{ view.end }} of <span data-count="awards">{{ view.total }}</span></span>
+  <span data-count="vendors">{{ view.counts.vendors }}</span> companies
   <a href="{{ excel_href }}" hx-boost="false">Excel</a>
   <a href="{{ csv_href }}" hx-boost="false">CSV</a>
-  <span class="legend">Mint columns are PDF evidence</span>
+  {% if stage == 'enrich' %}
+  <span class="legend">Mint columns are PDF evidence, not an address to mail</span>
   <span class="status pending">pending <span data-count="pending">{{ view.counts.pending }}</span></span>
   <span class="status not_found">not_found <span data-count="not_found">{{ view.counts.not_found }}</span></span>
   <span class="status failed">failed <span data-count="failed">{{ view.counts.failed }}</span></span>
+  {% endif %}
 </div>
 
+{% if selectable %}
 <form method="post" action="/selection">
 {% for name, value in form_fields %}
 <input type="hidden" name="{{ name }}" value="{{ value }}">
 {% endfor %}
+{% endif %}
 <div class="scroll">
   <table>
     <thead>
       <tr>
+        {% if selectable %}
+        <th class="tick"><input id="page-ticks" type="checkbox" aria-label="Select rows on this page"></th>
+        {% endif %}
         {% for header in headers %}
-        <th class="group-{{ header.group|lower|replace(' ', '-') }}{{ ' evidence' if header.evidence else '' }}{{ ' pin' if header.key == 'tender_id' else '' }}{{ ' pin-name' if header.key == 'name_raw' else '' }}">
-          {% if header.key == 'tender_id' %}
-          <input type="checkbox" aria-label="Select rows on this page" onchange="document.querySelectorAll('input[name=vendor_id]').forEach(function (box) { box.checked = this.checked; }, this)">
-          {% endif %}
-          {% if header.href %}
-          <a href="{{ header.href }}">{{ header.label }}{% if header.mark %} {{ header.mark }}{% endif %}</a>
-          {% else %}
-          {{ header.label }}
-          {% endif %}
-        </th>
+        <th class="group-{{ header.group|lower|replace(' ', '-') }}{{ ' evidence' if header.evidence else '' }}">{{ header.label }}</th>
         {% endfor %}
       </tr>
     </thead>
     <tbody>
       {% for row in view.rows %}
       <tr>
+        {% if selectable %}
+        <td class="tick"><input type="checkbox" name="vendor_id" value="{{ row.vendor_id }}:{{ row.tender_id }}"></td>
+        {% endif %}
         {% for col in columns %}
-        <td class="{{ 'evidence' if col.evidence else '' }}{{ ' pin' if col.key == 'tender_id' else '' }}{{ ' pin-name' if col.key == 'name_raw' else '' }}{{ ' wrap' if col.key in ['title', 'organisation', 'work_title'] else '' }}" data-col="{{ col.key }}">{% if col.key == 'tender_id' %}<input type="checkbox" name="vendor_id" value="{{ row.vendor_id }}:{{ row.tender_id }}"> <a class="open" href="/award?tender_id={{ row.tender_id|urlencode }}&bid={{ row.bid_number|urlencode }}&back={{ request.url.query|urlencode }}">{{ row.tender_id }}</a>{% else %}{{ "" if row[col.key] is none else row[col.key] }}{% endif %}</td>
+        <td class="{{ 'evidence' if col.evidence else '' }}{{ ' wrap' if col.key in ['title', 'organisation', 'work_title', 'name_raw'] else '' }}" data-col="{{ col.key }}">{% if col.key == 'tender_id' %}<a class="open" href="/award?tender_id={{ row.tender_id|urlencode }}&bid={{ row.bid_number|urlencode }}&back={{ (request.url.path ~ ('?' ~ request.url.query if request.url.query else ''))|urlencode }}">{{ row.tender_id }}</a>{% else %}{{ "" if row[col.key] is none else row[col.key] }}{% endif %}</td>
         {% endfor %}
       </tr>
       {% else %}
-      <tr><td class="none" colspan="{{ columns|length }}">No awards match.</td></tr>
+      <tr><td class="none" colspan="{{ columns|length + (1 if selectable else 0) }}">No awards match.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+{% if selectable %}
 <p class="meta">
-  <label class="choice"><input type="checkbox" name="select_all" value="1"> All companies in this filter ({{ view.counts.vendors }})</label>
+  <label class="choice"><input id="select-all" type="checkbox" name="select_all" value="1"> All companies in this filter ({{ view.counts.vendors }})</label>
+  {% if can_enrich %}
   <button type="submit" name="action" value="lookup">Enrich</button>
-  <button class="quiet" type="submit" name="action" value="show_failed">Show failed in this filter</button>
-  <button class="quiet" type="submit" name="action" value="show_not_found">Show not_found in this filter</button>
+  {% elif stage == 'mail' %}
   <button type="submit" name="action" value="mail" formaction="/mail/from-table">Mail these</button>
+  {% endif %}
 </p>
 </form>
+<script>
+(function () {
+  var all = document.getElementById("select-all");
+  var page = document.getElementById("page-ticks");
+  function rows() { return document.querySelectorAll("input[name=vendor_id]"); }
+  function setRows(checked) { rows().forEach(function (box) { box.checked = checked; }); }
+  if (all) {
+    all.addEventListener("change", function () {
+      setRows(all.checked);
+      if (page) page.checked = all.checked;
+    });
+  }
+  if (page) {
+    page.addEventListener("change", function () {
+      setRows(page.checked);
+      if (!page.checked && all) all.checked = false;
+    });
+  }
+  rows().forEach(function (box) {
+    box.addEventListener("change", function () {
+      if (!box.checked) {
+        if (all) all.checked = false;
+        if (page) page.checked = false;
+      }
+    });
+  });
+})();
+</script>
+{% endif %}
 
 {% if previous or following %}
 <p class="pager">

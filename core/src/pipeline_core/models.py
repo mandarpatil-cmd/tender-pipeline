@@ -1,4 +1,8 @@
-"""The shared schema — five tables, one writer each.
+"""The shared schema — one writer per table, except the vendor contact block.
+
+Amounts are integer hundredths. A calendar day is ``YYYY-MM-DD`` text.
+A timestamp is ISO-8601 text. SQLite has no date type and no decimal type,
+and a real would not keep ``179853.24`` exact.
 
 ```text
                  tenders  vendors  awards  llm_runs  outreach
@@ -12,9 +16,6 @@
 
 (1) `vendors` is the one table with two writers, and they touch disjoint
 columns: the scraper owns identity, stage 2 owns the contact block.
-
-Column names match the scraper's original hand-rolled SQLite byte for byte, so
-the live database migrates with no transformation.
 """
 
 from __future__ import annotations
@@ -56,8 +57,12 @@ class Tender(Base):
     title: Mapped[str | None] = mapped_column(Text)
     organisation: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str | None] = mapped_column(Text)
+    #: ``YYYY-MM-DD``, parsed from the portal's ``21-Sep-2026`` at write time.
     contract_date: Mapped[str | None] = mapped_column(Text)
-    contract_value: Mapped[str | None] = mapped_column(Text)
+    #: Integer hundredths. ``INR 179,853.24`` is stored as ``17985324``.
+    contract_value: Mapped[int | None] = mapped_column(Integer)
+    #: ``INR`` or ``USD``, taken from the amount's prefix, otherwise ``INR``.
+    contract_currency: Mapped[str | None] = mapped_column(Text)
     #: Path to the raw scrape, `data/json/<id>.json` relative to the stage.
     json_path: Mapped[str | None] = mapped_column(Text)
     scraped_at: Mapped[str] = mapped_column(Text, nullable=False)
@@ -105,10 +110,9 @@ class Vendor(Base):
     source: Mapped[str | None] = mapped_column(Text)
 
     # --- evidence block: written only by stage 1 ---
-    # Read out of the tender's work-order PDF via pypdf's text layer, not by OCR:
-    # a purely scanned page yields nothing at all. What does come back is often a
-    # layer the issuing department's own scanner produced, so characters can
-    # already be wrong -- e.g. "acmctechworks0l@" for "acmetechworks01@". This is
+    # Read out of the tender's work-order PDF. LiteParse OCRs the scan first;
+    # the embedded text layer is the backup. Characters can already be wrong --
+    # e.g. "acmctechworks0l@" for "acmetechworks01@". This is
     # *evidence*, not truth. Stage 2 passes it to the model to confirm or correct.
     # Never mail one of these directly.
     pdf_email: Mapped[str | None] = mapped_column(Text)
@@ -145,12 +149,12 @@ class Award(Base):
         Integer, ForeignKey("vendors.vendor_id"), nullable=False
     )
     bidder_name: Mapped[str] = mapped_column(Text, nullable=False)
+    #: A label such as ``L1`` or ``H1``, not a number.
     rank: Mapped[str | None] = mapped_column(Text)
-    quoted_value: Mapped[str | None] = mapped_column(Text)
-    awarded_value: Mapped[str | None] = mapped_column(Text)
+    #: Integer hundredths. ``46,08,100.00`` is stored as ``460810000``.
+    quoted_value: Mapped[int | None] = mapped_column(Integer)
+    awarded_value: Mapped[int | None] = mapped_column(Integer)
     awarded_currency: Mapped[str | None] = mapped_column(Text)
-    contract_date: Mapped[str | None] = mapped_column(Text)
-    contract_value: Mapped[str | None] = mapped_column(Text)
     #: Stage 2 reads this as the LLM's only context about the company.
     work_title: Mapped[str | None] = mapped_column(Text)
 

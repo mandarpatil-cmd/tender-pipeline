@@ -12,6 +12,7 @@ dependencies = [
     "lxml>=6.1",
     "requests>=2.34",
     "pypdf>=6.16",
+    "liteparse>=2.14",
     # settings.py reads .env on every lookup, and the vendor sheet is always written
     "python-dotenv>=1.2",
     "pandas>=3.0",

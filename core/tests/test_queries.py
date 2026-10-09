@@ -373,7 +373,7 @@ def test_outreach_target_carries_what_the_mail_needs(bind):
     assert target.email == "hi@kanta.example"
     assert target.tender_id == "T-1"
     assert target.title == "Work T-1"
-    assert target.contract_date == "01-Jan-2026"
+    assert target.contract_date == "2026-01-01"
 
 
 # --------------------------------------------------------------------------

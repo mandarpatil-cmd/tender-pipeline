@@ -1,0 +1,84 @@
+<form class="filters" method="get" action="{{ stage_path }}" hx-boost="true">
+  <label class="wide search">Search tender id, title, organisation, company name, city, state, email, or phone
+    <input name="q" value="{{ query.text }}" placeholder="Tender id, title, organisation, company, city, state, email, phone">
+  </label>
+  {% if stage == 'scrape' %}
+  <label>Stored status
+    <select name="tender_status">
+      <option value="">Any</option>
+      {% for value in choices.tender_status %}
+      <option value="{{ value }}" {% if query.tender_status == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
+    <label>Scraped from
+      <select name="scraped_from_preset" data-role="preset">
+        <option value="any" {% if scraped_from_preset == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if scraped_from_preset == '' %}selected{% endif %}>Specific date</option>
+        {% for days in date_presets %}
+        <option value="{{ days }}" {% if scraped_from_preset == days|string %}selected{% endif %}>{{ days }} days before to</option>
+        {% endfor %}
+      </select>
+      <input name="scraped_from" type="date" data-role="from" value="{{ scraped_from }}" {% if scraped_from_preset != '' %}hidden disabled{% endif %}>
+    </label>
+    <label>Scraped to
+      <select name="scraped_to_mode" data-role="to-mode">
+        <option value="any" {% if scraped_to_mode == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if scraped_to_mode == '' %}selected{% endif %}>Specific date</option>
+      </select>
+      <input name="scraped_to" type="date" data-role="to" value="{{ scraped_to }}" {% if scraped_to_mode == 'any' %}hidden disabled{% endif %}>
+    </label>
+  </div>
+  <label>Organisation
+    <input name="organisation" value="{{ query.organisation }}">
+  </label>
+  <label>Contract value min
+    <input name="value_min" value="{{ query.value_min }}">
+  </label>
+  <label>Contract value max
+    <input name="value_max" value="{{ query.value_max }}">
+  </label>
+  {% elif stage == 'enrich' %}
+  <label>Enrichment
+    <select name="enrichment_status">
+      {% for value in choices.enrichment_status %}
+      <option value="{{ value }}" {% if value in query.enrichment_status %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Source
+    <select name="source">
+      <option value="">Any</option>
+      {% for value in choices.source %}
+      <option value="{{ value }}" {% if query.source == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% elif stage == 'mail' %}
+  <label>Send state
+    <select name="outreach_status">
+      <option value="none" {% if query.outreach_status == 'none' %}selected{% endif %}>To send</option>
+      <option value="sent" {% if query.outreach_status == 'sent' %}selected{% endif %}>Sent</option>
+      <option value="failed" {% if query.outreach_status == 'failed' %}selected{% endif %}>Failed</option>
+    </select>
+  </label>
+  {% endif %}
+  <label>Sort
+    <select name="sort">
+      {% for key, label in sort_columns %}
+      <option value="{{ key }}" {% if query.sort == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Order
+    <select name="dir">
+      <option value="asc" {% if query.direction == 'asc' %}selected{% endif %}>Ascending</option>
+      <option value="desc" {% if query.direction == 'desc' %}selected{% endif %}>Descending</option>
+    </select>
+  </label>
+  <div class="actions">
+    <button type="submit">Apply</button>
+    <a class="quiet" href="{{ stage_path }}" hx-boost="false">Clear</a>
+  </div>
+</form>

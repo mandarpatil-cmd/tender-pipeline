@@ -14,6 +14,7 @@ _EMAIL = re.compile(
 )
 _MOBILE = re.compile(r"(?:\+91[\s\-]?)?([6-9]\d{9})")
 _GSTIN = re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b", re.I)
+_GSTIN_BODY = re.compile(r"\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]")
 _BUYER_EMAIL_MARKERS = (
     "vnit",
     "ynit",
@@ -29,10 +30,21 @@ _BUYER_EMAIL_MARKERS = (
 _BUYER_GSTIN = ("27AAATV9885C1Z2", "27AAATV9885C1ZZ")
 
 
-def extract_pdf(path: Path) -> dict[str, Any]:
-    """Pull text from a work-order PDF's embedded text layer.
+# First five pages plus the last. Six or fewer means the whole file.
+_OCR_HEAD_PAGES = 5
+# GSTIN slots that must be digits, and slots that must be letters.
+_GSTIN_DIGIT_AT = {0, 1, 7, 8, 9, 10}
+_GSTIN_LETTER_AT = {2, 3, 4, 5, 6, 11, 13}
+_GSTIN_TOKEN = re.compile(r"\b[A-Za-z0-9]{15}\b")
 
-    Not OCR: a page that is purely a scanned image yields empty text.
+
+def extract_pdf(path: Path) -> dict[str, Any]:
+    """Read a work order, OCR first.
+
+    These files are usually scans. LiteParse reads the pages that can carry a
+    contact. pypdf's text layer is the backup when OCR finds no email, phone,
+    or GSTIN, or when OCR cannot run. ``error`` is set only when the file
+    itself cannot be read.
     """
     path = Path(path)
     payload: dict[str, Any] = {
@@ -46,23 +58,121 @@ def extract_pdf(path: Path) -> dict[str, Any]:
         "gstins": [],
         "error": None,
     }
-    try:
-        from pypdf import PdfReader
-    except ImportError:
-        payload["error"] = "pypdf is not installed"
+    if not path.is_file():
+        payload["error"] = f"Could not open {path.name}"
         return payload
+
+    ocr_text = ""
+    ocr_pages = 0
     try:
-        reader = PdfReader(str(path))
-        payload["pages"] = len(reader.pages)
-        chunks: list[str] = []
-        for page in reader.pages:
-            chunks.append(page.extract_text() or "")
-        text = "\n".join(chunks).strip()
+        ocr_text, ocr_pages = _ocr_pdf(path)
     except Exception as exc:
-        log.warning("PDF extract failed for %s: %s", path, exc)
+        log.warning("PDF OCR failed for %s: %s", path, exc)
+
+    if ocr_text:
+        repaired = _repair_gstin_tokens(ocr_text)
+        contacts = harvest_contacts(repaired)
+        if _has_contact(contacts):
+            return _fill(payload, repaired, contacts, ocr_pages)
+
+    try:
+        layer_text, layer_pages = _embedded_text(path)
+    except Exception as exc:
+        log.warning("PDF text layer failed for %s: %s", path, exc)
+        if ocr_text:
+            repaired = _repair_gstin_tokens(ocr_text)
+            return _fill(payload, repaired, harvest_contacts(repaired), ocr_pages)
         payload["error"] = str(exc)
         return payload
-    contacts = harvest_contacts(text)
+
+    layer_contacts = harvest_contacts(layer_text)
+    if _has_contact(layer_contacts):
+        return _fill(payload, layer_text, layer_contacts, layer_pages or ocr_pages)
+    if ocr_text:
+        repaired = _repair_gstin_tokens(ocr_text)
+        return _fill(payload, repaired, harvest_contacts(repaired), ocr_pages or layer_pages)
+    return _fill(payload, layer_text, layer_contacts, layer_pages)
+
+
+def _ocr_pdf(path: Path) -> tuple[str, int]:
+    """OCR the opening pages and the last page. Raises when LiteParse cannot read it."""
+    from liteparse import LiteParse
+
+    page_count = _page_count(path)
+    options: dict[str, Any] = {
+        "ocr_enabled": True,
+        "ocr_language": "eng",
+        "dpi": 150,
+        "quiet": True,
+    }
+    targets = _ocr_targets(page_count)
+    if targets:
+        options["target_pages"] = targets
+    with LiteParse(**options) as parser:
+        result = parser.parse(str(path))
+    text = (result.text or "").strip()
+    pages = page_count or int(result.total_pages or 0)
+    return text, pages
+
+
+def _page_count(path: Path) -> int:
+    """How many pages the file has. This does not read the contact text."""
+    try:
+        from pypdf import PdfReader
+
+        return len(PdfReader(str(path)).pages)
+    except Exception:
+        log.warning("Could not count pages in %s", path)
+        return 0
+
+
+def _ocr_targets(page_count: int) -> str | None:
+    if page_count <= _OCR_HEAD_PAGES + 1:
+        return None
+    return f"1-{_OCR_HEAD_PAGES},{page_count}"
+
+
+def _embedded_text(path: Path) -> tuple[str, int]:
+    """The PDF's own text layer. Raises when that layer cannot be read."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(path))
+    chunks = [(page.extract_text() or "") for page in reader.pages]
+    return "\n".join(chunks).strip(), len(reader.pages)
+
+
+def _repair_gstin_tokens(text: str) -> str:
+    """Fix O/0 and I/1 inside a 15-character GSTIN-shaped token.
+
+    The rest of the page is left alone, so an email is not rewritten.
+    """
+
+    def fix(match: re.Match[str]) -> str:
+        chars = list(match.group(0).upper())
+        for index in _GSTIN_DIGIT_AT:
+            if chars[index] == "O":
+                chars[index] = "0"
+            elif chars[index] == "I":
+                chars[index] = "1"
+        for index in _GSTIN_LETTER_AT:
+            if chars[index] == "0":
+                chars[index] = "O"
+            elif chars[index] == "1":
+                chars[index] = "I"
+        repaired = "".join(chars)
+        if _GSTIN_BODY.fullmatch(repaired):
+            return repaired
+        return match.group(0)
+
+    return _GSTIN_TOKEN.sub(fix, text)
+
+
+def _has_contact(contacts: dict[str, list[str]]) -> bool:
+    return bool(contacts["emails"] or contacts["phones"] or contacts["gstins"])
+
+
+def _fill(payload: dict[str, Any], text: str, contacts: dict[str, list[str]], pages: int) -> dict[str, Any]:
+    payload["pages"] = pages
     payload["char_count"] = len(text)
     payload["text"] = text[:MAX_STORE_CHARS]
     payload["emails"] = contacts["emails"]

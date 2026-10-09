@@ -3,89 +3,10 @@
 {% block body %}
 <p class="kicker">Runs</p>
 <h1>Runs</h1>
-<p class="lede">Start a scrape or an enrich run. One run of each kind can go at a time. Mail is not sent from here.</p>
+<p class="lede">What has already been started. Scrape starts on Scrape. Enrich starts on Enrich. Mail is not sent from here. Open a run to read the log, type a captcha, or stop it.</p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% else %}
-<section class="panel">
-  <h2>Database status</h2>
-  <p class="cost">{{ status_cost }}</p>
-  <form method="post" action="/jobs/status">
-    <button type="submit">Show status</button>
-  </form>
-</section>
-
-<form id="enrich-form" class="panel" method="post" action="/jobs/enrich">
-  <h2>Enrich</h2>
-  <p class="cost">Same enrich as Awards. Limit is how many waiting companies this run takes. Delay is the pause between them. Awards uses the filter on that page and does not ask for these.</p>
-  <div class="grid">
-    <label>Limit
-      <input name="limit" type="number" min="1" value="1">
-    </label>
-    <label>Delay seconds
-      <input name="delay" type="number" min="0" step="0.1" value="1">
-    </label>
-    <label>Source
-      <select name="source">
-        <option value="scrape" selected>scrape</option>
-        <option value="all">all</option>
-      </select>
-    </label>
-  </div>
-  <label class="check"><input type="checkbox" name="dry_run" checked> Dry run — list the queue and spend nothing</label>
-  <label class="check"><input type="checkbox" name="retry_failed"> Put failed companies back on the queue</label>
-  <label class="check"><input type="checkbox" name="retry_not_found"> Put not_found companies back on the queue</label>
-  <p class="cost" id="enrich-cost" hx-get="/jobs/enrich-cost" hx-trigger="change from:#enrich-form" hx-include="#enrich-form" hx-swap="innerHTML">{{ enrich_cost_text }}</p>
-  <button type="submit">Enrich</button>
-</form>
-
-<form class="panel" method="post" action="/jobs/scrape">
-  <h2>Scrape portal</h2>
-  <div class="grid">
-    <label>Max new tenders
-      <input name="max_tenders" type="number" min="1" value="1">
-    </label>
-    <label>Max pages
-      <input name="max_pages" type="number" min="1" value="1">
-    </label>
-    <label>Delay seconds
-      <input name="delay" type="number" min="1.5" step="0.1" value="1.5">
-    </label>
-    <label>Date field
-      <select name="date_field">
-        <option value="contract" selected>contract</option>
-        <option value="published">published</option>
-      </select>
-    </label>
-    <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
-      <label>From date
-        <select name="from_date_preset" data-role="preset">
-          <option value="any" selected>Any</option>
-          <option value="">Specific date</option>
-          {% for days in date_presets %}
-          <option value="{{ days }}">{{ days }} days before to</option>
-          {% endfor %}
-        </select>
-        <input name="from_date" type="date" data-role="from" hidden disabled>
-      </label>
-      <label>To date
-        <select name="to_date_mode" data-role="to-mode">
-          <option value="any" selected>Any</option>
-          <option value="">Specific date</option>
-        </select>
-        <input name="to_date" type="date" data-role="to" value="{{ today }}" hidden disabled>
-      </label>
-    </div>
-  </div>
-  <label class="check"><input type="checkbox" name="no_cap"> No cap — every tender in this date range</label>
-  <label class="check"><input type="checkbox" name="download_pdfs" checked> Download PDFs</label>
-  <label class="check"><input type="checkbox" name="refresh"> Re-fetch tenders already saved</label>
-  <label class="check"><input type="checkbox" name="probe"> Probe only — one listing page, no tenders stored</label>
-  <p class="cost">{{ scrape_cost_text }} If the automatic reader fails, the image appears on the run page.</p>
-  <button type="submit">Scrape</button>
-</form>
-
-<h2 class="section">Runs</h2>
 <form class="panel" method="get" action="/jobs">
   <div class="grid">
     <label>Stage

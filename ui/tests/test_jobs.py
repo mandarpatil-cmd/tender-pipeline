@@ -96,14 +96,26 @@ def test_enrich_dry_run_lists_the_company_and_does_not_spend(tmp_path):
 def test_enrich_page_names_the_limit_and_the_delay(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     ensure_schema(engine(path))
-    html = TestClient(create_app(path)).get("/jobs").text
+    client = TestClient(create_app(path))
+    html = client.get("/enrich").text
 
-    assert "<h2>Enrich</h2>" in html
+    assert "<h2>Look up contacts</h2>" in html
     assert "Find contacts" not in html
     assert "Limit is how many waiting companies" in html
-    assert "60 days before to" in html
-    assert 'name="to_date"' in html
-    assert 'type="date"' in html
+    assert "Put failed companies back on the queue" not in html
+    scrape = client.get("/scrape").text
+    assert "60 days before to" in scrape
+    assert 'name="contract_to"' in scrape
+    assert 'name="published_to"' in scrape
+    assert "Pause between portal requests" in scrape
+    assert "Award of Contract" in scrape
+    assert "fetch and store each one again" in scrape
+    assert 'name="date_field"' not in scrape
+    assert 'type="date"' in scrape
+    runs = client.get("/jobs").text
+    assert "Scrape portal" not in runs
+    assert "<h2>Look up contacts</h2>" not in runs
+    assert "Put failed companies back on the queue" not in runs
 
 
 def test_enrich_dry_run_does_not_requeue(tmp_path):
@@ -171,7 +183,19 @@ def test_typed_captcha_reaches_the_same_run(tmp_path):
             break
         threading.Event().wait(0.05)
     assert "6 characters" in page
+    assert 'id="captcha-box"' in page
+    assert 'hx-preserve="true"' in page
+    assert 'id="captcha-code"' in page
+    assert 'class="captcha-code"' in page
     assert client.get(f"/jobs/{job_id}/captcha").content.startswith(b"\x89PNG")
+    short = client.post(
+        f"/jobs/{job_id}/captcha",
+        data={"code": "ab"},
+        follow_redirects=False,
+    )
+    assert short.status_code == 303
+    assert short.headers["location"].endswith(f"/jobs/{job_id}?captcha=1")
+    assert "Type all 6 characters" in client.get(short.headers["location"]).text
     posted = client.post(
         f"/jobs/{job_id}/captcha",
         data={"code": "Ab12Xy"},
@@ -250,17 +274,17 @@ def test_no_cap_requires_both_dates(tmp_path):
 
     missing = client.post(
         "/jobs/scrape",
-        data={"no_cap": "on", "from_date": "01/01/2026"},
+        data={"no_cap": "on", "contract_from": "01/01/2026"},
     )
     reversed_dates = client.post(
         "/jobs/scrape",
-        data={"no_cap": "on", "from_date": "31/03/2026", "to_date": "01/01/2026"},
+        data={"no_cap": "on", "contract_from": "31/03/2026", "contract_to": "01/01/2026"},
     )
 
     assert missing.status_code == 400
-    assert "from date and a to date" in missing.text
+    assert "contract from and to, or a published from and to" in missing.text
     assert reversed_dates.status_code == 400
-    assert reversed_dates.text == "From date is after to date."
+    assert reversed_dates.text == "Contract from date is after to date."
 
 
 def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
@@ -277,9 +301,10 @@ def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
         "/jobs/scrape",
         data={
             "no_cap": "on",
-            "from_date": "01/01/2026",
-            "to_date": "31/01/2026",
-            "date_field": "contract",
+            "contract_from": "01/01/2026",
+            "contract_to": "31/01/2026",
+            "published_from": "01/02/2026",
+            "published_to": "28/02/2026",
         },
         follow_redirects=False,
     )
@@ -291,8 +316,10 @@ def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
     params = json.loads(job.params_json)
     assert params["max_tenders"] is None
     assert params["max_pages"] is None
-    assert params["from_date"] == "01/01/2026"
-    assert params["to_date"] == "31/01/2026"
+    assert params["fromDate"] == "01/01/2026"
+    assert params["toDate"] == "31/01/2026"
+    assert params["publishedFromDate"] == "01/02/2026"
+    assert params["publishedToDate"] == "28/02/2026"
 
 
 def test_scrape_preset_is_measured_from_the_to_date(tmp_path, monkeypatch):
@@ -309,9 +336,8 @@ def test_scrape_preset_is_measured_from_the_to_date(tmp_path, monkeypatch):
         "/jobs/scrape",
         data={
             "no_cap": "on",
-            "to_date": "2026-10-07",
-            "from_date_preset": "60",
-            "date_field": "contract",
+            "contract_to": "2026-10-07",
+            "contract_from_preset": "60",
         },
         follow_redirects=False,
     )
@@ -320,8 +346,10 @@ def test_scrape_preset_is_measured_from_the_to_date(tmp_path, monkeypatch):
     job_id = int(response.headers["location"].rsplit("/", 1)[-1])
     job = get_job(path, job_id)
     params = json.loads(job.params_json)
-    assert params["from_date"] == "08/08/2026"
-    assert params["to_date"] == "07/10/2026"
+    assert params["fromDate"] == "08/08/2026"
+    assert params["toDate"] == "07/10/2026"
+    assert params["publishedFromDate"] == ""
+    assert params["publishedToDate"] == ""
 
 
 def test_runs_list_pages_and_filters(tmp_path):
@@ -367,6 +395,38 @@ def test_runs_list_pages_and_filters(tmp_path):
     empty = TestClient(create_app(tmp_path / "other.sqlite3"))
     ensure_schema(engine(tmp_path / "other.sqlite3"))
     assert "No runs yet." in empty.get("/jobs").text
+
+
+def test_refresh_reruns_stage_one_and_contract_dates_stay_contract(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    seen = {}
+
+    def fake(out, **kwargs):
+        seen.update(kwargs)
+        return {"scraped": 1, "vendors": 1}
+
+    monkeypatch.setattr("stage1_scrape.app.run.run_scrape", fake)
+    client = TestClient(create_app(path))
+    response = client.post(
+        "/jobs/scrape",
+        data={
+            "refresh": "on",
+            "contract_from": "01/01/2026",
+            "contract_to": "31/01/2026",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    for _ in range(50):
+        if seen:
+            break
+        threading.Event().wait(0.05)
+    assert seen["skip_known"] is False
+    assert seen["extra_fields"] == {"fromDate": "01/01/2026", "toDate": "31/01/2026"}
+    job = get_job(path, job_id)
+    assert job is not None and job.state == "done"
 
 
 def test_download_pdfs_starts_a_pdf_job(tmp_path, monkeypatch):

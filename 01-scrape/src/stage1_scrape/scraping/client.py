@@ -12,9 +12,10 @@ import requests
 
 from stage1_scrape.config import (
     APP_URL,
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_DELAY_SECONDS,
     DEFAULT_HEADERS,
-    DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     SEARCH_PAGE_URL,
 )
 from stage1_scrape.domain.errors import ScraperError
@@ -35,9 +36,13 @@ class GePNICClient:
     def __init__(
         self,
         delay: float = DEFAULT_DELAY_SECONDS,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        timeout: tuple[float, float] = (
+            DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            DEFAULT_READ_TIMEOUT_SECONDS,
+        ),
     ) -> None:
         self.delay = delay
+        # (connect, read). Read is the budget with no bytes on the socket.
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
@@ -49,8 +54,15 @@ class GePNICClient:
         jitter = random.uniform(0, min(0.6, self.delay * 0.3))
         time.sleep(self.delay + jitter)
 
+    def _drop_connections(self) -> None:
+        """Throw away pooled sockets. A stalled read must not be reused."""
+        try:
+            self.session.close()
+        except Exception:
+            log.debug("Could not close the HTTP connection pool", exc_info=True)
+
     def _send(self, verb: str, url: str, call):
-        """Run one HTTP call. A connection or DNS failure is tried again."""
+        """Run one HTTP call. A connection, DNS, or read stall is tried again."""
         last: Exception | None = None
         for attempt in range(1, _TRANSIENT_ATTEMPTS + 1):
             try:
@@ -59,6 +71,7 @@ class GePNICClient:
                 last = exc
                 if attempt >= _TRANSIENT_ATTEMPTS or not _is_transient(exc):
                     raise ScraperError(f"{verb} failed for {url}: {exc}") from exc
+                self._drop_connections()
                 wait = 2 * attempt
                 log.warning(
                     "%s failed (%s/%s). Waiting %ss, then retrying. %s",

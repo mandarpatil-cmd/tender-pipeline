@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ stage|capitalize }}{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block body %}
+<p class="kicker">{{ stage|capitalize }}</p>
+{% if stage == 'scrape' %}
+<h1>Scrape</h1>
+<p class="lede">What the portal wrote, and a tender added by hand. One row is one award. The winner’s email and phone are the company’s, so a later tender shows a contact that was already stored.</p>
+{% elif stage == 'enrich' %}
+<h1>Enrich</h1>
+<p class="lede">Find a public email or phone. This opens on companies still waiting. A company that already has either contact is not looked up again.</p>
+{% endif %}
+
+{% if not snapshot.ready %}
+<div class="empty"><p>{{ snapshot.message }}</p></div>
+{% else %}
+{% include "stage_filters.html" %}
+{% if stage == 'scrape' %}
+<p class="meta"><a href="/tender/new">Add a tender</a></p>
+{% include "scrape_form.html" %}
+{% elif stage == 'enrich' %}
+{% include "enrich_form.html" %}
+{% endif %}
+{% include "results.html" %}
+{% endif %}
+{% endblock %}

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Award, LlmRun, Outreach, Tender, Vendor
+from .money import format_amount
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ def award_detail(session: Session, tender_id: str, bid_number: str) -> AwardDeta
     return AwardDetail(
         tender=_tender_dict(tender),
         vendor=_vendor_dict(vendor),
-        awards=tuple(dict(row) for row in award_rows),
+        awards=tuple(_shown_award(row) for row in award_rows),
         runs=tuple(dict(row) for row in runs),
         attempts=tuple(dict(row) for row in attempts),
         focus_bid=bid_number,
@@ -93,10 +94,18 @@ def _tender_dict(tender: Tender) -> dict[str, Any]:
         "organisation": tender.organisation,
         "status": tender.status,
         "contract_date": tender.contract_date,
-        "contract_value": tender.contract_value,
+        "contract_value": format_amount(tender.contract_value),
+        "contract_currency": tender.contract_currency,
         "scraped_at": tender.scraped_at,
         "json_path": tender.json_path,
     }
+
+
+def _shown_award(row) -> dict[str, Any]:
+    shown = dict(row)
+    shown["quoted_value"] = format_amount(shown.get("quoted_value"))
+    shown["awarded_value"] = format_amount(shown.get("awarded_value"))
+    return shown
 
 
 def _vendor_dict(vendor: Vendor) -> dict[str, Any]:

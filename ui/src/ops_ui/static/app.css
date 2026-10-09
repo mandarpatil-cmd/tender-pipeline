@@ -215,6 +215,15 @@ h2 {
   margin-top: 1.25rem;
 }
 
+.strip a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.strip a article {
+  height: 100%;
+}
+
 article, .filters, .panel, .entry, .card, .empty, .table-card, pre {
   background: var(--card);
   border: 1px solid var(--border);
@@ -526,6 +535,14 @@ th {
   z-index: 2;
 }
 
+th.tick, td.tick {
+  width: 2.2rem;
+  min-width: 2.2rem;
+  max-width: 2.2rem;
+  padding-left: 0.45rem;
+  padding-right: 0.35rem;
+}
+
 .scroll th.pin,
 .scroll td.pin,
 .scroll th.pin-name,
@@ -660,10 +677,45 @@ fieldset {
 img.captcha {
   display: block;
   margin: 0.8rem 0;
-  background: white;
-  padding: 0.4rem;
+  background: #fff;
+  padding: 0.5rem;
+  border: 1px solid #111;
   border-radius: calc(var(--radius) - 2px);
   max-width: 100%;
+  image-rendering: pixelated;
+}
+
+.captcha-box form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.captcha-box label {
+  display: block;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+input.captcha-code {
+  display: block;
+  width: min(100%, 18rem);
+  margin-top: 0.35rem;
+  background: #fff;
+  color: #111;
+  caret-color: #111;
+  border: 2px solid #111;
+  font-family: "Fira Code", ui-monospace, monospace;
+  font-size: 1.75rem;
+  letter-spacing: 0.28em;
+  padding: 0.55rem 0.75rem;
+}
+
+.dark input.captcha-code {
+  background: #fff;
+  color: #111;
+  caret-color: #111;
 }
 
 .recent { width: 100%; margin-top: 0.4rem; }

@@ -13,6 +13,7 @@ from pipeline_core.queries import outreach_targets
 from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
 from ops_ui.queries import load_home
+from ops_ui.routes.awards import remember, stage_context
 from ops_ui.runs import credential_gap, live_send_refusal, load_campaign, run_outreach
 from ops_ui.selection import selected_awards
 from ops_ui.templating import TEMPLATES
@@ -25,7 +26,7 @@ _DELAY_FLOOR = 5.0
 
 @router.get("/mail")
 def mail_page(request: Request, path: Path = Depends(database_path)):
-    return _render(request, path, awards=None, error="")
+    return _render(request, path, awards=None, error="", remember_filter=True)
 
 
 @router.post("/mail/from-table")
@@ -87,7 +88,7 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
             request,
             path,
             awards=None,
-            error="Choose companies on Awards.",
+            error="Tick at least one row in the table.",
             transport=transport,
             delay=delay,
             redirect_to=redirect_to,
@@ -273,6 +274,7 @@ def _render(
     letter_mode: str = "default",
     phrases: dict[str, str] | None = None,
     editing: bool = False,
+    remember_filter: bool = False,
 ):
     snapshot = load_home(path)
     waiting = 0
@@ -365,31 +367,38 @@ def _render(
                     "missing": "" if file_path.is_file() else "missing",
                 }
             )
-    return TEMPLATES.TemplateResponse(
-        request=request,
-        name="mail.html",
-        context={
-            "snapshot": snapshot,
-            "error": error,
-            "saved": saved,
-            "waiting": waiting,
-            "selected": awards,
-            "already": already,
-            "include_sent": include_sent,
-            "mailable": mailable,
-            "form": form,
-            "phrases": phrases or {},
-            "files": files,
-            "sample_company": sample_company,
-            "sample_subject": sample_subject,
-            "sample_body": sample_body,
-            "letter_mode": letter_mode,
-            "editing": editing,
-            "transport": transport,
-            "delay": delay,
-            "redirect_to": redirect_to,
-        },
-    )
+    context = {
+        "snapshot": snapshot,
+        "error": error,
+        "saved": saved,
+        "waiting": waiting,
+        "selected": awards,
+        "already": already,
+        "include_sent": include_sent,
+        "mailable": mailable,
+        "form": form,
+        "phrases": phrases or {},
+        "files": files,
+        "sample_company": sample_company,
+        "sample_subject": sample_subject,
+        "sample_body": sample_body,
+        "letter_mode": letter_mode,
+        "editing": editing,
+        "transport": transport,
+        "delay": delay,
+        "redirect_to": redirect_to,
+        "view": None,
+    }
+    if snapshot.ready:
+        context.update(stage_context(request, path, "mail"))
+        context["error"] = error
+        context["saved"] = saved
+        context["selected"] = awards
+        context["form"] = form
+    response = TEMPLATES.TemplateResponse(request=request, name="mail.html", context=context)
+    if remember_filter and snapshot.ready:
+        remember(response, "mail", context["query"])
+    return response
 
 
 def _phrases(form) -> dict[str, str]:

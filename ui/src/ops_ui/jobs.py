@@ -223,6 +223,22 @@ def job_query_from(params) -> JobQuery:
     )
 
 
+def active_jobs(database: Path) -> list[UiJob]:
+    """Runs that have not finished. Newest first."""
+    ensure_schema(engine(database))
+    with session(engine(database)) as current:
+        rows = list(
+            current.scalars(
+                select(UiJob)
+                .where(UiJob.state.in_(("running", "waiting")))
+                .order_by(UiJob.job_id.desc())
+            )
+        )
+        for row in rows:
+            current.expunge(row)
+    return rows
+
+
 def list_jobs(database: Path, query: JobQuery) -> JobPage:
     """Newest run first. Filters apply together. Page size matches the awards grid."""
     ensure_schema(engine(database))

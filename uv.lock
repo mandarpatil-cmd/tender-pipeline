@@ -727,6 +727,21 @@ wheels = [
 ]
 
 [[package]]
+name = "liteparse"
+version = "2.15.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/c7/b840a00a3b4f34087db00dd360ec309188adc6f7dbb5c68c334da4ad3ad4/liteparse-2.15.1.tar.gz", hash = "sha256:4a2dab9d8d89a517f989d0282f53a608f983c0a8c10e1b24c759b9e6ea6e4144", size = 564278, upload-time = "2026-10-01T17:21:40.722Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3a/ac/198f1ee575afa24574ee1d99e349e8f078258f36bfb874229358e52cd06b/liteparse-2.15.1-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:77d3ab1b1daf4d4f67c971b69309b4a7fcca940c28633e37121727981a31e571", size = 12703987, upload-time = "2026-10-01T17:21:24.766Z" },
+    { url = "https://files.pythonhosted.org/packages/72/f1/146b61a8543a5bb80e1178278d8269070c2ec0fbea4270575b6f9ec6e361/liteparse-2.15.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:48ed7426d995d40a4834130d2cafe96d21281cbe75a943222506f66dfdbb884c", size = 12113759, upload-time = "2026-10-01T17:21:27.003Z" },
+    { url = "https://files.pythonhosted.org/packages/17/16/10fa7dfb1315fa873790f85f9bfae0517a97797adbe9d19699742f14d313/liteparse-2.15.1-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:ad27a27a00d7658d9ee5f6aa117f3ce4762d9b09fb68376352e117d0540f17c4", size = 13706684, upload-time = "2026-10-01T17:21:29.369Z" },
+    { url = "https://files.pythonhosted.org/packages/39/2c/116959772cc8b08da025295169edceb20e6a7cf61979c86718dca5c7247a/liteparse-2.15.1-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:c7d3f3588241aa654f5f75b6781b0cc5c31e26d88bf9dba1b7c8cd23931d829c", size = 13956926, upload-time = "2026-10-01T17:21:32.018Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/2b/28a39f20166dc942bcb7865817061410da9bc0582ab864678d23c446b18f/liteparse-2.15.1-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:78b7b660c666093b1a0c69fc9f66da6394ec5c2f4d3486411b00faa262a24a41", size = 17147278, upload-time = "2026-10-01T17:21:34.426Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/ad/3bc535c88fe9b613c3481aa1ff1edcc7a30a5b8766d1d8f30674f6f803ab/liteparse-2.15.1-cp310-abi3-win_amd64.whl", hash = "sha256:698a332ec1b6f932f1f065df11fcb52bd1f95acaec7056333070501173ba8cac", size = 12122510, upload-time = "2026-10-01T17:21:36.543Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/c6/58b6698cb2f8b2f175a6d4ad629a5f4f8858f26ccea2eececdd99ddc27a8/liteparse-2.15.1-cp310-abi3-win_arm64.whl", hash = "sha256:2ba9ee3f104f96eb5ef4ddb7ed5fdc8fee2125846753d9a82e79b56f55d9790d", size = 11491606, upload-time = "2026-10-01T17:21:38.922Z" },
+]
+
+[[package]]
 name = "lxml"
 version = "6.1.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1630,6 +1645,7 @@ version = "0.1.0"
 source = { editable = "01-scrape" }
 dependencies = [
     { name = "beautifulsoup4" },
+    { name = "liteparse" },
     { name = "lxml" },
     { name = "openpyxl" },
     { name = "pandas" },
@@ -1642,6 +1658,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.15" },
+    { name = "liteparse", specifier = ">=2.14" },
     { name = "lxml", specifier = ">=6.1" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=3.0" },

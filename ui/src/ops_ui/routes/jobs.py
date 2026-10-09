@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -24,18 +23,17 @@ from ops_ui.jobs import (
     start_job,
     submit_captcha,
 )
-from ops_ui.present import DATE_PRESETS, resolve_preset
+from ops_ui.present import resolve_preset
 from ops_ui.queries import load_home
 from ops_ui.runs import (
-    date_error,
+    portal_fields,
+    range_is_bounded,
     enrich_cost,
     portal_date,
     run_enrich,
     run_fetch_pdfs,
     run_scrape,
     run_status,
-    scrape_cost,
-    status_cost,
 )
 from ops_ui.templating import TEMPLATES
 
@@ -47,9 +45,6 @@ def jobs_page(request: Request, path: Path = Depends(database_path)):
     snapshot = load_home(path)
     query = job_query_from(request.query_params)
     listing = list_jobs(path, query) if snapshot.ready else None
-    waiting = ""
-    if snapshot.ready:
-        waiting = enrich_cost(path, limit=1, source="scrape", dry_run=True)
     return TEMPLATES.TemplateResponse(
         request=request,
         name="jobs.html",
@@ -66,11 +61,6 @@ def jobs_page(request: Request, path: Path = Depends(database_path)):
                 if listing and listing.page < listing.pages
                 else None
             ),
-            "status_cost": status_cost(),
-            "enrich_cost_text": waiting,
-            "scrape_cost_text": scrape_cost(max_tenders=1, probe=False),
-            "today": date.today().isoformat(),
-            "date_presets": DATE_PRESETS,
         },
     )
 
@@ -142,25 +132,18 @@ async def post_enrich(request: Request, path: Path = Depends(database_path)):
 async def post_scrape(request: Request, path: Path = Depends(database_path)):
     form = await request.form()
     uncapped = form.get("no_cap") in {"on", "true", "1"}
-    from_date, to_date = resolve_preset(
-        str(form.get("from_date") or ""),
-        str(form.get("to_date") or ""),
-        str(form.get("from_date_preset") or ""),
-        to_mode=str(form.get("to_date_mode") or ""),
-    )
-    from_date = portal_date(from_date)
-    to_date = portal_date(to_date)
-    date_field = str(form.get("date_field") or "contract")
+    contract_from, contract_to = _posted_range(form, "contract")
+    published_from, published_to = _posted_range(form, "published")
+    fields, error = portal_fields(contract_from, contract_to, published_from, published_to)
+    if error:
+        return Response(error, status_code=400, media_type="text/plain")
     if uncapped:
-        if not from_date.strip() or not to_date.strip():
+        if not range_is_bounded(fields):
             return Response(
-                "Set a from date and a to date before fetching without a cap.",
+                "Set a contract from and to, or a published from and to, before fetching without a cap.",
                 status_code=400,
                 media_type="text/plain",
             )
-        error = date_error(from_date, to_date, date_field)
-        if error:
-            return Response(error, status_code=400, media_type="text/plain")
         max_tenders = None
         max_pages = None
         try:
@@ -185,9 +168,10 @@ async def post_scrape(request: Request, path: Path = Depends(database_path)):
         "download_pdfs": form.get("download_pdfs") in {"on", "true", "1"},
         "refresh": form.get("refresh") in {"on", "true", "1"},
         "probe": probe,
-        "from_date": from_date,
-        "to_date": to_date,
-        "date_field": date_field,
+        "fromDate": fields.get("fromDate", ""),
+        "toDate": fields.get("toDate", ""),
+        "publishedFromDate": fields.get("publishedFromDate", ""),
+        "publishedToDate": fields.get("publishedToDate", ""),
     }
 
     def work(log, stop):
@@ -211,14 +195,20 @@ async def post_pdfs(request: Request, path: Path = Depends(database_path)):
 
 
 @router.get("/jobs/{job_id}")
-def job_page(request: Request, job_id: int, refused: int = 0, path: Path = Depends(database_path)):
+def job_page(
+    request: Request,
+    job_id: int,
+    refused: int = 0,
+    captcha: int = 0,
+    path: Path = Depends(database_path),
+):
     job = get_job(path, job_id)
     if job is None:
         return Response("No run with that id.", status_code=404)
     return TEMPLATES.TemplateResponse(
         request=request,
         name="job.html",
-        context=_job_view(job, refused=bool(refused)),
+        context=_job_view(job, refused=bool(refused), captcha_error=bool(captcha)),
     )
 
 
@@ -255,8 +245,9 @@ def captcha_png(job_id: int):
 @router.post("/jobs/{job_id}/captcha")
 async def post_captcha(request: Request, job_id: int):
     form = await request.form()
-    if not submit_captcha(job_id, str(form.get("code") or "")):
-        return Response("Type exactly 6 characters.", status_code=400)
+    code = "".join(str(form.get("code") or "").split())
+    if not submit_captcha(job_id, code):
+        return RedirectResponse(f"/jobs/{job_id}?captcha=1", status_code=303)
     return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
 
@@ -294,6 +285,16 @@ def _jobs_href(query: JobQuery, *, page: int) -> str:
     if query.started_to:
         params["started_to"] = query.started_to
     return "/jobs?" + urlencode(params)
+
+
+def _posted_range(form, prefix: str) -> tuple[str, str]:
+    start, end = resolve_preset(
+        str(form.get(f"{prefix}_from") or ""),
+        str(form.get(f"{prefix}_to") or ""),
+        str(form.get(f"{prefix}_from_preset") or ""),
+        to_mode=str(form.get(f"{prefix}_to_mode") or ""),
+    )
+    return portal_date(start), portal_date(end)
 
 
 def _at_least(raw, default: int) -> int:

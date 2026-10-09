@@ -14,6 +14,11 @@ from ops_ui.jobs import get_job
 from ops_ui.runs import load_campaign
 
 
+def _picked(html: str) -> str:
+    start = html.index('id="picked"')
+    return html[start:html.index("</ul>", start)]
+
+
 def _seed(path) -> int:
     bind = engine(path)
     ensure_schema(bind)
@@ -34,7 +39,8 @@ def test_mail_page_asks_for_companies_before_it_can_send(tmp_path):
     _seed(path)
     html = TestClient(create_app(path)).get("/mail").text
 
-    assert "Choose companies on Awards." in html
+    assert "Tick rows in the table, then Mail these." in html
+    assert "Choose companies on Awards." not in html
     assert "Edit the default" in html
     assert "Save the default" in html
     assert "Corporate insurance introduction for {{company}}" in html
@@ -221,7 +227,7 @@ def test_a_preview_without_companies_does_not_mail_everyone(tmp_path):
     page = TestClient(create_app(path)).post("/mail", data={"mode": "preview", "delay": "5"})
 
     assert page.status_code == 200
-    assert "Choose companies on Awards." in page.text
+    assert "Tick at least one row in the table." in page.text
     with session(engine(path)) as current:
         assert current.query(Outreach).count() == 0
 
@@ -244,8 +250,9 @@ def test_preview_and_remove_stay_on_the_picked_companies(tmp_path, monkeypatch):
 
     kept = client.post("/mail", data={"mode": "remove", "award": f"{first}:T-1"})
     assert kept.status_code == 200
-    assert "Has Email Ltd" in kept.text
-    assert "Other Ltd" not in kept.text
+    picked = _picked(kept.text)
+    assert "Has Email Ltd" in picked
+    assert "Other Ltd" not in picked
     assert "1 message(s) will be mailed" in kept.text
 
     job_id, _body = _start(

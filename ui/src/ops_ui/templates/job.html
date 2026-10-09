@@ -4,5 +4,6 @@
 <p class="kicker">{{ job.stage }}</p>
 <h1>Run {{ job.job_id }}</h1>
 {% if refused %}<p class="warn">A new run was refused. This one is still going.</p>{% endif %}
+{% if captcha_error %}<p class="warn">Type all 6 characters shown in the image, then Continue.</p>{% endif %}
 {% include "job_live.html" %}
 {% endblock %}
