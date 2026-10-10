@@ -26,7 +26,7 @@ from ops_ui.jobs import (
 from ops_ui.present import resolve_preset
 from ops_ui.queries import load_home
 from ops_ui.runs import (
-    portal_fields,
+    organisation_choices,
     range_is_bounded,
     enrich_cost,
     portal_date,
@@ -34,6 +34,7 @@ from ops_ui.runs import (
     run_fetch_pdfs,
     run_scrape,
     run_status,
+    scrape_choice,
 )
 from ops_ui.templating import TEMPLATES
 
@@ -134,16 +135,24 @@ async def post_scrape(request: Request, path: Path = Depends(database_path)):
     uncapped = form.get("no_cap") in {"on", "true", "1"}
     contract_from, contract_to = _posted_range(form, "contract")
     published_from, published_to = _posted_range(form, "published")
-    fields, error = portal_fields(contract_from, contract_to, published_from, published_to)
+    choice, error = scrape_choice(
+        str(form.get("search") or "awarded"),
+        contract_from,
+        contract_to,
+        published_from,
+        published_to,
+        str(form.get("organ_name") or ""),
+        organisation_choices(),
+    )
     if error:
         return Response(error, status_code=400, media_type="text/plain")
     if uncapped:
-        if not range_is_bounded(fields):
-            return Response(
-                "Set a contract from and to, or a published from and to, before fetching without a cap.",
-                status_code=400,
-                media_type="text/plain",
-            )
+        if not range_is_bounded(choice, choice["search"]):
+            if choice["search"] == "organisation":
+                message = "Set a published from and to before fetching without a cap."
+            else:
+                message = "Set a contract from and to before fetching without a cap."
+            return Response(message, status_code=400, media_type="text/plain")
         max_tenders = None
         max_pages = None
         try:
@@ -168,10 +177,7 @@ async def post_scrape(request: Request, path: Path = Depends(database_path)):
         "download_pdfs": form.get("download_pdfs") in {"on", "true", "1"},
         "refresh": form.get("refresh") in {"on", "true", "1"},
         "probe": probe,
-        "fromDate": fields.get("fromDate", ""),
-        "toDate": fields.get("toDate", ""),
-        "publishedFromDate": fields.get("publishedFromDate", ""),
-        "publishedToDate": fields.get("publishedToDate", ""),
+        **choice,
     }
 
     def work(log, stop):
@@ -239,7 +245,7 @@ def captcha_png(job_id: int):
     image = captcha_image(job_id)
     if image is None:
         return Response("No captcha is waiting.", status_code=404)
-    return FileResponse(image)
+    return FileResponse(image, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/jobs/{job_id}/captcha")
@@ -271,7 +277,14 @@ def _start(path, stage: str, params: dict, work) -> Response:
 
 
 def _job_view(job, **extra) -> dict:
-    return {"job": job, "zip_ready": pdf_zip_path(job.job_id).is_file(), **extra}
+    image = captcha_image(job.job_id)
+    version = int(image.stat().st_mtime_ns) if image is not None else 0
+    return {
+        "job": job,
+        "zip_ready": pdf_zip_path(job.job_id).is_file(),
+        "captcha_version": version,
+        **extra,
+    }
 
 
 def _jobs_href(query: JobQuery, *, page: int) -> str:

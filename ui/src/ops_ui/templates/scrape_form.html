@@ -1,6 +1,10 @@
-<form class="panel" method="post" action="/jobs/scrape">
+<form class="panel" method="post" action="/jobs/scrape" data-scrape-form>
   <h2>Scrape portal</h2>
-  <p class="cost">The portal search is AOC, Award of Contract. That is the awarded list.</p>
+  <p class="cost">The portal uses one search at a time. Awarded is Award of Contract, the AOC list. One organisation asks for that organisation, then keeps the rows whose tender stage is AOC.</p>
+  <div class="search-modes">
+    <label class="choice"><input type="radio" name="search" value="awarded" checked> Awarded (AOC)</label>
+    <label class="choice"><input type="radio" name="search" value="organisation"> One organisation</label>
+  </div>
   <div class="grid">
     <label>Max new tenders
       <input name="max_tenders" type="number" min="1" value="1">
@@ -13,47 +17,65 @@
     </label>
   </div>
   <p class="note">Each page and each tender waits at least this long. The shortest pause is 1.5 seconds.</p>
-  <div class="grid">
-    <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
-      <label>Contract from
-        <select name="contract_from_preset" data-role="preset">
-          <option value="any" selected>Any</option>
-          <option value="">Specific date</option>
-          {% for days in date_presets %}
-          <option value="{{ days }}">{{ days }} days before to</option>
-          {% endfor %}
-        </select>
-        <input name="contract_from" type="date" data-role="from" hidden disabled>
-      </label>
-      <label>Contract to
-        <select name="contract_to_mode" data-role="to-mode">
-          <option value="any" selected>Any</option>
-          <option value="">Specific date</option>
-        </select>
-        <input name="contract_to" type="date" data-role="to" value="{{ today }}" hidden disabled>
-      </label>
+  <div data-search-panel="awarded">
+    <div class="grid">
+      <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
+        <label>Contract from
+          <select name="contract_from_preset" data-role="preset">
+            <option value="any" selected>Any</option>
+            <option value="">Specific date</option>
+            {% for days in date_presets %}
+            <option value="{{ days }}">{{ days }} days before to</option>
+            {% endfor %}
+          </select>
+          <input name="contract_from" type="date" data-role="from" hidden disabled>
+        </label>
+        <label>Contract to
+          <select name="contract_to_mode" data-role="to-mode">
+            <option value="any" selected>Any</option>
+            <option value="">Specific date</option>
+          </select>
+          <input name="contract_to" type="date" data-role="to" value="{{ today }}" hidden disabled>
+        </label>
+      </div>
     </div>
-    <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
-      <label>Published from
-        <select name="published_from_preset" data-role="preset">
-          <option value="any" selected>Any</option>
-          <option value="">Specific date</option>
-          {% for days in date_presets %}
-          <option value="{{ days }}">{{ days }} days before to</option>
-          {% endfor %}
-        </select>
-        <input name="published_from" type="date" data-role="from" hidden disabled>
-      </label>
-      <label>Published to
-        <select name="published_to_mode" data-role="to-mode">
-          <option value="any" selected>Any</option>
-          <option value="">Specific date</option>
-        </select>
-        <input name="published_to" type="date" data-role="to" value="{{ today }}" hidden disabled>
-      </label>
-    </div>
+    <p class="note">Contract dates fill fromDate and toDate. Leave the pair on Any to leave those portal fields blank.</p>
   </div>
-  <p class="note">Contract dates fill fromDate and toDate. Published dates fill publishedFromDate and publishedToDate. Leave a pair empty to leave that portal field blank.</p>
+  <div class="search-panel is-off" data-search-panel="organisation">
+    <div class="grid">
+      <label class="wide">Organisation
+        <select name="organ_name" disabled>
+          <option value="">Choose an organisation</option>
+          {% for value, label in organisations %}
+          <option value="{{ value }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
+        <label>Published from
+          <select name="published_from_preset" data-role="preset" disabled>
+            <option value="any" selected>Any</option>
+            <option value="">Specific date</option>
+            {% for days in date_presets %}
+            <option value="{{ days }}">{{ days }} days before to</option>
+            {% endfor %}
+          </select>
+          <input name="published_from" type="date" data-role="from" hidden disabled>
+        </label>
+        <label>Published to
+          <select name="published_to_mode" data-role="to-mode" disabled>
+            <option value="any" selected>Any</option>
+            <option value="">Specific date</option>
+          </select>
+          <input name="published_to" type="date" data-role="to" value="{{ today }}" hidden disabled>
+        </label>
+      </div>
+    </div>
+    {% if not organisations %}
+    <p class="note">Organisation names are not loaded. Run a probe once, then open this page again.</p>
+    {% endif %}
+    <p class="note">Published dates fill publishedFromDate and publishedToDate. Leave the pair on Any to leave those portal fields blank. The portal returns every stage for the organisation. Only AOC rows are opened.</p>
+  </div>
   <label class="check"><input type="checkbox" name="no_cap"> No cap — every tender in the date range that is set</label>
   <label class="check"><input type="checkbox" name="download_pdfs" checked> Download PDFs</label>
   <label class="check"><input type="checkbox" name="refresh"> Re-fetch tenders already saved — fetch and store each one again, including awards and PDFs</label>
@@ -61,3 +83,31 @@
   <p class="cost">Starts with one tender. If the automatic reader fails, the image appears on the run page.</p>
   <button type="submit">Scrape</button>
 </form>
+<script>
+  (function () {
+    function syncSearchPanels(form) {
+      var picked = form.querySelector("input[name=search]:checked");
+      var mode = picked ? picked.value : "awarded";
+      form.querySelectorAll("[data-search-panel]").forEach(function (panel) {
+        var on = panel.getAttribute("data-search-panel") === mode;
+        panel.classList.toggle("is-off", !on);
+        panel.querySelectorAll("input, select, textarea").forEach(function (el) {
+          el.disabled = !on;
+        });
+        if (!on) return;
+        panel.querySelectorAll("[data-date-range]").forEach(function (group) {
+          var preset = group.querySelector("[data-role=preset]");
+          if (preset) preset.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+      });
+    }
+    document.addEventListener("change", function (event) {
+      var el = event.target;
+      if (!el || el.name !== "search" || !el.form) return;
+      syncSearchPanels(el.form);
+    });
+    document.addEventListener("DOMContentLoaded", function () {
+      document.querySelectorAll("[data-scrape-form]").forEach(syncSearchPanels);
+    });
+  })();
+</script>

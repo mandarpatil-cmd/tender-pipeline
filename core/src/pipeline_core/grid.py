@@ -169,6 +169,8 @@ class AwardQuery:
     value_max: str = ""
     #: "" any, "yes" has an email, "no" does not. Same meaning as the mailable count.
     mailable: str = ""
+    #: "" any, "yes" both PDF email and PDF phone are non-empty.
+    pdf_contact: str = ""
     #: Empty means search every text column. Otherwise name, vendor_id, and/or city.
     search_in: tuple[str, ...] = ()
     sort: str = "tender_id"
@@ -186,6 +188,7 @@ class AwardQuery:
             else ""
         )
         mailable = self.mailable if self.mailable in {"yes", "no"} else ""
+        pdf_contact = "yes" if self.pdf_contact == "yes" else ""
         search_in = _search_set(self.search_in)
         scraped_from = _iso_day(self.scraped_from)
         scraped_to = _iso_day(self.scraped_to)
@@ -199,6 +202,7 @@ class AwardQuery:
             enrichment_status=enrichment,
             outreach_status=outreach,
             mailable=mailable,
+            pdf_contact=pdf_contact,
             search_in=search_in,
             scraped_from=scraped_from,
             scraped_to=scraped_to,
@@ -221,6 +225,7 @@ class AwardQuery:
                 self.value_min,
                 self.value_max,
                 self.mailable,
+                self.pdf_contact,
             )
         )
 
@@ -523,6 +528,10 @@ def _filtered(statement, query: AwardQuery, specific, legacy):
         statement = statement.where(has_email)
     elif query.mailable == "no":
         statement = statement.where(~has_email)
+    if query.pdf_contact == "yes":
+        has_pdf_email = Vendor.pdf_email.is_not(None) & (Vendor.pdf_email != "")
+        has_pdf_phone = Vendor.pdf_phone.is_not(None) & (Vendor.pdf_phone != "")
+        statement = statement.where(has_pdf_email & has_pdf_phone)
     if query.organisation:
         statement = statement.where(_contains(Tender.organisation, _like(query.organisation)))
     statement = _range(

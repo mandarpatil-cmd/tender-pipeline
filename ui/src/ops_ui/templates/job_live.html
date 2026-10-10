@@ -3,7 +3,7 @@
   {% if job.state == 'waiting' %}
   <div id="captcha-box" class="panel captcha-box" hx-preserve="true">
     <p class="label">Captcha</p>
-    <img class="captcha" src="/jobs/{{ job.job_id }}/captcha" alt="Captcha: type these 6 characters">
+    <img class="captcha" src="/jobs/{{ job.job_id }}/captcha?v={{ captcha_version }}" alt="Captcha: type these 6 characters">
     <form method="post" action="/jobs/{{ job.job_id }}/captcha">
       <label for="captcha-code">Type the 6 characters
         <input id="captcha-code" class="captcha-code" name="code" type="text" inputmode="text" maxlength="6" minlength="6" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="6 characters" autofocus>

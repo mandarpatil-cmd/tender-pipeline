@@ -100,11 +100,12 @@ def resolve_captcha_code(
     solver: str = "manual",
     ask: Callable[[Path], str] | None = None,
 ) -> str:
-    """Use typed text, OpenRouter OCR, a window callback, or a terminal prompt.
+    """Use typed text, the vision model, a window callback, or a terminal prompt.
 
-    ``ask`` is only for a scrape the window started. When OCR gives up, it is
-    called with the image path instead of ``input()``. A terminal run leaves
-    it unset and still uses ``prompt_captcha``.
+    ``ask`` is only for a scrape the window started. When the vision model
+    cannot return 6 characters, it is called with the image path instead of
+    ``input()``. A terminal run leaves it unset and still uses ``prompt_captcha``.
+    A typed code is not passed through OCR.
     """
     if captcha_text:
         return _require_six(captcha_text)

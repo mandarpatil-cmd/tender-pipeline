@@ -13,6 +13,7 @@ from pipeline_core.queries import (
     mark_enriched,
     record_outreach,
     replace_awards,
+    set_pdf_contacts,
     upsert_tender,
     upsert_vendor,
     utcnow,
@@ -64,6 +65,8 @@ def test_stage_export_matches_the_query_including_later_pages(tmp_path, monkeypa
         "State",
         "Email",
         "Phone",
+        "PDF email",
+        "PDF phone",
         "Source",
         "Scraped",
     ]
@@ -148,8 +151,49 @@ def test_phone_only_company_is_absent_from_mail(tmp_path):
     assert "No awards match." in html
 
 
+def test_pdf_contact_keeps_only_companies_with_both_clues(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        both = upsert_vendor(current, name_raw="Both Clues Ltd")
+        email_only = upsert_vendor(current, name_raw="Email Clue Ltd")
+        neither = upsert_vendor(current, name_raw="No Clue Ltd")
+        set_pdf_contacts(current, both, email="both@example.com", phone="9123456780")
+        set_pdf_contacts(current, email_only, email="one@example.com", phone=None)
+        for tender_id, vendor_id, name in (
+            ("BOTH", both, "Both Clues Ltd"),
+            ("ONE", email_only, "Email Clue Ltd"),
+            ("NONE", neither, "No Clue Ltd"),
+        ):
+            upsert_tender(current, tender_id=tender_id, title=name, scraped_at=utcnow())
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
+    client = TestClient(create_app(path))
+
+    scrape = client.get("/scrape?pdf_contact=yes")
+    assert "Both Clues Ltd" in scrape.text
+    assert "Email Clue Ltd" not in scrape.text
+    assert "No Clue Ltd" not in scrape.text
+    assert "PDF email" in scrape.text
+
+    enrich = client.get("/enrich?pdf_contact=yes")
+    assert "Both Clues Ltd" in enrich.text
+    assert "Email Clue Ltd" not in enrich.text
+    assert "PDF email" in enrich.text
+    assert "PDF phone" in enrich.text
+
+    mail = client.get("/mail")
+    assert 'name="pdf_contact"' not in mail.text
+
+
 def test_stage_column_sets_are_the_ones_the_pages_export():
     assert "email" in STAGE_COLUMNS["scrape"]
+    assert "pdf_email" in STAGE_COLUMNS["scrape"]
+    assert "pdf_phone" in STAGE_COLUMNS["scrape"]
     assert "contract_value" in STAGE_COLUMNS["scrape"]
     assert "awarded_value" in STAGE_COLUMNS["scrape"]
     assert "pdf_email" in STAGE_COLUMNS["enrich"]

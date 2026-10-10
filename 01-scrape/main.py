@@ -159,7 +159,7 @@ def date_filter() -> dict[str, str]:
         )
 
     from_field, to_field = DATE_FIELDS[DATE_FIELD]
-    # submit_search drops blank values, so a half-open window is fine.
+    # An empty string would clear that portal field. Leave an unset side out.
     return {
         field: value
         for field, value in ((from_field, values["FROM_DATE"]), (to_field, values["TO_DATE"]))

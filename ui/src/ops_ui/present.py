@@ -39,6 +39,8 @@ STAGE_COLUMNS: dict[str, tuple[str, ...]] = {
         "state",
         "email",
         "phone",
+        "pdf_email",
+        "pdf_phone",
         "source",
         "scraped_at",
     ),
@@ -76,12 +78,15 @@ _STAGE_KEYS = {
             "organisation",
             "value_min",
             "value_max",
+            "pdf_contact",
             "sort",
             "dir",
             "page",
         }
     ),
-    "enrich": frozenset({"q", "enrichment_status", "source", "sort", "dir", "page"}),
+    "enrich": frozenset(
+        {"q", "enrichment_status", "source", "pdf_contact", "sort", "dir", "page"}
+    ),
     "mail": frozenset({"q", "outreach_status", "sort", "dir", "page"}),
 }
 
@@ -99,6 +104,7 @@ _FIELDS = (
     ("value_min", "value_min"),
     ("value_max", "value_max"),
     ("mailable", "mailable"),
+    ("pdf_contact", "pdf_contact"),
 )
 
 
@@ -272,6 +278,7 @@ def href(query: AwardQuery, path: str = "/", **overrides: str) -> str:
         "value_min": query.value_min,
         "value_max": query.value_max,
         "mailable": query.mailable,
+        "pdf_contact": query.pdf_contact,
         "sort": query.sort,
         "dir": query.direction,
         "page": str(query.page),
@@ -304,6 +311,7 @@ def href(query: AwardQuery, path: str = "/", **overrides: str) -> str:
         "value_min",
         "value_max",
         "mailable",
+        "pdf_contact",
         "sort",
         "dir",
         "page",
@@ -327,11 +335,13 @@ def stage_form_fields(stage: str, query: AwardQuery) -> list[tuple[str, str]]:
                 ("organisation", query.organisation),
                 ("value_min", query.value_min),
                 ("value_max", query.value_max),
+                ("pdf_contact", query.pdf_contact),
             ]
         )
     elif stage == "enrich":
         fields.extend(("enrichment_status", status) for status in query.enrichment_status)
         fields.append(("source", query.source))
+        fields.append(("pdf_contact", query.pdf_contact))
     elif stage == "mail":
         fields.extend(
             [

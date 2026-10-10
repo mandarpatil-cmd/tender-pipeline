@@ -26,7 +26,7 @@
         <th class="tick"><input id="page-ticks" type="checkbox" aria-label="Select rows on this page"></th>
         {% endif %}
         {% for header in headers %}
-        <th class="group-{{ header.group|lower|replace(' ', '-') }}{{ ' evidence' if header.evidence else '' }}">{{ header.label }}</th>
+        <th class="group-{{ header.group|lower|replace(' ', '-') }}{{ ' evidence' if header.evidence else '' }}">{% if header.href %}<a href="{{ header.href }}">{{ header.label }}{% if header.mark == 'asc' %} <span class="sort-mark" aria-label="ascending">↑</span>{% elif header.mark == 'desc' %} <span class="sort-mark" aria-label="descending">↓</span>{% endif %}</a>{% else %}{{ header.label }}{% endif %}</th>
         {% endfor %}
       </tr>
     </thead>

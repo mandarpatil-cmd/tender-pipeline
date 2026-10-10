@@ -39,6 +39,12 @@
   <label>Contract value max
     <input name="value_max" value="{{ query.value_max }}">
   </label>
+  <label>PDF email and phone
+    <select name="pdf_contact">
+      <option value="">Any</option>
+      <option value="yes" {% if query.pdf_contact == 'yes' %}selected{% endif %}>Has both</option>
+    </select>
+  </label>
   {% elif stage == 'enrich' %}
   <label>Enrichment
     <select name="enrichment_status">
@@ -53,6 +59,12 @@
       {% for value in choices.source %}
       <option value="{{ value }}" {% if query.source == value %}selected{% endif %}>{{ value }}</option>
       {% endfor %}
+    </select>
+  </label>
+  <label>PDF email and phone
+    <select name="pdf_contact">
+      <option value="">Any</option>
+      <option value="yes" {% if query.pdf_contact == 'yes' %}selected{% endif %}>Has both</option>
     </select>
   </label>
   {% elif stage == 'mail' %}

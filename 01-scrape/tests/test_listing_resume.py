@@ -1,5 +1,6 @@
 """A dropped connection must not throw away tenders already saved."""
 
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -91,6 +92,37 @@ def test_no_page_cap_walks_until_the_portal_stops(tmp_path, monkeypatch):
 
     assert saved == ["T-ONE", "T-TWO"]
     assert [record.listing.tender_id for record in records] == ["T-ONE", "T-TWO"]
+
+
+def test_organisation_search_opens_only_aoc_rows(tmp_path, monkeypatch, caplog):
+    page = """
+    <table>
+    <tr>
+      <td>1</td><td>T-TECH</td><td>Works</td><td>Org</td><td>Technical Bid Opening</td><td></td>
+      <td><a title="View Tender Status" href="/eprocure/app?sp=tech">view</a></td>
+    </tr>
+    <tr>
+      <td>2</td><td>T-AOC</td><td>Cable</td><td>Org</td><td>AOC</td><td></td>
+      <td><a title="View Tender Status" href="/eprocure/app?sp=aoc">view</a></td>
+    </tr>
+    </table>
+    """
+    saved: list[str] = []
+
+    def save_one(client, listing, store, download_pdfs):
+        saved.append(listing.tender_id)
+        return TenderRecord(listing=listing)
+
+    monkeypatch.setattr("stage1_scrape.app.pipeline.GePNICClient", type("Client", (), {"__init__": lambda self, delay=0: None}))
+    monkeypatch.setattr("stage1_scrape.app.pipeline.Store", _Store)
+    monkeypatch.setattr("stage1_scrape.app.pipeline.scrape_one_tender", save_one)
+    with caplog.at_level(logging.INFO, logger="stage1_scrape.app.pipeline"):
+        with patch("stage1_scrape.app.pipeline._search_with_captcha", return_value=page):
+            records = scrape_aoc(tmp_path, max_pages=1, max_tenders=1, only_aoc=True)
+
+    assert saved == ["T-AOC"]
+    assert [record.listing.tender_id for record in records] == ["T-AOC"]
+    assert "Skipped 1 listing row(s) whose tender stage was not AOC." in caplog.text
 
 
 def test_get_retries_a_dropped_connection(monkeypatch):

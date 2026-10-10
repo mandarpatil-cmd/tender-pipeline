@@ -6,7 +6,7 @@ from .captcha import (
     save_captcha,
 )
 from .client import GePNICClient
-from .forms import extract_form_fields, field_map, override_fields, parse_html
+from .forms import extract_form_fields, field_map, override_fields, parse_html, select_options
 from .ocr import normalize_captcha_text, read_captcha_image
 
 __all__ = [
@@ -22,4 +22,5 @@ __all__ = [
     "read_captcha_image",
     "resolve_captcha_code",
     "save_captcha",
+    "select_options",
 ]

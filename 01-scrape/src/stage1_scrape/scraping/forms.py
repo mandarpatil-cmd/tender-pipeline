@@ -87,3 +87,20 @@ def first_value(fields: list[tuple[str, str]], name: str, default: str = "") -> 
         if key == name:
             return value
     return default
+
+
+def select_options(html: str, name: str) -> list[tuple[str, str]]:
+    """Choices for one ``select``, skipping the portal's ``0`` (not selected)."""
+    soup = parse_html(html)
+    element = soup.find("select", attrs={"name": name})
+    if element is None:
+        return []
+    found: list[tuple[str, str]] = []
+    for option in element.find_all("option"):
+        value = (option.get("value") or "").strip()
+        if not value or value == "0":
+            continue
+        label = " ".join(option.get_text(" ", strip=True).split())
+        if label:
+            found.append((value, label))
+    return found

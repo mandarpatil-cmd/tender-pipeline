@@ -171,20 +171,46 @@ def run_scrape(
     toDate: str = "",
     publishedFromDate: str = "",
     publishedToDate: str = "",
+    search: str = "awarded",
+    organ_name: str = "",
+    organ_label: str = "",
 ) -> int:
+    from stage1_scrape.app.pipeline import SEARCH_ORGANISATION, search_overrides
     from stage1_scrape.app.run import run_scrape as scrape
     from stage1_scrape.domain.errors import CaptchaError
 
     delay = max(delay, _SCRAPE_DELAY_FLOOR)
-    extra, error = portal_fields(fromDate, toDate, publishedFromDate, publishedToDate)
+    checked, error = portal_fields(fromDate, toDate, publishedFromDate, publishedToDate)
     if error:
         log.write(error)
         return 1
+    extra = search_overrides(
+        search,
+        contract_from=checked.get("fromDate", ""),
+        contract_to=checked.get("toDate", ""),
+        published_from=checked.get("publishedFromDate", ""),
+        published_to=checked.get("publishedToDate", ""),
+        organ_name=organ_name,
+    )
     from ops_ui.jobs import CaptchaTimedOut, wait_for_captcha
 
-    log.write("Search is AOC, Award of Contract.")
-    if extra:
-        log.write("Portal dates: " + ", ".join(f"{key} {value}" for key, value in extra.items()))
+    organisation_search = search == SEARCH_ORGANISATION
+    if organisation_search:
+        log.write(
+            f"Search is {organ_label or organ_name}. "
+            "Rows whose tender stage is not AOC are skipped."
+        )
+    else:
+        log.write("Search is AOC, Award of Contract.")
+    shown = [
+        f"{key} {value}"
+        for key, value in extra.items()
+        if value and not (key == "tenderStatus" and value in {"0", "6"}) and key != "OrganName"
+    ]
+    if extra.get("OrganName") and extra["OrganName"] != "0":
+        shown.insert(0, f"OrganName {extra['OrganName']}")
+    if shown:
+        log.write("Portal fields: " + ", ".join(shown))
     log.write(scrape_cost(max_tenders=max_tenders, probe=probe))
     log.write("Captcha is read automatically. If that fails, type it on this page.")
 
@@ -209,6 +235,7 @@ def run_scrape(
             download_pdfs=False if probe else download_pdfs,
             skip_known=not refresh,
             extra_fields=extra,
+            only_aoc=organisation_search,
             should_stop=stop.is_set,
             ask=ask,
         )
@@ -339,11 +366,71 @@ def portal_fields(
     return fields, None
 
 
-def range_is_bounded(fields: dict[str, str]) -> bool:
-    """A no-cap scrape needs one complete portal date pair."""
-    return ("fromDate" in fields and "toDate" in fields) or (
-        "publishedFromDate" in fields and "publishedToDate" in fields
+def range_is_bounded(fields: dict[str, str], search: str = "awarded") -> bool:
+    """A no-cap scrape needs the complete date pair for that search group."""
+    if search == "organisation":
+        return bool(fields.get("publishedFromDate")) and bool(fields.get("publishedToDate"))
+    return bool(fields.get("fromDate")) and bool(fields.get("toDate"))
+
+
+def organisation_choices(path: Path | None = None) -> list[tuple[str, str]]:
+    """Organisation ids and names from the last saved portal form.
+
+    The file is written by a probe or a scrape. A missing file means the list
+    is not loaded yet. Names are not invented.
+    """
+    form_path = path or (
+        settings.project_root() / "01-scrape" / "data" / "debug" / "search_form.html"
     )
+    if not form_path.is_file():
+        return []
+    from stage1_scrape.scraping.forms import select_options
+
+    try:
+        html = form_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return select_options(html, "OrganName")
+
+
+def scrape_choice(
+    search: str,
+    contract_from: str,
+    contract_to: str,
+    published_from: str,
+    published_to: str,
+    organ_name: str,
+    organisations: list[tuple[str, str]],
+) -> tuple[dict[str, str], str | None]:
+    """The fields of one search group. A post that fills both groups is refused."""
+    mode = (search or "awarded").strip()
+    if mode not in {"awarded", "organisation"}:
+        return {}, "Search must be awarded or one organisation."
+    fields, error = portal_fields(contract_from, contract_to, published_from, published_to)
+    if error:
+        return {}, error
+    contract = "fromDate" in fields or "toDate" in fields
+    published = "publishedFromDate" in fields or "publishedToDate" in fields
+    organ = (organ_name or "").strip()
+    names = dict(organisations)
+    if mode == "awarded" and (published or organ not in {"", "0"}):
+        return {}, "An awarded search cannot also send an organisation or published dates."
+    if mode == "organisation" and contract:
+        return {}, "An organisation search cannot also send contract dates."
+    label = ""
+    if mode == "organisation":
+        if organ not in names:
+            return {}, "Choose an organisation from the portal list."
+        label = names[organ]
+    return {
+        "search": mode,
+        "organ_name": organ if mode == "organisation" else "",
+        "organ_label": label,
+        "fromDate": fields.get("fromDate", ""),
+        "toDate": fields.get("toDate", ""),
+        "publishedFromDate": fields.get("publishedFromDate", ""),
+        "publishedToDate": fields.get("publishedToDate", ""),
+    }, None
 
 
 def run_outreach(

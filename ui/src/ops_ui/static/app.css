@@ -333,6 +333,17 @@ article.gap .label, article.gap .count { color: var(--accent-foreground); }
 
 .date-pair { display: contents; }
 
+.search-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin: 0.2rem 0 0.8rem;
+}
+
+.search-panel.is-off { display: none; }
+
+.panel label.wide { grid-column: 1 / -1; }
+
 .filters label, .panel label, .entry label, .contact label {
   display: flex;
   flex-direction: column;
@@ -598,6 +609,7 @@ tbody tr:nth-child(even) td.evidence {
 
 th a { color: inherit; text-decoration: none; }
 th a:hover { color: var(--primary); }
+th .sort-mark { color: var(--primary); font-size: 0.75rem; }
 
 tbody tr:hover td { background: var(--secondary); }
 tbody tr:hover td.evidence { background: color-mix(in oklch, var(--accent) 40%, var(--card)); }

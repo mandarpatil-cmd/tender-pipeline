@@ -37,6 +37,10 @@ def _keeps(row: dict, query: AwardQuery) -> bool:
         return False
     if query.mailable and not _mailable(row.get("email"), query.mailable):
         return False
+    if query.pdf_contact == "yes" and not (
+        _filled(row.get("pdf_email")) and _filled(row.get("pdf_phone"))
+    ):
+        return False
     if query.organisation and not _contains(row.get("organisation"), query.organisation):
         return False
     if not _span(
@@ -101,6 +105,10 @@ def _outreach(stored, wanted: str) -> bool:
     if wanted == "none":
         return stored in (None, "")
     return stored == wanted
+
+
+def _filled(value) -> bool:
+    return bool(str(value or "").strip())
 
 
 def _mailable(email, wanted: str) -> bool:

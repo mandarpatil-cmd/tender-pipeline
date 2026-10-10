@@ -32,7 +32,7 @@ from ops_ui.present import (
     stage_query,
 )
 from ops_ui.queries import load_home
-from ops_ui.runs import enrich_cost, status_cost
+from ops_ui.runs import enrich_cost, organisation_choices, status_cost
 from ops_ui.templating import TEMPLATES
 
 router = APIRouter()
@@ -102,6 +102,7 @@ def stage_context(request: Request, path: Path, stage: str) -> dict:
         "scraped_from_preset": active_preset(query.scraped_from, query.scraped_to),
         "scraped_to_mode": "" if query.scraped_to else "any",
         "enrich_cost_text": "",
+        "organisations": organisation_choices() if stage == "scrape" else [],
     }
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from io import BytesIO
 
@@ -16,6 +17,7 @@ from pipeline_core.queries import (
     mark_failed,
     record_outreach,
     replace_awards,
+    set_pdf_contacts,
     replace_tender_documents,
     upsert_tender,
     upsert_vendor,
@@ -175,7 +177,7 @@ def test_export_matches_the_filter_and_writes_na_for_blanks(tmp_path):
     workbook = load_workbook(BytesIO(client.get("/scrape/export.xlsx?q=electrical").content))
     sheet = workbook.active
     assert sheet.max_row == 2
-    assert sheet.max_column == 20
+    assert sheet.max_column == 22
     headers = [cell.value for cell in sheet[1]]
     assert headers[0] == "Tender"
     assert "Contract value" in headers
@@ -362,7 +364,7 @@ def test_enrich_status_is_one_list_at_a_time(tmp_path):
     assert _shown(failed) == {"FAIL"}
     assert 'value="lookup">Enrich</button>' in failed
     thead = failed.split("<thead>", 1)[1].split("</thead>", 1)[0]
-    assert "<a " not in thead
+    assert 'sort=name_raw' in thead
     assert "pin-name" not in failed
     assert "class=\"tick\"" in failed
     assert 'name="sort"' in failed
@@ -526,3 +528,102 @@ def test_failed_chip_matches_the_award_rows_including_tender_status(tmp_path):
     aoc = client.get("/scrape?tender_status=AOC").text
     assert _count(aoc, "awards") == "2"
     assert ">B</a>" not in aoc
+
+
+def _first_tender(html: str) -> str:
+    match = re.search(r'/award\?tender_id=([^&"]+)', html)
+    assert match is not None
+    return match.group(1)
+
+
+def test_organisation_heading_sorts_the_grid(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    _rich(path)
+    client = TestClient(create_app(path))
+    page = client.get("/scrape").text
+    assert 'href="/scrape?sort=organisation"' in page
+    assert 'aria-label="ascending"' in page
+
+    ordered = client.get("/scrape?sort=organisation").text
+    assert _first_tender(ordered) == "FAIL"
+    assert 'href="/scrape?sort=organisation&amp;dir=desc"' in ordered
+
+    flipped = client.get("/scrape?sort=organisation&dir=desc").text
+    assert _first_tender(flipped) == "ODD"
+    assert 'aria-label="descending"' in flipped
+
+
+def test_sort_direction_changes_the_first_tender(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    _rich(path)
+    client = TestClient(create_app(path))
+    assert _first_tender(client.get("/scrape").text) == "FAIL"
+    assert _first_tender(client.get("/scrape?dir=desc").text) == "SMALL"
+
+
+def test_next_page_keeps_the_scrape_filter(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        for index in range(51):
+            vendor = upsert_vendor(current, name_raw=f"Batch {index:02d}")
+            tender_id = f"T{index:02d}"
+            upsert_tender(
+                current,
+                tender_id=tender_id,
+                title="batch work",
+                scraped_at=utcnow(),
+            )
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor, "bidder_name": f"Batch {index:02d}"}],
+            )
+    client = TestClient(create_app(path))
+    first = client.get("/scrape?q=batch").text
+    assert "Page 1 of 2" in first
+    assert "q=batch" in first
+    assert "page=2" in first
+    assert ">T00</a>" in first
+    assert ">T50</a>" not in first
+
+    second = client.get("/scrape?q=batch&page=2").text
+    assert "Page 2 of 2" in second
+    assert ">T50</a>" in second
+    assert ">T00</a>" not in second
+    assert "q=batch" in second
+
+
+def test_clear_returns_the_unfiltered_scrape_list(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    _rich(path)
+    client = TestClient(create_app(path))
+    filtered = client.get("/scrape?q=electrical").text
+    assert _shown(filtered) == {"LARGE"}
+    assert 'class="quiet" href="/scrape"' in filtered
+    assert _shown(client.get("/scrape").text) == set(_TENDERS)
+
+
+def test_scrape_pdf_contact_shows_only_both_clues(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        both = upsert_vendor(current, name_raw="Both Clues Ltd")
+        email_only = upsert_vendor(current, name_raw="Email Clue Ltd")
+        set_pdf_contacts(current, both, email="both@example.com", phone="9123456780")
+        set_pdf_contacts(current, email_only, email="one@example.com", phone=None)
+        for tender_id, vendor_id, name in (
+            ("BOTH", both, "Both Clues Ltd"),
+            ("ONE", email_only, "Email Clue Ltd"),
+        ):
+            upsert_tender(current, tender_id=tender_id, title=name, scraped_at=utcnow())
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
+    html = TestClient(create_app(path)).get("/scrape?pdf_contact=yes").text
+    assert ">BOTH</a>" in html
+    assert ">ONE</a>" not in html

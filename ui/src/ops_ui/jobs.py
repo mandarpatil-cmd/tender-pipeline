@@ -143,7 +143,7 @@ class CaptchaTimedOut(Exception):
 def wait_for_captcha(log: Log, stop: threading.Event, image: Path) -> str:
     """Pause this run until the page submits six characters, or the time runs out."""
     log.write(
-        "The automatic reader gave up. Type the 6 characters shown on this page. "
+        "Type the 6 characters shown on this page. "
         f"You have {CAPTCHA_TIMEOUT_SECONDS // 60} minutes."
     )
     wait = begin_captcha(log.database, log.job_id, image)

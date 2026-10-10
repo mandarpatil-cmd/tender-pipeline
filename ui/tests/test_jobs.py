@@ -107,6 +107,9 @@ def test_enrich_page_names_the_limit_and_the_delay(tmp_path):
     assert "60 days before to" in scrape
     assert 'name="contract_to"' in scrape
     assert 'name="published_to"' in scrape
+    assert 'name="search"' in scrape
+    assert 'name="organ_name"' in scrape
+    assert "One organisation" in scrape
     assert "Pause between portal requests" in scrape
     assert "Award of Contract" in scrape
     assert "fetch and store each one again" in scrape
@@ -267,9 +270,10 @@ def test_stop_marks_the_run_stopped(tmp_path):
     assert state == "stopped"
 
 
-def test_no_cap_requires_both_dates(tmp_path):
+def test_no_cap_requires_both_dates(tmp_path, monkeypatch):
     path = tmp_path / "pipeline.sqlite3"
     ensure_schema(engine(path))
+    monkeypatch.setattr("ops_ui.routes.jobs.organisation_choices", _organisations)
     client = TestClient(create_app(path))
 
     missing = client.post(
@@ -280,11 +284,17 @@ def test_no_cap_requires_both_dates(tmp_path):
         "/jobs/scrape",
         data={"no_cap": "on", "contract_from": "31/03/2026", "contract_to": "01/01/2026"},
     )
+    published = client.post(
+        "/jobs/scrape",
+        data={"no_cap": "on", "search": "organisation", "organ_name": "534"},
+    )
 
     assert missing.status_code == 400
-    assert "contract from and to, or a published from and to" in missing.text
+    assert missing.text == "Set a contract from and to before fetching without a cap."
     assert reversed_dates.status_code == 400
     assert reversed_dates.text == "Contract from date is after to date."
+    assert published.status_code == 400
+    assert published.text == "Set a published from and to before fetching without a cap."
 
 
 def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
@@ -301,10 +311,9 @@ def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
         "/jobs/scrape",
         data={
             "no_cap": "on",
+            "search": "awarded",
             "contract_from": "01/01/2026",
             "contract_to": "31/01/2026",
-            "published_from": "01/02/2026",
-            "published_to": "28/02/2026",
         },
         follow_redirects=False,
     )
@@ -316,10 +325,12 @@ def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
     params = json.loads(job.params_json)
     assert params["max_tenders"] is None
     assert params["max_pages"] is None
+    assert params["search"] == "awarded"
     assert params["fromDate"] == "01/01/2026"
     assert params["toDate"] == "31/01/2026"
-    assert params["publishedFromDate"] == "01/02/2026"
-    assert params["publishedToDate"] == "28/02/2026"
+    assert params["publishedFromDate"] == ""
+    assert params["publishedToDate"] == ""
+    assert params["organ_name"] == ""
 
 
 def test_scrape_preset_is_measured_from_the_to_date(tmp_path, monkeypatch):
@@ -424,7 +435,16 @@ def test_refresh_reruns_stage_one_and_contract_dates_stay_contract(tmp_path, mon
             break
         threading.Event().wait(0.05)
     assert seen["skip_known"] is False
-    assert seen["extra_fields"] == {"fromDate": "01/01/2026", "toDate": "31/01/2026"}
+    assert seen["only_aoc"] is False
+    assert seen["extra_fields"] == {
+        "tenderStatus": "6",
+        "fromDate": "01/01/2026",
+        "toDate": "31/01/2026",
+        "OrganName": "0",
+        "publishedFromDate": "",
+        "publishedToDate": "",
+        "tenderId": "",
+    }
     job = get_job(path, job_id)
     assert job is not None and job.state == "done"
 
@@ -451,3 +471,128 @@ def test_download_pdfs_starts_a_pdf_job(tmp_path, monkeypatch):
     assert job is not None
     assert job.stage == "pdfs"
     assert json.loads(job.params_json)["tender_id"] == "2026_ORG_1"
+
+
+def _organisations():
+    return [("534", "Ministry of Road Transport and Highways")]
+
+
+def test_a_mixed_scrape_post_is_refused(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    monkeypatch.setattr("ops_ui.routes.jobs.organisation_choices", _organisations)
+    client = TestClient(create_app(path))
+
+    awarded = client.post(
+        "/jobs/scrape",
+        data={
+            "search": "awarded",
+            "contract_from": "01/01/2026",
+            "contract_to": "31/01/2026",
+            "published_from": "01/02/2026",
+            "published_to": "28/02/2026",
+            "organ_name": "534",
+        },
+    )
+    organisation = client.post(
+        "/jobs/scrape",
+        data={
+            "search": "organisation",
+            "organ_name": "534",
+            "contract_from": "01/01/2026",
+            "contract_to": "31/01/2026",
+        },
+    )
+
+    assert awarded.status_code == 400
+    assert awarded.text == "An awarded search cannot also send an organisation or published dates."
+    assert organisation.status_code == 400
+    assert organisation.text == "An organisation search cannot also send contract dates."
+
+
+def test_organisation_names_come_from_the_saved_form(tmp_path):
+    from ops_ui.runs import organisation_choices
+
+    form = tmp_path / "search_form.html"
+    form.write_text(
+        """
+        <select name="OrganName">
+          <option value="0">-Select-</option>
+          <option value="605">National Highways and Infrastructure Development Corporation</option>
+        </select>
+        """,
+        encoding="utf-8",
+    )
+    assert organisation_choices(form) == [
+        ("605", "National Highways and Infrastructure Development Corporation")
+    ]
+    assert organisation_choices(tmp_path / "missing.html") == []
+
+
+def test_organisation_search_posts_only_that_group(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    seen = {}
+
+    def fake(out, **kwargs):
+        seen.update(kwargs)
+        return {"scraped": 1, "vendors": 1}
+
+    monkeypatch.setattr("ops_ui.routes.jobs.organisation_choices", _organisations)
+    monkeypatch.setattr("stage1_scrape.app.run.run_scrape", fake)
+    client = TestClient(create_app(path))
+    response = client.post(
+        "/jobs/scrape",
+        data={
+            "search": "organisation",
+            "organ_name": "534",
+            "published_from": "01/02/2026",
+            "published_to": "28/02/2026",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    for _ in range(50):
+        if seen:
+            break
+        threading.Event().wait(0.05)
+    assert seen["only_aoc"] is True
+    assert seen["extra_fields"] == {
+        "tenderStatus": "0",
+        "OrganName": "534",
+        "publishedFromDate": "01/02/2026",
+        "publishedToDate": "28/02/2026",
+        "fromDate": "",
+        "toDate": "",
+        "tenderId": "",
+        "KeyWord": "",
+    }
+    job = get_job(path, int(response.headers["location"].rsplit("/", 1)[-1]))
+    params = json.loads(job.params_json)
+    assert params["organ_label"] == "Ministry of Road Transport and Highways"
+    assert params["fromDate"] == ""
+    assert params["toDate"] == ""
+
+
+def test_unknown_organisation_is_refused(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    monkeypatch.setattr("ops_ui.routes.jobs.organisation_choices", _organisations)
+    client = TestClient(create_app(path))
+    response = client.post(
+        "/jobs/scrape",
+        data={"search": "organisation", "organ_name": "999"},
+    )
+    assert response.status_code == 400
+    assert response.text == "Choose an organisation from the portal list."
+
+
+def test_missing_organisation_list_is_named_on_the_form(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    monkeypatch.setattr("ops_ui.routes.awards.organisation_choices", lambda: [])
+    client = TestClient(create_app(path))
+    html = client.get("/scrape").text
+    assert "Organisation names are not loaded" in html
+    assert 'value="534"' not in html

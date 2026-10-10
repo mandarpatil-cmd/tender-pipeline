@@ -40,6 +40,14 @@ def test_window_callback_is_used_only_after_ocr_gives_up(tmp_path: Path):
 
     with patch(
         "stage1_scrape.scraping.ocr.read_captcha_image",
+        return_value="Ab12Xy",
+    ) as reader:
+        assert resolve_captcha_code(image, None, solver="openrouter", ask=ask) == "Ab12Xy"
+    reader.assert_called_once()
+    assert asked == []
+
+    with patch(
+        "stage1_scrape.scraping.ocr.read_captcha_image",
         side_effect=CaptchaError("unreadable"),
     ):
         assert resolve_captcha_code(image, None, solver="openrouter", ask=ask) == "Ab12Xy"
@@ -51,6 +59,9 @@ def test_window_callback_is_used_only_after_ocr_gives_up(tmp_path: Path):
     ):
         with pytest.raises(CaptchaError):
             resolve_captcha_code(image, None, solver="openrouter")
+
+    assert resolve_captcha_code(image, "Mn87Kp", solver="openrouter", ask=ask) == "Mn87Kp"
+    assert asked == [image]
 
 
 def test_parse_captcha_option_auto_manual_and_text():

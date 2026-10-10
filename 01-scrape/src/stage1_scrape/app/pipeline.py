@@ -31,6 +31,52 @@ from stage1_scrape.scraping import (
 
 log = logging.getLogger(__name__)
 
+SEARCH_AWARDED = "awarded"
+SEARCH_ORGANISATION = "organisation"
+
+
+def search_overrides(
+    mode: str,
+    *,
+    contract_from: str = "",
+    contract_to: str = "",
+    published_from: str = "",
+    published_to: str = "",
+    organ_name: str = "",
+) -> dict[str, str]:
+    """One portal search group, with the other group's fields forced off.
+
+    The live form has AOC pre-selected. Leaving ``tenderStatus`` out of the
+    post would still search awarded tenders, so an organisation search sets it
+    to ``0``. Empty strings are part of the override: they clear a field the
+    form might already hold.
+    """
+    contract_from = (contract_from or "").strip()
+    contract_to = (contract_to or "").strip()
+    published_from = (published_from or "").strip()
+    published_to = (published_to or "").strip()
+    organ_name = (organ_name or "").strip()
+    if mode == SEARCH_ORGANISATION:
+        return {
+            "tenderStatus": "0",
+            "OrganName": organ_name,
+            "publishedFromDate": published_from,
+            "publishedToDate": published_to,
+            "fromDate": "",
+            "toDate": "",
+            "tenderId": "",
+            "KeyWord": "",
+        }
+    return {
+        "tenderStatus": TENDER_STATUS_AOC,
+        "fromDate": contract_from,
+        "toDate": contract_to,
+        "OrganName": "0",
+        "publishedFromDate": "",
+        "publishedToDate": "",
+        "tenderId": "",
+    }
+
 
 def submit_search(
     client: GePNICClient,
@@ -39,7 +85,11 @@ def submit_search(
     tender_status: str = TENDER_STATUS_AOC,
     extra: dict[str, str] | None = None,
 ) -> str:
-    """POST every field from Step 0, overriding AOC status, captcha, and Search."""
+    """POST every field from Step 0, then captcha, Search, and ``extra``.
+
+    ``extra`` wins, including an empty string. An empty string clears that
+    field. A missing key leaves the form's own value.
+    """
     fields = extract_form_fields(search_html)
     updates = {
         "tenderStatus": tender_status,
@@ -47,7 +97,7 @@ def submit_search(
         "Search": "Search",
     }
     if extra:
-        updates.update({key: value for key, value in extra.items() if value})
+        updates.update(extra)
     payload = override_fields(fields, updates)
     return client.post(payload, url=APP_URL, referer=client._last_url).text
 
@@ -245,6 +295,7 @@ def scrape_aoc(
     captcha_solver: str = "manual",
     should_stop: "Callable[[], bool] | None" = None,
     ask: "Callable[[Path], str] | None" = None,
+    only_aoc: bool = False,
 ) -> list[TenderRecord]:
     store = Store(out_dir)
     client = GePNICClient(delay=delay)
@@ -260,38 +311,49 @@ def scrape_aoc(
     )
     known = store.known_ids() if skip_known else set()
     records: list[TenderRecord] = []
-    for _page_no, rows in iter_listing_pages(client, results_html, store, max_pages):
-        for listing in rows:
-            if should_stop and should_stop():
-                log.info("Stop requested. Tenders already saved are kept.")
-                return records
-            if max_tenders is not None and len(records) >= max_tenders:
-                return records
-            if skip_known and listing.tender_id in known:
-                log.info("Skipping already-saved %s", listing.tender_id)
-                continue
-            try:
-                record = scrape_one_tender(client, listing, store, download_pdfs=download_pdfs)
-            except ParseError as exc:
-                log.warning("Tender %s skipped: %s", listing.tender_id, exc)
-                continue
-            except ScraperError as exc:
-                log.warning(
-                    "Stopped on %s. Tenders already saved are kept. %s",
+    skipped = 0
+    try:
+        for _page_no, rows in iter_listing_pages(client, results_html, store, max_pages):
+            for listing in rows:
+                if should_stop and should_stop():
+                    log.info("Stop requested. Tenders already saved are kept.")
+                    return records
+                if only_aoc and listing.tender_stage.strip() != "AOC":
+                    skipped += 1
+                    continue
+                if max_tenders is not None and len(records) >= max_tenders:
+                    return records
+                if skip_known and listing.tender_id in known:
+                    log.info("Skipping already-saved %s", listing.tender_id)
+                    continue
+                try:
+                    record = scrape_one_tender(client, listing, store, download_pdfs=download_pdfs)
+                except ParseError as exc:
+                    log.warning("Tender %s skipped: %s", listing.tender_id, exc)
+                    continue
+                except ScraperError as exc:
+                    log.warning(
+                        "Stopped on %s. Tenders already saved are kept. %s",
+                        listing.tender_id,
+                        exc,
+                    )
+                    return records
+                records.append(record)
+                known.add(listing.tender_id)
+                log.info(
+                    "Saved %s — %s bid(s), %s awarded, %s pdf(s)",
                     listing.tender_id,
-                    exc,
+                    len(record.bids),
+                    len(record.awarded_bids),
+                    len(record.downloaded_files),
                 )
-                return records
-            records.append(record)
-            known.add(listing.tender_id)
+        return records
+    finally:
+        if only_aoc and skipped:
             log.info(
-                "Saved %s — %s bid(s), %s awarded, %s pdf(s)",
-                listing.tender_id,
-                len(record.bids),
-                len(record.awarded_bids),
-                len(record.downloaded_files),
+                "Skipped %s listing row(s) whose tender stage was not AOC.",
+                skipped,
             )
-    return records
 
 
 def _search_with_captcha(
@@ -329,7 +391,6 @@ def _search_with_captcha(
                 image_path,
                 captcha_text if attempt == 1 else None,
                 solver=captcha_solver,
-                ask=ask if attempt == attempts else None,
             )
         except CaptchaError as exc:
             last_error = exc
@@ -352,17 +413,36 @@ def _search_with_captcha(
             captcha_text = None
             from_probe = False
             continue
-        rows = parse_results_table(results)
-        if not rows:
-            store.write_debug("search_no_rows.html", results)
-            raise ParseError(
-                "Search succeeded but no 'View Tender Status' rows were found. "
-                f"HTML saved to {store.debug_dir / 'search_no_rows.html'}"
+        return _accepted_results(client, store, session_path, results)
+    if ask is not None:
+        while True:
+            html = client.fetch_search_form()
+            client.save_state(session_path)
+            store.write_debug("search_form.html", html)
+            image_path = save_captcha(html, store.root / "captcha")
+            code = resolve_captcha_code(image_path, None, solver="manual", ask=ask)
+            results = submit_search(client, html, code, extra=extra_fields)
+            if not search_still_showing_form(results):
+                return _accepted_results(client, store, session_path, results)
+            store.write_debug("search_rejected_typed.html", results)
+            last_error = CaptchaError(
+                "Search was rejected (captcha still on the page). Try again."
             )
-        client.save_state(session_path)
-        return results
+            log.warning("Typed captcha was rejected. A new image is on this page.")
     assert last_error is not None
     raise last_error
+
+
+def _accepted_results(client: GePNICClient, store: Store, session_path: Path, results: str) -> str:
+    rows = parse_results_table(results)
+    if not rows:
+        store.write_debug("search_no_rows.html", results)
+        raise ParseError(
+            "Search succeeded but no 'View Tender Status' rows were found. "
+            f"HTML saved to {store.debug_dir / 'search_no_rows.html'}"
+        )
+    client.save_state(session_path)
+    return results
 
 
 def probe_search_form(out_dir: Path, delay: float = 1.0) -> dict:
