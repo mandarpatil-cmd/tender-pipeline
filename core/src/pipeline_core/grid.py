@@ -29,6 +29,7 @@ from .models import (
     Outreach,
     Tender,
     Vendor,
+    VendorContact,
 )
 
 PAGE_SIZE = 50
@@ -523,7 +524,7 @@ def _filtered(statement, query: AwardQuery, specific, legacy):
         statement = statement.where(Vendor.source == query.source)
     if query.state:
         statement = statement.where(func.lower(Vendor.state) == query.state.strip().lower())
-    has_email = Vendor.email.is_not(None) & (Vendor.email != "")
+    has_email = _has_mail_address()
     if query.mailable == "yes":
         statement = statement.where(has_email)
     elif query.mailable == "no":
@@ -584,8 +585,26 @@ def _range(statement, column, low, high, *, keep_unparsed: bool = True):
     return statement.where(matched)
 
 
+def _has_mail_address():
+    """``vendors.email``, or a valid email row for this tender."""
+    contact = (
+        select(VendorContact.contact_id)
+        .where(
+            VendorContact.vendor_id == Vendor.vendor_id,
+            VendorContact.channel == "email",
+            VendorContact.valid == 1,
+            or_(
+                VendorContact.tender_id.is_(None),
+                VendorContact.tender_id == Award.tender_id,
+            ),
+        )
+        .exists()
+    )
+    return or_(and_(Vendor.email.is_not(None), Vendor.email != ""), contact)
+
+
 def _totals(session: Session, query: AwardQuery, specific, legacy) -> tuple[int, ViewCounts]:
-    has_email = Vendor.email.is_not(None) & (Vendor.email != "")
+    has_email = _has_mail_address()
     has_phone = Vendor.phone.is_not(None) & (Vendor.phone != "")
     sent_award = _prefer(specific, legacy, "status") == OUTREACH_SENT
     statement = _joined(

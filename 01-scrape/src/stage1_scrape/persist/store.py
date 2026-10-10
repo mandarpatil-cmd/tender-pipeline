@@ -25,6 +25,7 @@ from pipeline_core.queries import (
     known_tender_ids,
     replace_awards,
     replace_tender_documents,
+    record_pdf_contacts,
     set_pdf_contacts,
     split_clues,
     upsert_tender,
@@ -198,11 +199,12 @@ class Store:
                 }
             )
         replace_awards(current, listing.tender_id, rows)
-        self._save_pdf_contacts(current, rows, record.pdf_extracts)
+        self._save_pdf_contacts(current, listing.tender_id, rows, record.pdf_extracts)
 
     def _save_pdf_contacts(
         self,
         current: Session,
+        tender_id: str,
         rows: list[dict[str, Any]],
         extracts: list[dict[str, Any]],
     ) -> None:
@@ -220,6 +222,13 @@ class Store:
         if len(rows) != 1:
             return
         contacts = merge_pdf_contacts(extracts)
+        record_pdf_contacts(
+            current,
+            rows[0]["vendor_id"],
+            tender_id,
+            contacts["emails"],
+            contacts["phones"],
+        )
         set_pdf_contacts(
             current,
             rows[0]["vendor_id"],

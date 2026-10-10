@@ -49,7 +49,7 @@
 </table>
 
 <h2 class="section">PDF evidence</h2>
-<p class="evidence">These are clues from a document. They are not an address to mail.</p>
+<p class="evidence">These are clues from a document. A mail run can use them, PDF address first.</p>
 <form method="post" action="/jobs/pdfs">
   <input type="hidden" name="tender_id" value="{{ detail.tender.tender_id }}">
   <button type="submit">Download PDFs</button>
@@ -69,6 +69,18 @@
   {% endfor %}
 {% else %}
 <p class="muted">No saved PDF extract for this tender.</p>
+{% endif %}
+
+<h2 class="section">Addresses</h2>
+<p>{{ email_count }} email{{ '' if email_count == 1 else 's' }} for this tender.</p>
+{% if contacts %}
+<ul>
+  {% for item in contacts %}
+  <li>{{ item.channel }} {{ item.value }} ({{ item.source }}{% if not item.valid %}, not valid{% endif %})</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No stored addresses for this tender.</p>
 {% endif %}
 
 <h2 class="section">Contact on the company</h2>

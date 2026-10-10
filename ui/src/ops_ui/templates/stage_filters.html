@@ -67,6 +67,34 @@
       <option value="yes" {% if query.pdf_contact == 'yes' %}selected{% endif %}>Has both</option>
     </select>
   </label>
+  <label>Organisation
+    <input name="organisation" value="{{ query.organisation }}">
+  </label>
+  <label>Contract value min
+    <input name="value_min" value="{{ query.value_min }}">
+  </label>
+  <label>Contract value max
+    <input name="value_max" value="{{ query.value_max }}">
+  </label>
+  <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
+    <label>Contract from
+      <select name="date_from_preset" data-role="preset">
+        <option value="any" {% if contract_from_preset == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if contract_from_preset == '' %}selected{% endif %}>Specific date</option>
+        {% for days in date_presets %}
+        <option value="{{ days }}" {% if contract_from_preset == days|string %}selected{% endif %}>{{ days }} days before to</option>
+        {% endfor %}
+      </select>
+      <input name="date_from" type="date" data-role="from" value="{{ query.date_from }}" {% if contract_from_preset != '' %}hidden disabled{% endif %}>
+    </label>
+    <label>Contract to
+      <select name="date_to_mode" data-role="to-mode">
+        <option value="any" {% if contract_to_mode == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if contract_to_mode == '' %}selected{% endif %}>Specific date</option>
+      </select>
+      <input name="date_to" type="date" data-role="to" value="{{ query.date_to or today }}" {% if contract_to_mode == 'any' %}hidden disabled{% endif %}>
+    </label>
+  </div>
   {% elif stage == 'mail' %}
   <label>Send state
     <select name="outreach_status">
@@ -75,6 +103,53 @@
       <option value="failed" {% if query.outreach_status == 'failed' %}selected{% endif %}>Failed</option>
     </select>
   </label>
+  <label>Organisation
+    <input name="organisation" value="{{ query.organisation }}">
+  </label>
+  <label>Contract value min
+    <input name="value_min" value="{{ query.value_min }}">
+  </label>
+  <label>Contract value max
+    <input name="value_max" value="{{ query.value_max }}">
+  </label>
+  <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
+    <label>Contract from
+      <select name="date_from_preset" data-role="preset">
+        <option value="any" {% if contract_from_preset == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if contract_from_preset == '' %}selected{% endif %}>Specific date</option>
+        {% for days in date_presets %}
+        <option value="{{ days }}" {% if contract_from_preset == days|string %}selected{% endif %}>{{ days }} days before to</option>
+        {% endfor %}
+      </select>
+      <input name="date_from" type="date" data-role="from" value="{{ query.date_from }}" {% if contract_from_preset != '' %}hidden disabled{% endif %}>
+    </label>
+    <label>Contract to
+      <select name="date_to_mode" data-role="to-mode">
+        <option value="any" {% if contract_to_mode == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if contract_to_mode == '' %}selected{% endif %}>Specific date</option>
+      </select>
+      <input name="date_to" type="date" data-role="to" value="{{ query.date_to or today }}" {% if contract_to_mode == 'any' %}hidden disabled{% endif %}>
+    </label>
+  </div>
+  <div class="date-pair" data-date-range data-today="{{ today }}" data-suggested="0">
+    <label>Scraped from
+      <select name="scraped_from_preset" data-role="preset">
+        <option value="any" {% if scraped_from_preset == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if scraped_from_preset == '' %}selected{% endif %}>Specific date</option>
+        {% for days in date_presets %}
+        <option value="{{ days }}" {% if scraped_from_preset == days|string %}selected{% endif %}>{{ days }} days before to</option>
+        {% endfor %}
+      </select>
+      <input name="scraped_from" type="date" data-role="from" value="{{ scraped_from }}" {% if scraped_from_preset != '' %}hidden disabled{% endif %}>
+    </label>
+    <label>Scraped to
+      <select name="scraped_to_mode" data-role="to-mode">
+        <option value="any" {% if scraped_to_mode == 'any' %}selected{% endif %}>Any</option>
+        <option value="" {% if scraped_to_mode == '' %}selected{% endif %}>Specific date</option>
+      </select>
+      <input name="scraped_to" type="date" data-role="to" value="{{ scraped_to }}" {% if scraped_to_mode == 'any' %}hidden disabled{% endif %}>
+    </label>
+  </div>
   {% endif %}
   <label>Sort
     <select name="sort">

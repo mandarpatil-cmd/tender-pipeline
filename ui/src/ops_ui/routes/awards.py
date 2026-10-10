@@ -101,6 +101,8 @@ def stage_context(request: Request, path: Path, stage: str) -> dict:
         "scraped_to": shown_day(query.scraped_to) or date.today().isoformat(),
         "scraped_from_preset": active_preset(query.scraped_from, query.scraped_to),
         "scraped_to_mode": "" if query.scraped_to else "any",
+        "contract_from_preset": active_preset(query.date_from, query.date_to),
+        "contract_to_mode": "" if query.date_to else "any",
         "enrich_cost_text": "",
         "organisations": organisation_choices() if stage == "scrape" else [],
     }
@@ -172,11 +174,42 @@ def award(
     snapshot = load_home(path)
     detail = None
     documents: list[dict[str, str]] = []
+    contacts: list[dict] = []
     if snapshot.ready:
         with session(engine(path)) as current:
             detail = award_detail(current, tender_id, bid)
             if detail is not None:
                 documents = read_documents(current, tender_id)
+                from pipeline_core.queries import ordered_contacts
+
+                contacts = [
+                    {
+                        "channel": row.channel,
+                        "value": row.value,
+                        "source": row.source,
+                        "valid": bool(row.valid),
+                    }
+                    for row in ordered_contacts(
+                        current,
+                        detail.vendor["vendor_id"],
+                        tender_id,
+                        channel="email",
+                    )
+                ]
+                contacts.extend(
+                    {
+                        "channel": row.channel,
+                        "value": row.value,
+                        "source": row.source,
+                        "valid": bool(row.valid),
+                    }
+                    for row in ordered_contacts(
+                        current,
+                        detail.vendor["vendor_id"],
+                        tender_id,
+                        channel="phone",
+                    )
+                )
     status = 200 if detail is not None or not snapshot.ready else 404
     return TEMPLATES.TemplateResponse(
         request=request,
@@ -186,6 +219,8 @@ def award(
             "snapshot": snapshot,
             "detail": detail,
             "documents": documents,
+            "contacts": contacts,
+            "email_count": sum(1 for item in contacts if item["channel"] == "email"),
             "back": back_href(back),
         },
     )

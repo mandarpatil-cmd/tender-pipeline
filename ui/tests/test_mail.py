@@ -185,6 +185,57 @@ def test_mail_these_opens_the_page_for_the_ticked_company(tmp_path):
     assert "cannot be removed" in page.text
     assert 'value="graph" selected' in page.text
     assert "Everyone waiting" not in page.text
+    assert "every valid address" in page.text
+    assert "First address" not in page.text
+    assert "a@b.example" in page.text
+    assert "(model)" in page.text
+
+
+def test_mail_list_filters_organisation_value_and_dates(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        big = upsert_vendor(current, name_raw="Big Roads")
+        small = upsert_vendor(current, name_raw="Small Roads")
+        upsert_tender(
+            current,
+            tender_id="BIG",
+            title="Highway",
+            organisation="NHAI",
+            contract_date="21-Sep-2026",
+            contract_value="INR 200000",
+            scraped_at="2026-09-21T08:00:00+00:00",
+        )
+        upsert_tender(
+            current,
+            tender_id="SMALL",
+            title="Lane",
+            organisation="Other office",
+            contract_date="01-Jan-2020",
+            contract_value="INR 10",
+            scraped_at="2020-01-15T08:00:00+00:00",
+        )
+        for tender_id, vendor_id, name in (
+            ("BIG", big, "Big Roads"),
+            ("SMALL", small, "Small Roads"),
+        ):
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
+        mark_enriched(current, big, email="big@roads.example", phone=None)
+        mark_enriched(current, small, email="small@roads.example", phone=None)
+    html = TestClient(create_app(path)).get(
+        "/mail?organisation=NHAI&value_min=100000&date_from=2026-09-01&date_to=2026-09-30&scraped_from=2026-09-01&scraped_to=2026-09-30"
+    ).text
+    assert ">BIG</a>" in html
+    assert ">SMALL</a>" not in html
+    assert "organisation=NHAI" in html
+    assert 'name="value_min"' in html
+    assert 'name="date_from"' in html
+    assert 'name="scraped_from"' in html
 
 
 def _wait(path, job_id) -> tuple[str, str]:

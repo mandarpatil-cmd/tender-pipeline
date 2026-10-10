@@ -49,6 +49,10 @@ STAGE_COLUMNS: dict[str, tuple[str, ...]] = {
         "city",
         "state",
         "tender_id",
+        "organisation",
+        "contract_date",
+        "contract_value",
+        "source",
         "enrichment_status",
         "email",
         "phone",
@@ -60,6 +64,10 @@ STAGE_COLUMNS: dict[str, tuple[str, ...]] = {
         "email",
         "tender_id",
         "title",
+        "organisation",
+        "contract_date",
+        "contract_value",
+        "scraped_at",
         "outreach_status",
         "last_attempt_at",
         "attempts",
@@ -85,9 +93,43 @@ _STAGE_KEYS = {
         }
     ),
     "enrich": frozenset(
-        {"q", "enrichment_status", "source", "pdf_contact", "sort", "dir", "page"}
+        {
+            "q",
+            "enrichment_status",
+            "source",
+            "pdf_contact",
+            "organisation",
+            "value_min",
+            "value_max",
+            "date_from",
+            "date_to",
+            "date_from_preset",
+            "date_to_mode",
+            "sort",
+            "dir",
+            "page",
+        }
     ),
-    "mail": frozenset({"q", "outreach_status", "sort", "dir", "page"}),
+    "mail": frozenset(
+        {
+            "q",
+            "outreach_status",
+            "organisation",
+            "value_min",
+            "value_max",
+            "date_from",
+            "date_to",
+            "date_from_preset",
+            "date_to_mode",
+            "scraped_from",
+            "scraped_to",
+            "scraped_from_preset",
+            "scraped_to_mode",
+            "sort",
+            "dir",
+            "page",
+        }
+    ),
 }
 
 _FIELDS = (
@@ -342,11 +384,27 @@ def stage_form_fields(stage: str, query: AwardQuery) -> list[tuple[str, str]]:
         fields.extend(("enrichment_status", status) for status in query.enrichment_status)
         fields.append(("source", query.source))
         fields.append(("pdf_contact", query.pdf_contact))
+        fields.extend(
+            [
+                ("organisation", query.organisation),
+                ("value_min", query.value_min),
+                ("value_max", query.value_max),
+                ("date_from", query.date_from),
+                ("date_to", query.date_to),
+            ]
+        )
     elif stage == "mail":
         fields.extend(
             [
                 ("outreach_status", query.outreach_status),
                 ("mailable", query.mailable),
+                ("organisation", query.organisation),
+                ("value_min", query.value_min),
+                ("value_max", query.value_max),
+                ("date_from", query.date_from),
+                ("date_to", query.date_to),
+                ("scraped_from", query.scraped_from),
+                ("scraped_to", query.scraped_to),
             ]
         )
     fields.extend([("sort", query.sort), ("dir", query.direction)])

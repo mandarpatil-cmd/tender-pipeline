@@ -19,7 +19,10 @@ from sqlalchemy.orm import Session
 
 from .money import iso_day, parse_money
 from .models import (
+    CHANNEL_EMAIL,
+    CHANNEL_PHONE,
     CONTACT_MODEL,
+    CONTACT_PDF,
     CONTACT_TYPED,
     OUTREACH_SENT,
     SOURCE_SCRAPE,
@@ -33,6 +36,7 @@ from .models import (
     Tender,
     TenderDocument,
     Vendor,
+    VendorContact,
 )
 from .naming import infer_legal_form, normalize_name
 
@@ -332,6 +336,268 @@ def set_pdf_contacts(
     return wrote
 
 
+_SOURCE_ORDER = {CONTACT_PDF: 0, CONTACT_MODEL: 1, CONTACT_TYPED: 2}
+ADDRESS_FIRST = "first"
+ADDRESS_ALL = "all"
+ADDRESS_CHOSEN = "chosen"
+
+
+def contact_is_valid(channel: str, value: str) -> bool:
+    from .emailcheck import is_email, is_phone
+
+    if channel == CHANNEL_EMAIL:
+        return is_email(value)
+    if channel == CHANNEL_PHONE:
+        return is_phone(value)
+    return False
+
+
+def add_contact(
+    session: Session,
+    vendor_id: int,
+    *,
+    channel: str,
+    value: str | None,
+    source: str,
+    tender_id: str | None = None,
+) -> bool:
+    """Insert one address unless this company already has that value from this source.
+
+    A PDF address is kept per tender. An enrichment or typed address has no tender.
+    Returns True when a row was added.
+    """
+    text = (value or "").strip()
+    if not text or channel not in {CHANNEL_EMAIL, CHANNEL_PHONE}:
+        return False
+    if source not in {CONTACT_PDF, CONTACT_MODEL, CONTACT_TYPED}:
+        return False
+    tender = (tender_id or "").strip() or None
+    if source != CONTACT_PDF:
+        tender = None
+    folded = text.casefold()
+    rows = session.scalars(
+        select(VendorContact).where(
+            VendorContact.vendor_id == vendor_id,
+            VendorContact.channel == channel,
+            VendorContact.source == source,
+            VendorContact.tender_id == tender
+            if tender
+            else VendorContact.tender_id.is_(None),
+        )
+    ).all()
+    if any(row.value.casefold() == folded for row in rows):
+        return False
+    session.add(
+        VendorContact(
+            vendor_id=vendor_id,
+            tender_id=tender,
+            channel=channel,
+            value=text,
+            source=source,
+            valid=1 if contact_is_valid(channel, text) else 0,
+        )
+    )
+    session.flush()
+    return True
+
+
+def replace_company_contact(
+    session: Session,
+    vendor_id: int,
+    *,
+    source: str,
+    channel: str,
+    value: str | None,
+) -> None:
+    """The new enrichment or typed value replaces only that source and channel."""
+    session.query(VendorContact).filter(
+        VendorContact.vendor_id == vendor_id,
+        VendorContact.source == source,
+        VendorContact.channel == channel,
+        VendorContact.tender_id.is_(None),
+    ).delete(synchronize_session=False)
+    add_contact(
+        session,
+        vendor_id,
+        channel=channel,
+        value=value,
+        source=source,
+    )
+
+
+def record_pdf_contacts(
+    session: Session,
+    vendor_id: int,
+    tender_id: str,
+    emails: Iterable[str],
+    phones: Iterable[str],
+) -> int:
+    """Append every PDF address. Earlier ones stay."""
+    written = 0
+    for email in emails:
+        if add_contact(
+            session,
+            vendor_id,
+            channel=CHANNEL_EMAIL,
+            value=email,
+            source=CONTACT_PDF,
+            tender_id=tender_id,
+        ):
+            written += 1
+    for phone in phones:
+        if add_contact(
+            session,
+            vendor_id,
+            channel=CHANNEL_PHONE,
+            value=phone,
+            source=CONTACT_PDF,
+            tender_id=tender_id,
+        ):
+            written += 1
+    return written
+
+
+def ordered_contacts(
+    session: Session,
+    vendor_id: int,
+    tender_id: str,
+    channel: str = CHANNEL_EMAIL,
+) -> list[VendorContact]:
+    """PDF addresses for this tender, then enrichment, then typed."""
+    rows = session.scalars(
+        select(VendorContact).where(
+            VendorContact.vendor_id == vendor_id,
+            VendorContact.channel == channel,
+            or_(
+                and_(VendorContact.source == CONTACT_PDF, VendorContact.tender_id == tender_id),
+                and_(VendorContact.source == CONTACT_PDF, VendorContact.tender_id.is_(None)),
+                VendorContact.source.in_((CONTACT_MODEL, CONTACT_TYPED)),
+            ),
+        )
+    ).all()
+    rows.sort(key=lambda row: (_SOURCE_ORDER.get(row.source, 9), row.contact_id))
+    return rows
+
+
+def _deduped(rows: list[VendorContact]) -> list[VendorContact]:
+    seen: set[str] = set()
+    kept: list[VendorContact] = []
+    for row in rows:
+        key = row.value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(row)
+    return kept
+
+
+def choose_addresses(
+    session: Session,
+    vendor_id: int,
+    tender_id: str,
+    *,
+    mode: str,
+    chosen_ids: set[int],
+    fallback: str = "",
+) -> list[str]:
+    """Valid emails for one tender, in PDF, enrichment, typed order."""
+    rows = _deduped(
+        [row for row in ordered_contacts(session, vendor_id, tender_id) if row.valid]
+    )
+    if mode == ADDRESS_ALL:
+        picked = rows
+    elif mode == ADDRESS_CHOSEN:
+        picked = [row for row in rows if row.contact_id in chosen_ids]
+    else:
+        picked = rows[:1]
+    if picked:
+        return [row.value for row in picked]
+    if mode == ADDRESS_CHOSEN or not (fallback or "").strip():
+        return []
+    if not contact_is_valid(CHANNEL_EMAIL, fallback):
+        return []
+    return [fallback.strip()]
+
+
+def backfill_vendor_contacts(session: Session) -> int:
+    """Copy addresses already stored into ``vendor_contacts``. Safe to repeat."""
+    written = 0
+    counts = session.execute(
+        select(Award.tender_id, func.count(func.distinct(Award.vendor_id))).group_by(
+            Award.tender_id
+        )
+    ).all()
+    single = {tender_id for tender_id, count in counts if count == 1}
+    winners = {}
+    if single:
+        winners = {
+            tender_id: int(vendor_id)
+            for tender_id, vendor_id in session.execute(
+                select(Award.tender_id, Award.vendor_id).where(Award.tender_id.in_(single))
+            )
+        }
+    for doc in session.scalars(select(TenderDocument)).all():
+        vendor_id = winners.get(doc.tender_id)
+        if vendor_id is None:
+            continue
+        written += record_pdf_contacts(
+            session,
+            vendor_id,
+            doc.tender_id,
+            split_clues(doc.emails),
+            split_clues(doc.phones),
+        )
+    for vendor in session.scalars(select(Vendor)).all():
+        if vendor.pdf_email and not _pdf_value_known(session, vendor.vendor_id, CHANNEL_EMAIL, vendor.pdf_email):
+            if add_contact(
+                session,
+                vendor.vendor_id,
+                channel=CHANNEL_EMAIL,
+                value=vendor.pdf_email,
+                source=CONTACT_PDF,
+            ):
+                written += 1
+        if vendor.pdf_phone and not _pdf_value_known(session, vendor.vendor_id, CHANNEL_PHONE, vendor.pdf_phone):
+            if add_contact(
+                session,
+                vendor.vendor_id,
+                channel=CHANNEL_PHONE,
+                value=vendor.pdf_phone,
+                source=CONTACT_PDF,
+            ):
+                written += 1
+        source = vendor.contact_origin if vendor.contact_origin in {CONTACT_MODEL, CONTACT_TYPED} else CONTACT_MODEL
+        if vendor.email and add_contact(
+            session,
+            vendor.vendor_id,
+            channel=CHANNEL_EMAIL,
+            value=vendor.email,
+            source=source,
+        ):
+            written += 1
+        if vendor.phone and add_contact(
+            session,
+            vendor.vendor_id,
+            channel=CHANNEL_PHONE,
+            value=vendor.phone,
+            source=source,
+        ):
+            written += 1
+    return written
+
+
+def _pdf_value_known(session: Session, vendor_id: int, channel: str, value: str) -> bool:
+    folded = value.strip().casefold()
+    rows = session.scalars(
+        select(VendorContact).where(
+            VendorContact.vendor_id == vendor_id,
+            VendorContact.channel == channel,
+            VendorContact.source == CONTACT_PDF,
+        )
+    ).all()
+    return any(row.value.casefold() == folded for row in rows)
+
+
 @dataclass(frozen=True)
 class PendingVendor:
     """A unit of work for stage 2: who to look up, and everything we already know."""
@@ -449,6 +715,20 @@ def mark_enriched(
         },
         synchronize_session=False,
     )
+    replace_company_contact(
+        session,
+        vendor_id,
+        source=CONTACT_MODEL,
+        channel=CHANNEL_EMAIL,
+        value=clean_email,
+    )
+    replace_company_contact(
+        session,
+        vendor_id,
+        source=CONTACT_MODEL,
+        channel=CHANNEL_PHONE,
+        value=clean_phone,
+    )
     return status
 
 
@@ -490,6 +770,22 @@ def set_typed_contact(
         },
         synchronize_session=False,
     )
+    if typed_email:
+        replace_company_contact(
+            session,
+            vendor_id,
+            source=CONTACT_TYPED,
+            channel=CHANNEL_EMAIL,
+            value=typed_email,
+        )
+    if typed_phone:
+        replace_company_contact(
+            session,
+            vendor_id,
+            source=CONTACT_TYPED,
+            channel=CHANNEL_PHONE,
+            value=typed_phone,
+        )
 
 
 def vendor_by_name(session: Session, name_raw: str) -> Vendor | None:
@@ -783,6 +1079,20 @@ def enrichment_by_source(session: Session) -> dict[str, dict[str, int]]:
     return out
 
 
+def _vendor_has_email():
+    """The company column, or any valid email row."""
+    contact = (
+        select(VendorContact.contact_id)
+        .where(
+            VendorContact.vendor_id == Vendor.vendor_id,
+            VendorContact.channel == CHANNEL_EMAIL,
+            VendorContact.valid == 1,
+        )
+        .exists()
+    )
+    return or_(and_(Vendor.email.is_not(None), Vendor.email != ""), contact)
+
+
 def contact_breakdown(session: Session) -> dict[str, int]:
     """Why `done` is bigger than the number of people who can be mailed.
 
@@ -791,7 +1101,7 @@ def contact_breakdown(session: Session) -> dict[str, int]:
     stage 3, which reads `email` alone. Counting `done` as the send queue
     overstates it by exactly `phone_only`.
     """
-    has_email = Vendor.email.is_not(None) & (Vendor.email != "")
+    has_email = _vendor_has_email()
     has_phone = Vendor.phone.is_not(None) & (Vendor.phone != "")
     mailable = int(
         session.scalar(select(func.count()).select_from(Vendor).where(has_email)) or 0
@@ -828,6 +1138,24 @@ class OutreachTarget:
     tender_id: str
     title: str
     contract_date: str
+
+
+def _has_mail_address():
+    """A company email, or any valid email stored for this tender."""
+    contact = (
+        select(VendorContact.contact_id)
+        .where(
+            VendorContact.vendor_id == Vendor.vendor_id,
+            VendorContact.channel == CHANNEL_EMAIL,
+            VendorContact.valid == 1,
+            or_(
+                VendorContact.tender_id.is_(None),
+                VendorContact.tender_id == Award.tender_id,
+            ),
+        )
+        .exists()
+    )
+    return or_(and_(Vendor.email.is_not(None), Vendor.email != ""), contact)
 
 
 def outreach_targets(
@@ -875,7 +1203,7 @@ def outreach_targets(
         )
         .join(Award, Award.vendor_id == Vendor.vendor_id)
         .join(Tender, Tender.tender_id == Award.tender_id)
-        .where(Vendor.email.is_not(None), Vendor.email != "")
+        .where(_has_mail_address())
         .distinct()
         .order_by(Vendor.vendor_id, Award.tender_id)
     )
@@ -896,6 +1224,38 @@ def outreach_targets(
             statement
         ).all()
     ]
+
+
+def expand_targets(
+    session: Session,
+    people: list[OutreachTarget],
+    mode: str = ADDRESS_FIRST,
+    chosen_ids: Iterable[int] | None = None,
+) -> list[OutreachTarget]:
+    """One target per address. First, every valid address, or the ticked ids."""
+    picked_mode = mode if mode in {ADDRESS_FIRST, ADDRESS_ALL, ADDRESS_CHOSEN} else ADDRESS_FIRST
+    chosen = {int(item) for item in (chosen_ids or [])}
+    expanded: list[OutreachTarget] = []
+    for person in people:
+        for email in choose_addresses(
+            session,
+            person.vendor_id,
+            person.tender_id,
+            mode=picked_mode,
+            chosen_ids=chosen,
+            fallback=person.email,
+        ):
+            expanded.append(
+                OutreachTarget(
+                    vendor_id=person.vendor_id,
+                    company=person.company,
+                    email=email,
+                    tender_id=person.tender_id,
+                    title=person.title,
+                    contract_date=person.contract_date,
+                )
+            )
+    return expanded
 
 
 def record_outreach(
@@ -939,7 +1299,7 @@ def outreach_queue_counts(session: Session) -> dict[str, int]:
     drift apart. That is the same reason `get_data.py` calls it instead of
     writing a lookalike query.
     """
-    has_email = Vendor.email.is_not(None) & (Vendor.email != "")
+    has_email = _vendor_has_email()
     mailable = int(
         session.scalar(select(func.count()).select_from(Vendor).where(has_email)) or 0
     )
@@ -979,7 +1339,7 @@ def pipeline_funnel(session: Session) -> list[tuple[str, int, str]]:
     `enriched` to `mailable` is the phone-only gap; the drop from `mailable` to
     `sent` is stage 3's backlog.
     """
-    has_email = Vendor.email.is_not(None) & (Vendor.email != "")
+    has_email = _vendor_has_email()
 
     def count(model, *where) -> int:
         return int(

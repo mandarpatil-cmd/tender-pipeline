@@ -4,7 +4,7 @@
 {% block body %}
 <p class="kicker">Mail</p>
 <h1>Mail</h1>
-<p class="lede">Companies with an email that have not been sent yet. One message per tender, to <code>vendors.email</code> only. A phone alone is not mailed. Sending does not change the saved default letter.</p>
+<p class="lede">Companies with an email that have not been sent yet. A selected tender is mailed to every valid address for that company: PDF, enrichment, and typed. A phone alone is not mailed. Sending does not change the saved default letter.</p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% else %}
@@ -16,7 +16,7 @@
 <p class="meta">Tick rows in the table, then Mail these.</p>
 {% else %}
 <h2>These companies</h2>
-<p class="cost">{{ mailable|length }} message(s) will be mailed.{% if already %} {{ already }} already sent are left out unless Send again is ticked.{% endif %}</p>
+<p class="cost">{{ message_count }} message(s) will be mailed, one to each valid address.{% if already %} {{ already }} already sent are left out unless Send again is ticked.{% endif %}</p>
 {% if mailable|length > 10 %}
 <details>
   <summary>{{ mailable|length }} companies in this list</summary>
@@ -40,6 +40,14 @@
   {% for vendor_id, tender_id in selected %}
   <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
   {% endfor %}
+  {% if addresses %}
+  <p class="note">Every valid address below receives the letter. PDF, then enrichment, then typed. A repeated address is sent once.</p>
+  <ul class="companies">
+    {% for item in addresses %}
+    <li>{{ item.company }} — {{ item.value }} ({{ item.source }}{% if not item.valid %}, not valid{% endif %})</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
   <label class="check"><input type="radio" name="letter" value="default" {% if letter_mode != 'custom' %}checked{% endif %}> Send the default</label>
   <label class="check"><input type="radio" name="letter" value="custom" {% if letter_mode == 'custom' %}checked{% endif %}> Change some phrases</label>
   <div id="phrases" {% if letter_mode != 'custom' %}hidden{% endif %}>

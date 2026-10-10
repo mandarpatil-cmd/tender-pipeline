@@ -456,7 +456,7 @@ def run_outreach(
     path writes the saved letter.
     """
     from pipeline_core.emailcheck import EMAIL_RE
-    from pipeline_core.queries import outreach_targets
+    from pipeline_core.queries import ADDRESS_ALL, expand_targets, outreach_targets
 
     campaign = load_campaign()
     bind = _engine(database)
@@ -475,13 +475,18 @@ def run_outreach(
 
     with session(bind) as current:
         queue = outreach_targets(current, include_sent=include_sent)
-    people = [person for person in queue if EMAIL_RE.match(person.email or "")]
-    if awards is not None:
-        wanted = set(awards)
-        people = [person for person in people if (person.vendor_id, person.tender_id) in wanted]
-    elif vendor_ids is not None:
-        wanted_vendors = set(vendor_ids)
-        people = [person for person in people if person.vendor_id in wanted_vendors]
+        if awards is not None:
+            wanted = set(awards)
+            queue = [
+                person
+                for person in queue
+                if (person.vendor_id, person.tender_id) in wanted
+            ]
+        elif vendor_ids is not None:
+            wanted_vendors = set(vendor_ids)
+            queue = [person for person in queue if person.vendor_id in wanted_vendors]
+        people = expand_targets(current, queue, ADDRESS_ALL)
+    people = [person for person in people if EMAIL_RE.match(person.email or "")]
     if include_sent:
         log.write("Send again is on. Awards already sent are included.")
     if letter is None:

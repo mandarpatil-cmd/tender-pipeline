@@ -169,6 +169,10 @@ def ensure_schema(bind: Engine | None = None) -> SchemaReport:
             index.create(eng, checkfirst=True)
             report.created_indexes.append(index.name or "<unnamed>")
 
+    from .queries import backfill_vendor_contacts
+
+    with session(eng) as current:
+        backfill_vendor_contacts(current)
     return report
 
 

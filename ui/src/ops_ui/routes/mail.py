@@ -7,8 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
 from pipeline_core.db import engine, session
-from pipeline_core.emailcheck import EMAIL_RE
-from pipeline_core.queries import outreach_targets
+from pipeline_core.queries import ADDRESS_ALL, expand_targets, ordered_contacts, outreach_targets
 
 from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
@@ -279,6 +278,8 @@ def _render(
     snapshot = load_home(path)
     waiting = 0
     mailable: list = []
+    addresses: list[dict] = []
+    message_count = 0
     already = 0
     letter = None
     form = draft or {}
@@ -305,16 +306,8 @@ def _render(
                 "sender_email": letter.sender_email,
             }
         with session(bind) as current:
-            unsent = [
-                person
-                for person in outreach_targets(current)
-                if EMAIL_RE.match(person.email or "")
-            ]
-            everyone = [
-                person
-                for person in outreach_targets(current, include_sent=True)
-                if EMAIL_RE.match(person.email or "")
-            ]
+            unsent = list(outreach_targets(current))
+            everyone = list(outreach_targets(current, include_sent=True))
         waiting = len(unsent)
         queue = everyone if include_sent else unsent
         sent_keys = {(person.vendor_id, person.tender_id) for person in everyone} - {
@@ -326,6 +319,19 @@ def _render(
                 person for person in queue if (person.vendor_id, person.tender_id) in wanted
             ]
             already = len(wanted & sent_keys)
+            with session(bind) as current:
+                for person in mailable:
+                    for row in ordered_contacts(current, person.vendor_id, person.tender_id):
+                        addresses.append(
+                            {
+                                "contact_id": row.contact_id,
+                                "company": person.company,
+                                "value": row.value,
+                                "source": row.source,
+                                "valid": bool(row.valid),
+                            }
+                        )
+                message_count = len(expand_targets(current, mailable, ADDRESS_ALL))
         sample_company = mailable[0].company if mailable else "Example Company"
         sample_title = mailable[0].title if mailable else ""
         sample_date = mailable[0].contract_date if mailable else ""
@@ -376,6 +382,8 @@ def _render(
         "already": already,
         "include_sent": include_sent,
         "mailable": mailable,
+        "addresses": addresses,
+        "message_count": message_count,
         "form": form,
         "phrases": phrases or {},
         "files": files,

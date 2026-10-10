@@ -38,6 +38,11 @@ SOURCE_MANUAL = "manual"
 # --- vendors.contact_origin: who wrote the contact block ---------------------
 CONTACT_TYPED = "typed"
 CONTACT_MODEL = "model"
+CONTACT_PDF = "pdf"
+
+# --- vendor_contacts.channel -------------------------------------------------
+CHANNEL_EMAIL = "email"
+CHANNEL_PHONE = "phone"
 
 # --- outreach.status ---------------------------------------------------------
 OUTREACH_SENT = "sent"
@@ -113,8 +118,8 @@ class Vendor(Base):
     # Read out of the tender's work-order PDF. LiteParse OCRs the scan first;
     # the embedded text layer is the backup. Characters can already be wrong --
     # e.g. "acmctechworks0l@" for "acmetechworks01@". This is
-    # *evidence*, not truth. Stage 2 passes it to the model to confirm or correct.
-    # Never mail one of these directly.
+    # *evidence*, not truth. The full list lives in vendor_contacts. These two
+    # columns mirror the first PDF address so the grid can show one line.
     pdf_email: Mapped[str | None] = mapped_column(Text)
     pdf_phone: Mapped[str | None] = mapped_column(Text)
 
@@ -132,6 +137,31 @@ class Vendor(Base):
 
     def __repr__(self) -> str:
         return f"<Vendor {self.vendor_id} {self.name_raw!r} {self.enrichment_status}>"
+
+
+class VendorContact(Base):
+    """One address. A PDF that names two emails is two rows, not one cell."""
+
+    __tablename__ = "vendor_contacts"
+
+    contact_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("vendors.vendor_id"), nullable=False
+    )
+    #: Set for a PDF clue. Empty when the address belongs to the company.
+    tender_id: Mapped[str | None] = mapped_column(Text, ForeignKey("tenders.tender_id"))
+    #: ``email`` or ``phone``.
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    #: ``pdf``, ``model``, or ``typed``.
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 1 when the value can be mailed or dialled.
+    valid: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (Index("idx_vendor_contacts_vendor", "vendor_id"),)
+
+    def __repr__(self) -> str:
+        return f"<VendorContact {self.contact_id} {self.channel} {self.value!r}>"
 
 
 class Award(Base):
@@ -258,4 +288,14 @@ class UiJob(Base):
 
 
 #: Printed by `pipeline-db status`, in pipeline order.
-TABLES = (Tender, TenderDocument, Vendor, Award, LlmRun, Outreach, MailLetter, UiJob)
+TABLES = (
+    Tender,
+    TenderDocument,
+    Vendor,
+    VendorContact,
+    Award,
+    LlmRun,
+    Outreach,
+    MailLetter,
+    UiJob,
+)

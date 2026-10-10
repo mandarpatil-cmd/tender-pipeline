@@ -129,8 +129,18 @@ def test_each_stage_offers_only_its_own_filters(tmp_path):
     assert 'name="mailable"' not in scrape
     assert "Contract value min" in scrape
     assert 'name="organisation"' in scrape
-    assert "Contract value min" not in enrich
-    assert 'name="organisation"' not in enrich
+    assert "Contract value min" in enrich
+    assert 'name="organisation"' in enrich
+    assert 'name="date_from"' in enrich
+    assert 'name="scraped_from"' not in enrich
+    assert "sort=organisation" in enrich
+    assert "sort=contract_value" in enrich
+    assert "sort=contract_date" in enrich
+    assert "sort=source" in enrich
+    assert "sort=organisation" in mail
+    assert "sort=contract_value" in mail
+    assert "sort=contract_date" in mail
+    assert "sort=scraped_at" in mail
     assert 'name="enrichment_status"' not in scrape
     assert 'name="enrichment_status"' in enrich
     assert 'name="source"' in enrich
@@ -478,7 +488,7 @@ def test_scrape_organisation_and_contract_value_match_the_query(tmp_path):
     cases = (
         ("scrape", "/scrape?organisation=Durgapur", {"LARGE"}),
         ("scrape", "/scrape?value_min=100000", {"LARGE"}),
-        ("enrich", "/enrich?organisation=Durgapur&value_min=100000", {"SMALL"}),
+        ("enrich", "/enrich?organisation=Durgapur&value_min=100000", set()),
         ("mail", "/mail?organisation=Durgapur&value_min=1", set()),
     )
     for stage, url, expected in cases:
@@ -627,3 +637,45 @@ def test_scrape_pdf_contact_shows_only_both_clues(tmp_path):
     html = TestClient(create_app(path)).get("/scrape?pdf_contact=yes").text
     assert ">BOTH</a>" in html
     assert ">ONE</a>" not in html
+
+
+def test_enrich_filters_organisation_value_and_contract_date(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        big = upsert_vendor(current, name_raw="Big Roads")
+        small = upsert_vendor(current, name_raw="Small Roads")
+        upsert_tender(
+            current,
+            tender_id="BIG",
+            title="Highway",
+            organisation="NHAI",
+            contract_date="21-Sep-2026",
+            contract_value="INR 200000",
+            scraped_at=utcnow(),
+        )
+        upsert_tender(
+            current,
+            tender_id="SMALL",
+            title="Lane",
+            organisation="Other office",
+            contract_date="01-Jan-2020",
+            contract_value="INR 10",
+            scraped_at=utcnow(),
+        )
+        for tender_id, vendor_id, name in (
+            ("BIG", big, "Big Roads"),
+            ("SMALL", small, "Small Roads"),
+        ):
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
+    html = TestClient(create_app(path)).get(
+        "/enrich?organisation=NHAI&value_min=100000&date_from=2026-09-01&date_to=2026-09-30"
+    ).text
+    assert ">BIG</a>" in html
+    assert ">SMALL</a>" not in html
+    assert "organisation=NHAI" in html

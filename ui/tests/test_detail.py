@@ -8,6 +8,7 @@ from pipeline_core.queries import (
     record_llm_run,
     record_outreach,
     replace_awards,
+    record_pdf_contacts,
     replace_tender_documents,
     set_pdf_contacts,
     upsert_tender,
@@ -102,9 +103,35 @@ def test_detail_shows_tender_awards_model_call_and_mail(tmp_path):
     assert "work-order.pdf" in html
     assert "27ABCDE1234F1Z5" in html
     assert "clue@example.com" in html
-    assert "not an address to mail" in html
+    assert "A mail run can use them, PDF address first." in html
     assert "Download PDFs" in html
     assert "The files were not kept." in html
+
+
+def test_tender_screen_counts_every_email(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        vendor_id = upsert_vendor(current, name_raw="Two Addresses Ltd")
+        upsert_tender(current, tender_id="TWO", title="Bridge", scraped_at=utcnow())
+        replace_awards(
+            current,
+            "TWO",
+            [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "Two Addresses Ltd"}],
+        )
+        record_pdf_contacts(
+            current,
+            vendor_id,
+            "TWO",
+            ["one@roads.example", "two@roads.example"],
+            ["9811111111"],
+        )
+    html = TestClient(create_app(path)).get("/award?tender_id=TWO&bid=1").text
+    assert "2 emails for this tender." in html
+    assert "one@roads.example" in html
+    assert "two@roads.example" in html
+    assert "9811111111" in html
 
 
 def test_unknown_award_is_not_found(tmp_path):
