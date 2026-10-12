@@ -221,8 +221,13 @@ def test_usable_contact_keeps_a_company_address_and_drops_the_rest():
     from pipeline_core.emailcheck import is_buyer_email, usable_contact
 
     assert is_buyer_email("rfi@ord.gov.in")
+    assert is_buyer_email("rfi@ord.qov.in")
+    assert is_buyer_email("rfi@ord.goy.in")
+    assert is_buyer_email("rfi@ord.qoy.in")
+    assert is_buyer_email("rfi@ord.g0v.in")
     assert is_buyer_email("storesoffice@vnit.ac.in")
     assert not is_buyer_email("hi@kanta.example")
+    assert not is_buyer_email("quality@acme.com")
     kept = usable_contact("hi@kanta.example", "9876543210")
     assert (kept.email, kept.phone, kept.dropped) == ("hi@kanta.example", "9876543210", ())
     dropped = usable_contact("rfi@ord.gov.in", "+918043867273,6957")
@@ -231,6 +236,27 @@ def test_usable_contact_keeps_a_company_address_and_drops_the_rest():
     assert "government or buyer address" in dropped.dropped[0]
     assert "not a phone number" in dropped.dropped[1]
     assert usable_contact("not-an-email", None).dropped == ("not-an-email (not an email address)",)
+
+
+def test_an_ocr_buyer_domain_is_not_mailed(bind):
+    from pipeline_core.grid import AwardQuery, award_view
+    from pipeline_core.queries import add_contact, mail_messages
+
+    with session(bind) as s:
+        vendor_id = upsert_vendor(s, name_raw="Ord OCR Ltd")
+        _award(s, vendor_id, "T-QOV", "2020-01-01T00:00:00+00:00", "Ord OCR Ltd")
+        add_contact(
+            s,
+            vendor_id,
+            channel="email",
+            value="rfi@ord.qov.in",
+            source="pdf",
+            tender_id="T-QOV",
+        )
+        assert s.query(VendorContact).count() == 1
+        assert mail_messages(s) == []
+        waiting = award_view(s, AwardQuery(outreach_status="none"), page_size=50)
+        assert waiting.rows == []
 
 
 def test_mark_enriched_stores_only_what_can_be_used(bind):

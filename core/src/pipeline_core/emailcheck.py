@@ -16,6 +16,11 @@ BUYER_EMAIL_MARKERS = (
     "vnii",
     "nic.in",
     "gov.in",
+    # One-character OCR twins of gov.in seen on scanned letterheads.
+    "qov.in",
+    "goy.in",
+    "qoy.in",
+    "g0v.in",
     "eprocure",
     "storesoffic",
     "sioresoffic",
