@@ -5,7 +5,7 @@
 Writes `exports/outreach_queue.csv` and `.xlsx`. Reads only; nothing is sent,
 and nothing in the database changes.
 
-The row selection comes from `outreach_targets()`, the exact query `campaign.py`
+The row selection comes from `mail_messages()`, the exact list `campaign.py`
 sends from. That is deliberate: a hand-written "similar" query here could drift
 from the real one, and you would be reviewing a list that is not the list.
 """
@@ -78,7 +78,7 @@ _require(
 
 from pipeline_core.db import session  # noqa: E402
 from pipeline_core.models import Outreach, Vendor  # noqa: E402
-from pipeline_core.queries import outreach_targets  # noqa: E402
+from pipeline_core.queries import mail_messages  # noqa: E402
 
 COLUMNS = [
     "vendor_id",
@@ -98,42 +98,42 @@ COLUMNS = [
 
 
 def collect_rows(*, include_sent: bool = False, source: str | None = None) -> list[dict]:
-    """Stage 3's input, one dict per tender still to be mailed.
+    """Stage 3's input, one dict per address a live run would mail.
 
-    `outreach_targets()` decides who is in the queue. Everything else here is
-    extra columns for those same companies.
+    `mail_messages()` decides the list. `email` is that address, which may be
+    a PDF clue rather than `vendors.email`.
     """
     with session() as current:
         queued = {
-            (target.vendor_id, target.tender_id) for target in outreach_targets(current)
+            (target.vendor_id, target.tender_id, target.email.casefold())
+            for target in mail_messages(current)
         }
-        targets = outreach_targets(current, include_sent=True)
+        targets = mail_messages(current, include_sent=include_sent)
         vendors = {
             vendor.vendor_id: vendor
             for vendor in current.query(Vendor).all()
         }
-        attempts: dict[tuple[int, str], Outreach] = {}
+        attempts: dict[tuple[int, str, str], Outreach] = {}
         for row in current.query(Outreach).order_by(Outreach.outreach_id).all():
-            if row.tender_id:
-                attempts[(row.vendor_id, row.tender_id)] = row
+            if row.tender_id and row.email:
+                attempts[(row.vendor_id, row.tender_id, row.email.casefold())] = row
 
     rows = []
     for target in targets:
-        if (target.vendor_id, target.tender_id) not in queued and not include_sent:
-            continue
         vendor = vendors.get(target.vendor_id)
         if vendor is None:
             continue
         if source is not None and vendor.source != source:
             continue
-        attempt = attempts.get((target.vendor_id, target.tender_id))
-        in_queue = (target.vendor_id, target.tender_id) in queued
+        key = (target.vendor_id, target.tender_id, target.email.casefold())
+        attempt = attempts.get(key)
+        in_queue = key in queued
         rows.append(
             {
                 "vendor_id": target.vendor_id,
                 "tender_id": target.tender_id,
                 "company": vendor.name_raw,
-                "email": vendor.email,
+                "email": target.email,
                 "phone": vendor.phone or "",
                 "city": vendor.city or "",
                 "state": vendor.state or "",

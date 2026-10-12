@@ -26,6 +26,7 @@ from pipeline_core.naming import normalize_name
 from pipeline_core.queries import (
     mark_enriched,
     mark_failed,
+    record_llm_run,
     record_outreach,
     replace_awards,
     upsert_tender,
@@ -120,6 +121,84 @@ def test_search_is_partial_and_does_not_treat_percent_as_everything(bind):
     assert literal.total == 0
 
 
+def test_rows_carry_where_the_tender_came_from_and_sort_by_s_no(bind):
+    with session(bind) as current:
+        for tender_id, serial in (("LATE", 12), ("EARLY", 3), ("TYPED", None)):
+            portal = serial is not None
+            vendor_id = upsert_vendor(current, name_raw=f"{tender_id} Works")
+            upsert_tender(
+                current,
+                tender_id=tender_id,
+                scraped_at=utcnow(),
+                origin="eprocure.gov.in" if portal else "manual",
+                search_mode="awarded" if portal else None,
+                listing_page=1 if portal else None,
+                listing_serial=serial,
+                scrape_job_id=5 if portal else None,
+            )
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": f"{tender_id} Works"}],
+            )
+        view = award_view(current, AwardQuery(sort="listing_serial"), page_size=50)
+
+    assert [row["tender_id"] for row in view.rows] == ["EARLY", "LATE", "TYPED"]
+    early = view.rows[0]
+    assert (
+        early["origin"],
+        early["search_mode"],
+        early["listing_page"],
+        early["listing_serial"],
+        early["scrape_job_id"],
+    ) == ("eprocure.gov.in", "awarded", 1, 3, 5)
+    assert view.rows[2]["origin"] == "manual"
+    assert view.rows[2]["listing_serial"] is None
+
+
+def test_found_at_and_lookups_come_from_the_model_answer(bind):
+    with session(bind) as current:
+        vendor_id = upsert_vendor(current, name_raw="Traced Roads")
+        upsert_tender(current, tender_id="T-1", scraped_at=utcnow())
+        replace_awards(
+            current,
+            "T-1",
+            [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "Traced Roads"}],
+        )
+        run_id = record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="test",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json='{"email": "found@co.example"}',
+            status="ok",
+            job_id=3,
+        )
+        record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="test",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json=None,
+            status="error",
+            error="402",
+        )
+        mark_enriched(
+            current,
+            vendor_id,
+            email="found@co.example",
+            phone=None,
+            source_url="https://co.example/about",
+            llm_run_id=run_id,
+        )
+        view = award_view(current, AwardQuery(), page_size=50)
+
+    assert view.rows[0]["found_at"] == "https://co.example/about"
+    assert view.rows[0]["lookups"] == 2
+
+
 def test_page_two_follows_the_same_order(bind):
     _seed(bind)
     with session(bind) as current:
@@ -131,6 +210,193 @@ def test_page_two_follows_the_same_order(bind):
     assert [row["tender_id"] for row in first.rows] == ["NEW", "ODD"]
     assert [row["tender_id"] for row in second.rows] == ["OLD"]
     assert second.counts.awards == 3
+
+
+def test_to_send_includes_a_latest_test_attempt(bind):
+    from pipeline_core.models import OUTREACH_TEST
+
+    with session(bind) as current:
+        vendor_id = upsert_vendor(current, name_raw="Tested Ltd", state="Goa")
+        mark_enriched(current, vendor_id, email="hi@tested.example", phone=None)
+        upsert_tender(
+            current,
+            tender_id="T-TEST",
+            title="Work",
+            status="AOC",
+            scraped_at=utcnow(),
+        )
+        replace_awards(
+            current,
+            "T-TEST",
+            [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "Tested Ltd"}],
+        )
+        record_outreach(
+            current,
+            vendor_id=vendor_id,
+            tender_id="T-TEST",
+            email="hi@tested.example",
+            subject="Hello",
+            transport="gmail",
+            status=OUTREACH_TEST,
+            error="redirected to me@mine.example",
+        )
+        waiting = award_view(current, AwardQuery(outreach_status="none"), page_size=50)
+        tested = award_view(current, AwardQuery(outreach_status="test"), page_size=50)
+        sent = award_view(current, AwardQuery(outreach_status="sent"), page_size=50)
+        listed = choices(current)["outreach_status"]
+
+    assert [row["tender_id"] for row in waiting.rows] == ["T-TEST"]
+    assert waiting.counts.sent == 0
+    assert [row["tender_id"] for row in tested.rows] == ["T-TEST"]
+    assert sent.rows == []
+    assert OUTREACH_TEST in listed
+    assert "do_not_mail" in listed
+
+
+def test_to_send_is_the_same_pairs_mail_messages_would_send(bind):
+    from pipeline_core.grid import filtered_award_keys
+    from pipeline_core.models import OUTREACH_FAILED, OUTREACH_SENDING, OUTREACH_TEST
+    from pipeline_core.queries import (
+        add_contact,
+        apply_mail_addresses,
+        mail_messages,
+        set_do_not_mail,
+    )
+
+    with session(bind) as current:
+        pdf_only = upsert_vendor(current, name_raw="Pdf Only Ltd")
+        both = upsert_vendor(current, name_raw="Two Address Ltd")
+        buyer = upsert_vendor(current, name_raw="Buyer Mail Ltd")
+        stopped = upsert_vendor(current, name_raw="Stopped Ltd")
+        finished = upsert_vendor(current, name_raw="Finished Ltd")
+        retry = upsert_vendor(current, name_raw="Retry Ltd")
+        for vendor_id, name, tender_id in (
+            (pdf_only, "Pdf Only Ltd", "T-PDF"),
+            (both, "Two Address Ltd", "T-TWO"),
+            (buyer, "Buyer Mail Ltd", "T-BUY"),
+            (stopped, "Stopped Ltd", "T-STOP"),
+            (finished, "Finished Ltd", "T-DONE"),
+            (retry, "Retry Ltd", "T-RETRY"),
+        ):
+            upsert_tender(
+                current,
+                tender_id=tender_id,
+                title="Work",
+                status="AOC",
+                scraped_at="2020-01-01T00:00:00+00:00",
+            )
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+            )
+        add_contact(
+            current,
+            pdf_only,
+            channel="email",
+            value="clue@winner.example",
+            source="pdf",
+            tender_id="T-PDF",
+        )
+        mark_enriched(current, both, email="model@two.example", phone=None)
+        add_contact(
+            current,
+            both,
+            channel="email",
+            value="clue@two.example",
+            source="pdf",
+            tender_id="T-TWO",
+        )
+        add_contact(
+            current,
+            buyer,
+            channel="email",
+            value="rfi@ord.gov.in",
+            source="model",
+        )
+        mark_enriched(current, stopped, email="hi@stopped.example", phone=None)
+        set_do_not_mail(current, stopped, stopped=True)
+        mark_enriched(current, finished, email="done@finished.example", phone=None)
+        mark_enriched(current, retry, email="again@retry.example", phone=None)
+        record_outreach(
+            current,
+            vendor_id=both,
+            tender_id="T-TWO",
+            email="model@two.example",
+            subject="Sent",
+            transport="gmail",
+            status=OUTREACH_SENT,
+        )
+        record_outreach(
+            current,
+            vendor_id=finished,
+            tender_id="T-DONE",
+            email="done@finished.example",
+            subject="Sent",
+            transport="gmail",
+            status=OUTREACH_SENT,
+        )
+        record_outreach(
+            current,
+            vendor_id=retry,
+            tender_id="T-RETRY",
+            email="again@retry.example",
+            subject="Failed",
+            transport="gmail",
+            status=OUTREACH_FAILED,
+        )
+        record_outreach(
+            current,
+            vendor_id=pdf_only,
+            tender_id="T-PDF",
+            email="clue@winner.example",
+            subject="Test",
+            transport="gmail",
+            status=OUTREACH_TEST,
+            error="redirected to me@mine.example",
+        )
+        waiting = award_view(current, AwardQuery(outreach_status="none"), page_size=50)
+        sent = award_view(current, AwardQuery(outreach_status="sent"), page_size=50)
+        failed = award_view(current, AwardQuery(outreach_status="failed"), page_size=50)
+        tested = award_view(current, AwardQuery(outreach_status="test"), page_size=50)
+        stopped_rows = award_view(
+            current, AwardQuery(outreach_status="do_not_mail"), page_size=50
+        )
+        apply_mail_addresses(current, waiting.rows)
+        messages = mail_messages(current)
+        keys = filtered_award_keys(current, AwardQuery(outreach_status="none"))
+
+    waiting_ids = {row["tender_id"] for row in waiting.rows}
+    assert waiting_ids == {"T-PDF", "T-TWO", "T-RETRY"}
+    assert {row["tender_id"] for row in sent.rows} == {"T-DONE"}
+    assert {row["tender_id"] for row in failed.rows} == {"T-RETRY"}
+    assert {row["tender_id"] for row in tested.rows} == {"T-PDF"}
+    assert {row["tender_id"] for row in stopped_rows.rows} == {"T-STOP"}
+    assert "T-BUY" not in waiting_ids
+    pdf_row = next(row for row in waiting.rows if row["tender_id"] == "T-PDF")
+    two_row = next(row for row in waiting.rows if row["tender_id"] == "T-TWO")
+    assert pdf_row["email"] == "clue@winner.example"
+    assert two_row["email"] == "clue@two.example"
+    assert {(row["vendor_id"], row["tender_id"]) for row in waiting.rows} == {
+        (message.vendor_id, message.tender_id) for message in messages
+    }
+    assert set(keys) == {(message.vendor_id, message.tender_id) for message in messages}
+
+    with session(bind) as current:
+        record_outreach(
+            current,
+            vendor_id=pdf_only,
+            tender_id="T-PDF",
+            email="clue@winner.example",
+            subject="Sending",
+            transport="gmail",
+            status=OUTREACH_SENDING,
+        )
+        after = {
+            row["tender_id"]
+            for row in award_view(current, AwardQuery(outreach_status="none"), page_size=50).rows
+        }
+    assert "T-PDF" not in after
 
 
 def test_latest_outreach_does_not_duplicate_the_award(bind):
@@ -234,7 +500,7 @@ def test_each_filter_returns_only_the_matching_awards(bind):
         ({"enrichment_status": "done"}, {"NEW"}),
         ({"enrichment_status": "not_found"}, set()),
         ({"enrichment_status": "failed"}, set()),
-        ({"outreach_status": "none"}, {"OLD", "NEW", "ODD"}),
+        ({"outreach_status": "none"}, {"NEW"}),
         ({"outreach_status": "sent"}, set()),
         ({"source": "scrape"}, {"OLD", "NEW", "ODD"}),
         ({"source": "manual"}, set()),
@@ -274,9 +540,11 @@ def test_combined_filters_keep_only_awards_that_match_every_rule(bind):
             status=OUTREACH_SENT,
         )
         mark_failed(current, old)
+        current.get(Vendor, old).email = "old@example.com"
         record_outreach(
             current,
             vendor_id=old,
+            tender_id="OLD",
             email="old@example.com",
             subject="failed",
             transport="gmail",

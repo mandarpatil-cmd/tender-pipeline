@@ -69,6 +69,11 @@ def test_stage_export_matches_the_query_including_later_pages(tmp_path, monkeypa
         "PDF phone",
         "Source",
         "Scraped",
+        "Origin",
+        "Portal search",
+        "Page",
+        "S.No",
+        "Run",
     ]
     assert sheet.max_row == 4
     query = stage_query("scrape", QueryParams("page=2"))
@@ -190,7 +195,94 @@ def test_pdf_contact_keeps_only_companies_with_both_clues(tmp_path):
     assert 'name="pdf_contact"' not in mail.text
 
 
+def test_scrape_table_shows_where_each_tender_came_from(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        vendor_id = upsert_vendor(current, name_raw="Portal Roads Ltd")
+        upsert_tender(
+            current,
+            tender_id="T-PORTAL",
+            title="Road",
+            scraped_at=utcnow(),
+            origin="eprocure.gov.in",
+            search_mode="awarded",
+            listing_page=2,
+            listing_serial=14,
+            scrape_job_id=7,
+        )
+        replace_awards(
+            current,
+            "T-PORTAL",
+            [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "Portal Roads Ltd"}],
+        )
+    html = TestClient(create_app(path)).get("/scrape").text
+
+    for label in ("Origin", "Portal search", "Page", "S.No", "Run"):
+        assert f">{label}</a>" in html
+    assert 'data-col="origin">eprocure.gov.in</td>' in html
+    assert 'data-col="search_mode">awarded</td>' in html
+    assert 'data-col="listing_serial">14</td>' in html
+    assert '<a href="/jobs/7">7</a>' in html
+
+
+def test_enrich_table_shows_where_the_address_was_found(tmp_path):
+    from pipeline_core.queries import mark_enriched, record_llm_run
+
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        vendor_id = upsert_vendor(current, name_raw="Traced Roads")
+        upsert_tender(current, tender_id="T-1", title="Cables", scraped_at=utcnow())
+        replace_awards(
+            current,
+            "T-1",
+            [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "Traced Roads"}],
+        )
+        run_id = record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="test",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json='{"email": "found@co.example"}',
+            status="ok",
+            job_id=9,
+        )
+        record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="test",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json=None,
+            status="error",
+            error="402",
+        )
+        mark_enriched(
+            current,
+            vendor_id,
+            email="found@co.example",
+            phone=None,
+            source_url="https://co.example/about",
+            llm_run_id=run_id,
+        )
+    html = TestClient(create_app(path)).get("/enrich?enrichment_status=done").text
+
+    assert ">Found at</a>" in html
+    assert ">Lookups</a>" in html
+    assert 'data-col="found_at"' in html
+    assert "https://co.example/about" in html
+    assert 'data-col="lookups">2</td>' in html
+
+
 def test_stage_column_sets_are_the_ones_the_pages_export():
+    for key in ("origin", "search_mode", "listing_page", "listing_serial", "scrape_job_id"):
+        assert key in STAGE_COLUMNS["scrape"]
+        assert key not in STAGE_COLUMNS["enrich"]
+    assert "found_at" in STAGE_COLUMNS["enrich"]
+    assert "lookups" in STAGE_COLUMNS["enrich"]
+    assert "found_at" not in STAGE_COLUMNS["scrape"]
     assert "email" in STAGE_COLUMNS["scrape"]
     assert "pdf_email" in STAGE_COLUMNS["scrape"]
     assert "pdf_phone" in STAGE_COLUMNS["scrape"]

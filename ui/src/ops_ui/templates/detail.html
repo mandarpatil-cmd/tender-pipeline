@@ -29,6 +29,25 @@
   {% endfor %}
 </dl>
 
+<h2 class="section">Where this came from</h2>
+{% set tender = detail.tender %}
+{% if tender.origin == 'manual' %}
+<p class="muted">Typed by hand on the Add a tender page. Not read from the portal.</p>
+{% elif tender.origin %}
+<dl>
+  <div class="pair"><dt>Website</dt><dd>{{ tender.origin }}</dd></div>
+  <div class="pair"><dt>Search page</dt><dd>{{ portal_search_url }}</dd></div>
+  <div class="pair"><dt>Portal search</dt><dd>{{ search_labels.get(tender.search_mode, tender.search_mode) or "Not recorded" }}</dd></div>
+  <div class="pair"><dt>Fields sent</dt><dd>{% for key, value in tender.search_fields.items() %}{{ key }}={{ value }}{% if key == 'tenderStatus' and value in status_labels %} ({{ status_labels[value] }}){% endif %}{% if not loop.last %}, {% endif %}{% else %}Not recorded{% endfor %}</dd></div>
+  <div class="pair"><dt>Listing page</dt><dd>{{ tender.listing_page if tender.listing_page is not none else "Not recorded" }}</dd></div>
+  <div class="pair"><dt>S.No on the portal</dt><dd>{{ tender.listing_serial if tender.listing_serial is not none else "Not recorded" }}</dd></div>
+  <div class="pair"><dt>Run</dt><dd>{% if tender.scrape_job_id is not none %}<a href="/jobs/{{ tender.scrape_job_id }}">{{ tender.scrape_job_id }}</a>{% elif tender.search_mode %}Started from a terminal{% else %}Not recorded{% endif %}</dd></div>
+</dl>
+<p class="muted">Each value is from the run that last saved this tender. Not recorded means it was saved before the source was kept.</p>
+{% else %}
+<p class="muted">Not recorded.</p>
+{% endif %}
+
 <h2 class="section">Awards on this tender</h2>
 <table>
   <thead>
@@ -76,7 +95,7 @@
 {% if contacts %}
 <ul>
   {% for item in contacts %}
-  <li>{{ item.channel }} {{ item.value }} ({{ item.source }}{% if not item.valid %}, not valid{% endif %})</li>
+  <li>{{ item.channel }} {{ item.value }} ({{ item.source }}{% if not item.valid %}, not valid{% endif %}){% if item.source_url %} — found at {{ item.source_url }}{% endif %}{% if item.job_id is not none %} — <a href="/jobs/{{ item.job_id }}">run {{ item.job_id }}</a>{% endif %}</li>
   {% endfor %}
 </ul>
 {% else %}
@@ -104,12 +123,18 @@
   <label>Phone <input name="phone" placeholder="{{ detail.vendor.phone or '' }}"></label>
   <button type="submit">Save contact</button>
 </form>
+<form method="post" action="/vendor/{{ detail.vendor.vendor_id }}/do-not-mail">
+  <input type="hidden" name="back" value="/award?tender_id={{ detail.tender.tender_id|urlencode }}&bid={{ detail.focus_bid|urlencode }}">
+  <label class="check"><input type="checkbox" name="do_not_mail" value="1" {% if detail.vendor.do_not_mail %}checked{% endif %}> Do not mail this company</label>
+  <button type="submit">Save mail preference</button>
+</form>
 
 <h2 class="section">Model calls</h2>
 {% if detail.runs %}
   {% for run in detail.runs %}
   <div class="card">
-    <p>{{ run.created_at }} · {{ run.status }}{% if run.model %} · {{ run.model }}{% endif %}</p>
+    <p>{{ run.created_at }} · {{ run.status }}{% if run.model %} · {{ run.model }}{% endif %}{% if run.job_id is not none %} · <a href="/jobs/{{ run.job_id }}">run {{ run.job_id }}</a>{% endif %}</p>
+    {% if run.not_kept %}<p>Not kept: {% for item in run.not_kept %}{{ item }}{% if not loop.last %}; {% endif %}{% endfor %}</p>{% endif %}
     {% if run.error %}<p>{{ run.error }}</p>{% endif %}
     {% if run.output_json %}<pre>{{ run.output_json }}</pre>{% endif %}
   </div>

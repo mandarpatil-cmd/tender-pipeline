@@ -150,6 +150,7 @@ def run_enrich(
         source=source,
         report=report,
         should_stop=stop.is_set,
+        job_id=log.job_id,
     )
     log.write(summary.render())
     if stop.is_set():
@@ -238,6 +239,8 @@ def run_scrape(
             only_aoc=organisation_search,
             should_stop=stop.is_set,
             ask=ask,
+            search_mode=search,
+            job_id=log.job_id,
         )
     except CaptchaError as exc:
         log.write(str(exc))
@@ -290,6 +293,7 @@ def run_fetch_pdfs(log: Log, stop: threading.Event, *, tender_id: str) -> int:
             delay=_SCRAPE_DELAY_FLOOR,
             should_stop=stop.is_set,
             ask=ask,
+            job_id=log.job_id,
         )
     except CaptchaError as exc:
         log.write(str(exc))
@@ -455,8 +459,7 @@ def run_outreach(
     one-off for this run. When it is omitted, the saved letter is used. Neither
     path writes the saved letter.
     """
-    from pipeline_core.emailcheck import EMAIL_RE
-    from pipeline_core.queries import ADDRESS_ALL, expand_targets, outreach_targets
+    from pipeline_core.queries import mail_messages
 
     campaign = load_campaign()
     bind = _engine(database)
@@ -474,19 +477,12 @@ def run_outreach(
         return 0
 
     with session(bind) as current:
-        queue = outreach_targets(current, include_sent=include_sent)
-        if awards is not None:
-            wanted = set(awards)
-            queue = [
-                person
-                for person in queue
-                if (person.vendor_id, person.tender_id) in wanted
-            ]
-        elif vendor_ids is not None:
-            wanted_vendors = set(vendor_ids)
-            queue = [person for person in queue if person.vendor_id in wanted_vendors]
-        people = expand_targets(current, queue, ADDRESS_ALL)
-    people = [person for person in people if EMAIL_RE.match(person.email or "")]
+        people = mail_messages(
+            current,
+            include_sent=include_sent,
+            awards=awards,
+            vendor_ids=vendor_ids,
+        )
     if include_sent:
         log.write("Send again is on. Awards already sent are included.")
     if letter is None:
@@ -508,8 +504,12 @@ def run_outreach(
         log.write(refusal)
         return 1
     if override:
+        refused = campaign.redirect_problem(override)
+        if refused:
+            log.write(refused)
+            return 1
         log.write(
-            f"Every message goes to {override}. Each company is still marked sent."
+            f"Every message goes to {override}. This test leaves the company on the list to send."
         )
 
     def deliver() -> None:

@@ -20,6 +20,7 @@ from typing import Callable, Iterable
 
 from langchain_core.runnables import Runnable
 from pipeline_core.db import session
+from pipeline_core.emailcheck import usable_contact
 from pipeline_core.models import STATUS_DONE, STATUS_FAILED, STATUS_NOT_FOUND
 from pipeline_core.queries import (
     PendingVendor,
@@ -62,18 +63,25 @@ def queue(
         return pending_vendors(current, limit, source=source)
 
 
-def enrich_one(vendor: PendingVendor, chain: Runnable) -> tuple[str, str]:
+def enrich_one(
+    vendor: PendingVendor, chain: Runnable, job_id: int | None = None
+) -> tuple[str, str]:
     """One vendor, one call, one commit. Returns (status, detail).
 
     Never raises for a model or network failure: the vendor is marked `failed`,
     the error is written to `llm_runs`, and the caller moves on. A run of 500
     should not stop because one company upset the provider.
+
+    The `llm_runs` row is written first, so the stored address can name the
+    answer it came from. Only usable values reach the company; see
+    `pipeline_core.emailcheck.usable_contact`.
     """
     evidence = build_evidence(vendor.pdf_email, vendor.pdf_phone)
     payload = json.dumps(
         {
             "company": vendor.name_raw,
             "title": vendor.title,
+            "tender_id": vendor.context_tender_id,
             "pdf_email": vendor.pdf_email,
             "pdf_phone": vendor.pdf_phone,
         },
@@ -95,14 +103,12 @@ def enrich_one(vendor: PendingVendor, chain: Runnable) -> tuple[str, str]:
                 output_json=None,
                 status="error",
                 error=detail,
+                job_id=job_id,
             )
         return STATUS_FAILED, detail
 
     with session() as current:
-        status = mark_enriched(
-            current, vendor.vendor_id, email=info.email, phone=info.phone
-        )
-        record_llm_run(
+        run_id = record_llm_run(
             current,
             vendor_id=vendor.vendor_id,
             model=settings.model(),
@@ -110,9 +116,28 @@ def enrich_one(vendor: PendingVendor, chain: Runnable) -> tuple[str, str]:
             input_json=payload,
             output_json=info.model_dump_json(),
             status="ok",
+            job_id=job_id,
         )
-    detail = info.email or info.phone or "nothing public found"
-    return status, detail
+        status = mark_enriched(
+            current,
+            vendor.vendor_id,
+            email=info.email,
+            phone=info.phone,
+            source_url=info.source,
+            llm_run_id=run_id,
+        )
+    return status, _detail(info)
+
+
+def _detail(info: ContactInfo) -> str:
+    """What was kept, and what was left out and why. One log line."""
+    verdict = usable_contact(info.email, info.phone)
+    kept = verdict.email or verdict.phone
+    if not kept:
+        kept = "nothing usable found" if verdict.dropped else "nothing public found"
+    if verdict.dropped:
+        return f"{kept}; not kept: {', '.join(verdict.dropped)}"
+    return kept
 
 
 def enrich_pending(
@@ -124,8 +149,12 @@ def enrich_pending(
     source: str | None = None,
     report: Reporter | None = None,
     should_stop: Callable[[], bool] | None = None,
+    job_id: int | None = None,
 ) -> Summary:
-    """Work the whole queue. `chain` and `vendors` are injectable for tests."""
+    """Work the whole queue. `chain` and `vendors` are injectable for tests.
+
+    `job_id` is the window's run, stamped on every `llm_runs` row it writes.
+    """
     work = list(vendors) if vendors is not None else queue(limit, source=source)
     summary = Summary()
     if not work:
@@ -137,7 +166,7 @@ def enrich_pending(
         for index, vendor in enumerate(work, start=1):
             if should_stop and should_stop():
                 break
-            status, detail = enrich_one(vendor, active)
+            status, detail = enrich_one(vendor, active, job_id=job_id)
             summary.attempted += 1
             if status == STATUS_DONE:
                 summary.done += 1

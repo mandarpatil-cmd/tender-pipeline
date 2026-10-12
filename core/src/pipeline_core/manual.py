@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from .models import SOURCE_MANUAL, Tender
+from .models import ORIGIN_MANUAL, SOURCE_MANUAL, Tender
 from .queries import upsert_tender, upsert_vendor, utcnow, vendor_by_name, replace_awards
 
 
@@ -87,6 +87,12 @@ def save_manual_tender(
         contract_date=contract_date.strip() or None,
         contract_value=contract_value.strip() or None,
         scraped_at=utcnow(),
+        origin=ORIGIN_MANUAL,
+        search_mode=None,
+        search_fields=None,
+        listing_page=None,
+        listing_serial=None,
+        scrape_job_id=None,
     )
     rows = []
     for winner, bid in zip(winners, bids, strict=True):

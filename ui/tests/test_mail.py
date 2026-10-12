@@ -34,6 +34,30 @@ def _seed(path) -> int:
     return vendor_id
 
 
+def test_a_cross_site_post_is_rejected(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    vendor_id = _seed(path)
+    client = TestClient(create_app(path))
+    evil = {"Origin": "https://evil.example"}
+    mail = client.post(
+        "/mail",
+        data={"mode": "preview", "delay": "5", "award": f"{vendor_id}:T-1"},
+        headers=evil,
+        follow_redirects=False,
+    )
+    jobs = client.post("/jobs/status", headers=evil, follow_redirects=False)
+    local = client.post(
+        "/mail",
+        data={"mode": "preview", "delay": "5", "award": f"{vendor_id}:T-1"},
+        headers={"Origin": "http://127.0.0.1:8000"},
+        follow_redirects=False,
+    )
+
+    assert mail.status_code == 403
+    assert jobs.status_code == 403
+    assert local.status_code == 303
+
+
 def test_mail_page_asks_for_companies_before_it_can_send(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path)

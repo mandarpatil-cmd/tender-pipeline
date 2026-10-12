@@ -29,6 +29,7 @@ def test_an_empty_database_seeds_todays_letter_and_the_existing_pdfs():
     assert "Dear {{company}} team," in letter.body
     assert "Surety Insurance:" in letter.body
     assert 'Reply with "unsubscribe"' not in letter.body
+    assert "a person will take you off the list" not in letter.body
     assert letter.attachment_names == (
         "PolicyPact_Corporate_Insurance_Pitch.pdf",
         "Surety_Bond_Corporate_Presentation_PolicyPact.pdf",
@@ -50,7 +51,8 @@ def test_saving_a_letter_fills_company_and_signature_and_adds_unsubscribe():
     assert "Ada Lovelace" in body
     assert "{{" not in subject
     assert "{{" not in body
-    assert 'Reply with "unsubscribe"' in body
+    assert "a person will take you off the list" in body
+    assert 'Reply with "unsubscribe"' not in body
     with session() as current:
         assert current.query(Outreach).count() == 0
 
@@ -61,7 +63,8 @@ def test_unsubscribe_is_added_even_when_the_saved_letter_omits_it():
     _subject, body = campaign.render_letter(campaign.load_letter(), "Acme")
 
     assert body.endswith(campaign.UNSUBSCRIBE)
-    assert body.count('Reply with "unsubscribe"') == 1
+    assert body.count("a person will take you off the list") == 1
+    assert 'Reply with "unsubscribe"' not in body
 
 
 def test_an_unknown_token_is_refused_and_not_saved():

@@ -17,7 +17,9 @@ from .db import create_all, drop_all, engine, ensure_schema, session, table_coun
 from .models import (
     ENRICHMENT_STATUSES,
     OUTREACH_FAILED,
+    OUTREACH_SENDING,
     OUTREACH_SENT,
+    OUTREACH_TEST,
     SOURCE_BIDEASY,
     SOURCE_SCRAPE,
     STATUS_DONE,
@@ -41,7 +43,9 @@ __version__ = "0.1.0"
 __all__ = [
     "ENRICHMENT_STATUSES",
     "OUTREACH_FAILED",
+    "OUTREACH_SENDING",
     "OUTREACH_SENT",
+    "OUTREACH_TEST",
     "SOURCE_BIDEASY",
     "SOURCE_SCRAPE",
     "STATUS_DONE",

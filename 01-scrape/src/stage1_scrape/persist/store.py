@@ -17,7 +17,14 @@ from typing import Any
 
 from pipeline_core import settings as core_settings
 from pipeline_core.db import engine, ensure_schema, session
-from pipeline_core.models import SOURCE_SCRAPE, Award, Tender, TenderDocument, Vendor
+from pipeline_core.models import (
+    ORIGIN_PORTAL,
+    SOURCE_SCRAPE,
+    Award,
+    Tender,
+    TenderDocument,
+    Vendor,
+)
 from pipeline_core.money import format_amount
 from pipeline_core.naming import buyer_tail, infer_city_state
 from pipeline_core.queries import (
@@ -36,7 +43,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from stage1_scrape.domain.enrichment import winner_rows
-from stage1_scrape.domain.models import TenderRecord
+from stage1_scrape.domain.models import ListingRow, ScrapeSource, TenderRecord
 from stage1_scrape.persist.pdf_text import merge_pdf_contacts
 
 VENDOR_SEED_COLUMNS = (
@@ -96,12 +103,16 @@ class Store:
         scraped_at: str | None = None,
         *,
         replace_documents: bool | None = None,
+        source: ScrapeSource | None = None,
     ) -> None:
         """Upsert the tender and its awards. Document clues go in the database.
 
         `replace_documents` defaults to true when this record carries extracts.
         A scrape that downloaded PDFs passes true even when the extracts are
         empty, so a tender whose files yielded nothing does not keep old clues.
+
+        `source` is the portal search of the run. Without it, as in a reindex,
+        the stored search, page and run are left as they are.
         """
         scraped = scraped_at or datetime.now(timezone.utc).isoformat()
         if replace_documents is None:
@@ -118,6 +129,7 @@ class Store:
                 contract_value=record.aoc.get("Total Contract Value", ""),
                 json_path=None,
                 scraped_at=scraped,
+                **_where_from(listing, source),
             )
             self._save_awards(current, record)
             if replace_documents:
@@ -261,6 +273,25 @@ def _shown_award(row) -> dict:
     shown = dict(row)
     shown["awarded_value"] = format_amount(shown.get("awarded_value"))
     return shown
+
+
+def _where_from(listing: ListingRow, source: ScrapeSource | None) -> dict[str, Any]:
+    """The source columns this save can vouch for. The rest keep what is stored."""
+    values: dict[str, Any] = {"origin": ORIGIN_PORTAL}
+    if listing.page is not None:
+        values["listing_page"] = listing.page
+        values["listing_serial"] = serial_number(listing.serial)
+    if source is not None:
+        values["search_mode"] = source.search_mode
+        values["search_fields"] = json.dumps(source.search_fields, sort_keys=True)
+        values["scrape_job_id"] = source.job_id
+    return values
+
+
+def serial_number(text: str | None) -> int | None:
+    """The portal's S.No as a number. ``"25."`` is 25. Anything else is None."""
+    digits = (text or "").strip().rstrip(".")
+    return int(digits) if digits.isdigit() else None
 
 
 def listing_status(status: str | None, tender_stage: str | None) -> str:

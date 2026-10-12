@@ -29,5 +29,15 @@ if errorlevel 1 (
 )
 
 echo.
+echo Removing government addresses and bad phone numbers so they are not mailed...
+uv run pipeline-db recheck-contacts --apply
+if errorlevel 1 (
+  echo.
+  echo The contact check failed. Leave this window open and send a picture of it.
+  pause
+  exit /b 1
+)
+
+echo.
 echo Update finished. Double-click start-ui.bat.
 pause

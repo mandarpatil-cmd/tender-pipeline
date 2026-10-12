@@ -13,6 +13,19 @@ class ListingRow:
     tender_stage: str
     status: str
     status_page_url: str
+    #: 1-based listing page this row was read from. The parser cannot know it.
+    page: int | None = None
+
+
+@dataclass(frozen=True)
+class ScrapeSource:
+    """The portal search a run sent, written onto every tender it saves."""
+
+    search_mode: str
+    #: Portal form fields, without the captcha.
+    search_fields: dict[str, str] = field(default_factory=dict)
+    #: ``ui_jobs.job_id`` when the window started the run.
+    job_id: int | None = None
 
 
 @dataclass(frozen=True)

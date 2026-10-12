@@ -43,9 +43,9 @@ A filter shrinks every card together. "Counts match the rows in this filter" des
 
 ## Who the mail goes to
 
-Mail uses the contact email on the company (`vendors.email`), the address the contact lookup stored. It does not use the PDF email. That text is evidence from a work order, and it is often wrong.
+Mail uses every valid address for that company and tender. A PDF clue goes first, then the address the contact lookup stored, then an address a person typed. A government or buyer address is not mailed. A phone alone is not a recipient.
 
-One letter goes to one company about one tender. The same company with two wins gets two letters, one for each tender, and a tender already mailed to that company is skipped. A company with only a phone is not a recipient. Preview writes a file and sends nothing. Send is the action that mails the company.
+One letter goes to one address about one tender. The same company with two addresses gets two letters. The same company with two wins gets a letter for each tender. An address already mailed for that tender is skipped. A different address on the same tender is not. Filling "Send every message to" delivers the letter to that inbox and records a test, so a real send can still go out. Preview writes a file and sends nothing. Send is the action that mails the company.
 
 ## Setup
 

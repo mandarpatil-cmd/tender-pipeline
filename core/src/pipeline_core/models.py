@@ -11,11 +11,13 @@ and a real would not keep ``179853.24`` exact.
 02-enrich  read     .        *        *        .         .
            write    .      * (1)      .        *         .
 03-outreach read    .        *        .        .         *
-           write    .        .        .        .         *
+           write    .      * (2)      .        .         *
 ```
 
-(1) `vendors` is the one table with two writers, and they touch disjoint
-columns: the scraper owns identity, stage 2 owns the contact block.
+(1) `vendors` is the one table with two writers on the contact block, and
+they touch disjoint columns: the scraper owns identity, stage 2 owns the
+contact block.
+(2) Stage 3 writes only `vendors.do_not_mail`, plus every `outreach` row.
 """
 
 from __future__ import annotations
@@ -29,6 +31,10 @@ STATUS_DONE = "done"
 STATUS_NOT_FOUND = "not_found"
 STATUS_FAILED = "failed"
 ENRICHMENT_STATUSES = (STATUS_PENDING, STATUS_DONE, STATUS_NOT_FOUND, STATUS_FAILED)
+
+# --- tenders.origin: which website, or a person, wrote the tender ------------
+ORIGIN_PORTAL = "eprocure.gov.in"
+ORIGIN_MANUAL = "manual"
 
 # --- vendors.source ----------------------------------------------------------
 SOURCE_SCRAPE = "scrape"
@@ -47,6 +53,10 @@ CHANNEL_PHONE = "phone"
 # --- outreach.status ---------------------------------------------------------
 OUTREACH_SENT = "sent"
 OUTREACH_FAILED = "failed"
+#: A redirected delivery. The company address is still waiting for a real send.
+OUTREACH_TEST = "test"
+#: Accepted by this program, not yet known to have reached the mailbox.
+OUTREACH_SENDING = "sending"
 
 
 class Base(DeclarativeBase):
@@ -71,6 +81,19 @@ class Tender(Base):
     #: Path to the raw scrape, `data/json/<id>.json` relative to the stage.
     json_path: Mapped[str | None] = mapped_column(Text)
     scraped_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- where it came from: the run that last saved it, like scraped_at ---
+    #: ``eprocure.gov.in`` for a portal scrape, ``manual`` for a typed tender.
+    origin: Mapped[str | None] = mapped_column(Text)
+    #: ``awarded``, ``organisation`` or ``tender_id``: the portal search that listed it.
+    search_mode: Mapped[str | None] = mapped_column(Text)
+    #: The portal form fields that search sent, as JSON. Never the captcha.
+    search_fields: Mapped[str | None] = mapped_column(Text)
+    #: 1-based listing page in that walk, and the portal's S.No on it.
+    listing_page: Mapped[int | None] = mapped_column(Integer)
+    listing_serial: Mapped[int | None] = mapped_column(Integer)
+    #: ``ui_jobs.job_id`` of that run. Empty for a run started from a terminal.
+    scrape_job_id: Mapped[int | None] = mapped_column(Integer)
 
     def __repr__(self) -> str:
         return f"<Tender {self.tender_id}>"
@@ -132,6 +155,9 @@ class Vendor(Base):
     enriched_at: Mapped[str | None] = mapped_column(Text)
     #: 'typed' when a person entered the contact, 'model' when stage 2 did.
     contact_origin: Mapped[str | None] = mapped_column(Text)
+    #: Set when a person takes this company off the mail list. Stage 3 only.
+    #: Stage 2 must not clear it.
+    do_not_mail: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (Index("idx_vendors_status", "enrichment_status"),)
 
@@ -157,6 +183,10 @@ class VendorContact(Base):
     source: Mapped[str] = mapped_column(Text, nullable=False)
     #: 1 when the value can be mailed or dialled.
     valid: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: For a ``model`` row: the page the model said it found this on. Not checked.
+    source_url: Mapped[str | None] = mapped_column(Text)
+    #: For a ``model`` row: ``llm_runs.run_id`` of the answer that gave it.
+    llm_run_id: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (Index("idx_vendor_contacts_vendor", "vendor_id"),)
 
@@ -210,6 +240,8 @@ class LlmRun(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    #: ``ui_jobs.job_id`` of the run that made the call. Empty for a terminal run.
+    job_id: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (Index("idx_llm_runs_vendor", "vendor_id"),)
 
@@ -228,7 +260,8 @@ class Outreach(Base):
     )
     #: Which award this attempt was about. Null on rows written before that.
     tender_id: Mapped[str | None] = mapped_column(Text, ForeignKey("tenders.tender_id"))
-    #: The address actually used — not necessarily `vendors.email` (see TO=).
+    #: The company address this attempt is about. A redirect keeps that address
+    #: here and records the test inbox in ``error``.
     email: Mapped[str | None] = mapped_column(Text)
     subject: Mapped[str | None] = mapped_column(Text)
     transport: Mapped[str | None] = mapped_column(Text)

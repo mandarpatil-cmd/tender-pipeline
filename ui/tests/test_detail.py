@@ -66,6 +66,127 @@ def _seed(path, json_path: str):
         )
 
 
+def test_do_not_mail_is_saved_from_the_award_page(tmp_path):
+    from pipeline_core.models import Vendor
+
+    path = tmp_path / "pipeline.sqlite3"
+    _seed(path, json_path="")
+    with session(engine(path)) as current:
+        vendor_id = current.query(Vendor).filter_by(name_raw="Large Electricals").one().vendor_id
+    client = TestClient(create_app(path))
+    page = client.get("/award?tender_id=LARGE&bid=1")
+    assert "Do not mail this company" in page.text
+
+    saved = client.post(
+        f"/vendor/{vendor_id}/do-not-mail",
+        data={"do_not_mail": "1", "back": "/award?tender_id=LARGE&bid=1"},
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    with session(engine(path)) as current:
+        assert current.get(Vendor, vendor_id).do_not_mail
+
+    cleared = client.post(
+        f"/vendor/{vendor_id}/do-not-mail",
+        data={"back": "/award?tender_id=LARGE&bid=1"},
+        follow_redirects=False,
+    )
+    assert cleared.status_code == 303
+    with session(engine(path)) as current:
+        assert current.get(Vendor, vendor_id).do_not_mail is None
+
+
+def test_award_page_names_the_portal_search_that_found_it(tmp_path):
+    from stage1_scrape.config import SEARCH_PAGE_URL
+
+    path = tmp_path / "pipeline.sqlite3"
+    _seed(path, json_path="")
+    with session(engine(path)) as current:
+        upsert_tender(
+            current,
+            tender_id="LARGE",
+            scraped_at=utcnow(),
+            origin="eprocure.gov.in",
+            search_mode="awarded",
+            search_fields='{"fromDate": "01/01/2026", "tenderStatus": "6"}',
+            listing_page=2,
+            listing_serial=14,
+            scrape_job_id=7,
+        )
+    html = TestClient(create_app(path)).get("/award?tender_id=LARGE&bid=1").text
+
+    assert "Where this came from" in html
+    assert "<dd>eprocure.gov.in</dd>" in html
+    assert SEARCH_PAGE_URL.replace("&", "&amp;") in html
+    assert "Awarded (AOC)" in html
+    assert "fromDate=01/01/2026, tenderStatus=6 (AOC)" in html
+    assert "<dd>2</dd>" in html
+    assert "<dd>14</dd>" in html
+    assert '<a href="/jobs/7">7</a>' in html
+
+
+def test_award_page_says_when_the_source_was_not_recorded(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    _seed(path, json_path="")
+    client = TestClient(create_app(path))
+    with session(engine(path)) as current:
+        upsert_tender(current, tender_id="LARGE", scraped_at=utcnow(), origin="eprocure.gov.in")
+    older = client.get("/award?tender_id=LARGE&bid=1").text
+    with session(engine(path)) as current:
+        upsert_tender(current, tender_id="LARGE", scraped_at=utcnow(), origin="manual")
+    typed = client.get("/award?tender_id=LARGE&bid=1").text
+
+    assert "<dd>eprocure.gov.in</dd>" in older
+    assert "<dd>Not recorded</dd>" in older
+    assert "Typed by hand on the Add a tender page." in typed
+
+
+def test_award_page_shows_where_the_model_found_the_address(tmp_path):
+    from pipeline_core.models import Vendor
+    from pipeline_core.queries import mark_enriched, record_llm_run
+    from sqlalchemy import select
+
+    path = tmp_path / "pipeline.sqlite3"
+    _seed(path, json_path="")
+    with session(engine(path)) as current:
+        vendor_id = current.scalar(select(Vendor.vendor_id).where(Vendor.name_raw == "Large Electricals"))
+        run_id = record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="test-model",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json='{"email": "found@co.example", "source": "https://co.example/about"}',
+            status="ok",
+            job_id=9,
+        )
+        mark_enriched(
+            current,
+            vendor_id,
+            email="found@co.example",
+            phone=None,
+            source_url="https://co.example/about",
+            llm_run_id=run_id,
+        )
+        record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="test-model",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json='{"email": "rfi@ord.gov.in", "phone": "+918043867273,6957"}',
+            status="ok",
+            job_id=9,
+        )
+    html = TestClient(create_app(path)).get("/award?tender_id=LARGE&bid=1").text
+
+    assert "found at https://co.example/about" in html
+    assert 'href="/jobs/9"' in html
+    assert "Not kept:" in html
+    assert "rfi@ord.gov.in (government or buyer address)" in html
+    assert "+918043867273,6957 (not a phone number)" in html
+
+
 def test_row_links_to_the_award(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path, json_path="")

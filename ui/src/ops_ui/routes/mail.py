@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
 from pipeline_core.db import engine, session
-from pipeline_core.queries import ADDRESS_ALL, expand_targets, ordered_contacts, outreach_targets
+from pipeline_core.queries import mail_messages, ordered_contacts
 
 from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
@@ -306,32 +306,39 @@ def _render(
                 "sender_email": letter.sender_email,
             }
         with session(bind) as current:
-            unsent = list(outreach_targets(current))
-            everyone = list(outreach_targets(current, include_sent=True))
-        waiting = len(unsent)
-        queue = everyone if include_sent else unsent
-        sent_keys = {(person.vendor_id, person.tender_id) for person in everyone} - {
-            (person.vendor_id, person.tender_id) for person in unsent
-        }
-        if awards:
-            wanted = set(awards)
-            mailable = [
-                person for person in queue if (person.vendor_id, person.tender_id) in wanted
-            ]
-            already = len(wanted & sent_keys)
-            with session(bind) as current:
-                for person in mailable:
+            unsent = list(mail_messages(current))
+            waiting = len(unsent)
+            if awards:
+                messages = list(
+                    mail_messages(current, include_sent=include_sent, awards=awards)
+                )
+                unsent_pairs = {(person.vendor_id, person.tender_id) for person in unsent}
+                again_pairs = {
+                    (person.vendor_id, person.tender_id)
+                    for person in mail_messages(current, include_sent=True, awards=awards)
+                }
+                already = len(again_pairs - unsent_pairs)
+                seen: set[tuple[int, str]] = set()
+                mailable = []
+                for person in messages:
+                    pair = (person.vendor_id, person.tender_id)
+                    if pair not in seen:
+                        seen.add(pair)
+                        mailable.append(person)
+                    source = ""
                     for row in ordered_contacts(current, person.vendor_id, person.tender_id):
-                        addresses.append(
-                            {
-                                "contact_id": row.contact_id,
-                                "company": person.company,
-                                "value": row.value,
-                                "source": row.source,
-                                "valid": bool(row.valid),
-                            }
-                        )
-                message_count = len(expand_targets(current, mailable, ADDRESS_ALL))
+                        if row.value.casefold() == person.email.casefold():
+                            source = row.source
+                            break
+                    addresses.append(
+                        {
+                            "company": person.company,
+                            "value": person.email,
+                            "source": source or "email",
+                            "valid": True,
+                        }
+                    )
+                message_count = len(messages)
         sample_company = mailable[0].company if mailable else "Example Company"
         sample_title = mailable[0].title if mailable else ""
         sample_date = mailable[0].contract_date if mailable else ""

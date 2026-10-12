@@ -6,6 +6,8 @@ import pytest
 
 from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.models import (
+    CONTACT_MODEL,
+    CONTACT_TYPED,
     OUTREACH_FAILED,
     OUTREACH_SENT,
     SOURCE_BIDEASY,
@@ -15,8 +17,10 @@ from pipeline_core.models import (
     STATUS_NOT_FOUND,
     STATUS_PENDING,
     Award,
+    LlmRun,
     Tender,
     Vendor,
+    VendorContact,
 )
 from pipeline_core.queries import (
     known_tender_ids,
@@ -24,6 +28,7 @@ from pipeline_core.queries import (
     mark_failed,
     outreach_targets,
     pending_vendors,
+    recheck_model_contacts,
     record_llm_run,
     record_outreach,
     replace_awards,
@@ -210,6 +215,114 @@ def test_mark_enriched_blank_strings_count_as_not_found(bind):
         assert mark_enriched(s, vendor_id, email="   ", phone="") == STATUS_NOT_FOUND
     with session(bind) as s:
         assert s.get(Vendor, vendor_id).email is None
+
+
+def test_usable_contact_keeps_a_company_address_and_drops_the_rest():
+    from pipeline_core.emailcheck import is_buyer_email, usable_contact
+
+    assert is_buyer_email("rfi@ord.gov.in")
+    assert is_buyer_email("storesoffice@vnit.ac.in")
+    assert not is_buyer_email("hi@kanta.example")
+    kept = usable_contact("hi@kanta.example", "9876543210")
+    assert (kept.email, kept.phone, kept.dropped) == ("hi@kanta.example", "9876543210", ())
+    dropped = usable_contact("rfi@ord.gov.in", "+918043867273,6957")
+    assert dropped.email is None
+    assert dropped.phone is None
+    assert "government or buyer address" in dropped.dropped[0]
+    assert "not a phone number" in dropped.dropped[1]
+    assert usable_contact("not-an-email", None).dropped == ("not-an-email (not an email address)",)
+
+
+def test_mark_enriched_stores_only_what_can_be_used(bind):
+    with session(bind) as current:
+        vendor_id = upsert_vendor(current, name_raw="Ord Supplies")
+        run_id = record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="test",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json="{}",
+            status="ok",
+            job_id=4,
+        )
+        assert (
+            mark_enriched(
+                current,
+                vendor_id,
+                email="rfi@ord.gov.in",
+                phone="9876543210",
+                source_url="https://aweil.in",
+                llm_run_id=run_id,
+            )
+            == STATUS_DONE
+        )
+        vendor = current.get(Vendor, vendor_id)
+        assert vendor.email is None
+        assert vendor.phone == "9876543210"
+        row = current.query(VendorContact).one()
+        assert row.channel == "phone"
+        assert row.source_url == "https://aweil.in"
+        assert row.llm_run_id == run_id
+        assert current.get(LlmRun, run_id).job_id == 4
+
+
+def test_recheck_reports_then_fixes_model_answers_and_leaves_typed_ones(bind):
+    with session(bind) as current:
+        model_id = upsert_vendor(current, name_raw="Model Gov")
+        typed_id = upsert_vendor(current, name_raw="Typed Gov")
+        for vendor_id, origin, email, phone in (
+            (model_id, CONTACT_MODEL, "rfi@ord.gov.in", "+918043867273,6957"),
+            (typed_id, CONTACT_TYPED, "boss@gov.in", "9876543210"),
+        ):
+            vendor = current.get(Vendor, vendor_id)
+            vendor.email = email
+            vendor.phone = phone
+            vendor.enrichment_status = STATUS_DONE
+            vendor.contact_origin = origin
+            current.add(
+                VendorContact(
+                    vendor_id=vendor_id,
+                    channel="email",
+                    value=email,
+                    source=origin,
+                    valid=1,
+                )
+            )
+        preview = recheck_model_contacts(current)
+        assert [row.vendor_id for row in preview] == [model_id]
+        assert current.get(Vendor, model_id).email == "rfi@ord.gov.in"
+        applied = recheck_model_contacts(current, apply=True)
+        assert applied[0].status_after == STATUS_NOT_FOUND
+        fixed = current.get(Vendor, model_id)
+        assert fixed.email is None
+        assert fixed.phone is None
+        assert fixed.enrichment_status == STATUS_NOT_FOUND
+        assert current.query(VendorContact).filter_by(vendor_id=model_id).count() == 0
+        typed = current.get(Vendor, typed_id)
+        assert typed.email == "boss@gov.in"
+        assert typed.enrichment_status == STATUS_DONE
+
+
+def test_recheck_contacts_command_changes_nothing_until_apply(bind, tmp_path):
+    from pipeline_core.cli import main
+
+    path = tmp_path / "pipeline.sqlite3"
+    with session(bind) as current:
+        vendor_id = upsert_vendor(current, name_raw="Model Gov")
+        vendor = current.get(Vendor, vendor_id)
+        vendor.email = "rfi@ord.gov.in"
+        vendor.enrichment_status = STATUS_DONE
+        vendor.contact_origin = CONTACT_MODEL
+
+    assert main(["--db", str(path), "recheck-contacts"]) == 0
+    with session(engine(path)) as current:
+        assert current.get(Vendor, vendor_id).email == "rfi@ord.gov.in"
+    assert main(["--db", str(path), "recheck-contacts", "--apply"]) == 0
+    with session(engine(path)) as current:
+        fixed = current.get(Vendor, vendor_id)
+        assert fixed.email is None
+        assert fixed.enrichment_status == STATUS_NOT_FOUND
 
 
 def test_record_llm_run_audits_success_and_failure(bind):
@@ -565,7 +678,7 @@ def test_contact_breakdown_separates_mailable_from_phone_only(bind):
 
 def test_outreach_queue_counts_agree_with_outreach_targets(bind):
     """`remaining` must be the send list itself, not a lookalike query."""
-    from pipeline_core.queries import outreach_queue_counts
+    from pipeline_core.queries import mail_messages, outreach_queue_counts
 
     with session(bind) as s:
         first = upsert_vendor(s, name_raw="Alpha Ltd")
@@ -589,7 +702,7 @@ def test_outreach_queue_counts_agree_with_outreach_targets(bind):
         assert counts["mailable"] == 2
         assert counts["already_sent"] == 1
         assert counts["remaining"] == 1
-        assert counts["remaining"] == len(outreach_targets(s))
+        assert counts["remaining"] == len(mail_messages(s))
 
 
 def test_outreach_queue_counts_failed_attempts_stay_in_the_queue(bind):
@@ -615,6 +728,103 @@ def test_outreach_queue_counts_failed_attempts_stay_in_the_queue(bind):
         assert counts["failed_attempts"] == 1
         assert counts["already_sent"] == 0
         assert counts["remaining"] == 1
+
+
+def test_mail_messages_sends_every_valid_address_except_buyer_and_stopped(bind):
+    """PDF clues are mailed. A buyer address and a do-not-mail company are not."""
+    from pipeline_core.models import OUTREACH_SENDING, OUTREACH_TEST
+    from pipeline_core.queries import add_contact, mail_messages, outreach_queue_counts, set_do_not_mail
+
+    with session(bind) as s:
+        pdf_only = upsert_vendor(s, name_raw="Pdf Only Ltd")
+        _award(s, pdf_only, "T-PDF", "2020-01-01T00:00:00+00:00", "Pdf Only Ltd")
+        add_contact(
+            s,
+            pdf_only,
+            channel="email",
+            value="clue@winner.example",
+            source="pdf",
+            tender_id="T-PDF",
+        )
+        both = upsert_vendor(s, name_raw="Two Address Ltd")
+        mark_enriched(s, both, email="model@two.example", phone=None)
+        _award(s, both, "T-TWO", "2020-01-01T00:00:00+00:00", "Two Address Ltd")
+        add_contact(
+            s,
+            both,
+            channel="email",
+            value="clue@two.example",
+            source="pdf",
+            tender_id="T-TWO",
+        )
+        buyer = upsert_vendor(s, name_raw="Buyer Mail Ltd")
+        _award(s, buyer, "T-BUY", "2020-01-01T00:00:00+00:00", "Buyer Mail Ltd")
+        add_contact(
+            s,
+            buyer,
+            channel="email",
+            value="rfi@ord.gov.in",
+            source="model",
+        )
+        stopped = upsert_vendor(s, name_raw="Stopped Ltd")
+        mark_enriched(s, stopped, email="hi@stopped.example", phone=None)
+        _award(s, stopped, "T-STOP", "2020-01-01T00:00:00+00:00", "Stopped Ltd")
+        set_do_not_mail(s, stopped, stopped=True)
+
+    with session(bind) as s:
+        assert [(m.tender_id, m.email) for m in mail_messages(s)] == [
+            ("T-PDF", "clue@winner.example"),
+            ("T-TWO", "clue@two.example"),
+            ("T-TWO", "model@two.example"),
+        ]
+        record_outreach(
+            s,
+            vendor_id=both,
+            tender_id="T-TWO",
+            email="model@two.example",
+            subject="Enquiry",
+            transport="gmail",
+            status=OUTREACH_SENT,
+        )
+
+    with session(bind) as s:
+        assert [(m.tender_id, m.email) for m in mail_messages(s) if m.tender_id == "T-TWO"] == [
+            ("T-TWO", "clue@two.example")
+        ]
+        again = [
+            m.email
+            for m in mail_messages(s, include_sent=True)
+            if m.tender_id == "T-TWO"
+        ]
+        assert again == ["clue@two.example", "model@two.example"]
+        record_outreach(
+            s,
+            vendor_id=pdf_only,
+            tender_id="T-PDF",
+            email="clue@winner.example",
+            subject="Enquiry",
+            transport="gmail",
+            status=OUTREACH_SENDING,
+        )
+        record_outreach(
+            s,
+            vendor_id=both,
+            tender_id="T-TWO",
+            email="clue@two.example",
+            subject="Enquiry",
+            transport="gmail",
+            status=OUTREACH_TEST,
+            error="redirected to me@mine.example",
+        )
+
+    with session(bind) as s:
+        queued = [(m.tender_id, m.email) for m in mail_messages(s)]
+        assert ("T-PDF", "clue@winner.example") not in queued
+        assert ("T-TWO", "clue@two.example") in queued
+        assert ("T-STOP", "hi@stopped.example") not in [
+            (m.tender_id, m.email) for m in mail_messages(s, include_sent=True)
+        ]
+        assert outreach_queue_counts(s)["failed_attempts"] == 0
 
 
 def test_pipeline_funnel_reports_every_stage(bind):

@@ -7,12 +7,22 @@ import pytest
 from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.emailcheck import is_email
 from pipeline_core.manual import NeedsAttach, WinnerInput, save_manual_tender
-from pipeline_core.models import CONTACT_MODEL, CONTACT_TYPED, SOURCE_MANUAL, STATUS_DONE, Vendor
+from pipeline_core.models import (
+    CONTACT_MODEL,
+    CONTACT_TYPED,
+    ORIGIN_MANUAL,
+    SOURCE_MANUAL,
+    STATUS_DONE,
+    Tender,
+    Vendor,
+)
 from pipeline_core.queries import (
     ContactError,
     mark_enriched,
     set_typed_contact,
+    upsert_tender,
     upsert_vendor,
+    utcnow,
 )
 
 
@@ -42,6 +52,55 @@ def test_a_new_company_is_manual_and_has_no_contact(bind):
     assert vendor.source == SOURCE_MANUAL
     assert vendor.email is None
     assert vendor.enrichment_status == "pending"
+
+
+def test_a_typed_tender_is_manual_with_no_portal_search(bind):
+    """Typing over a scraped id makes the row the person's, so the portal search goes."""
+    with session(bind) as current:
+        upsert_tender(
+            current,
+            tender_id="2026_X_1",
+            scraped_at=utcnow(),
+            origin="eprocure.gov.in",
+            search_mode="awarded",
+            search_fields='{"tenderStatus": "6"}',
+            listing_page=2,
+            listing_serial=14,
+            scrape_job_id=3,
+        )
+        fresh = save_manual_tender(
+            current,
+            tender_id="",
+            title="New hand job",
+            organisation="Works dept",
+            status="AOC",
+            contract_date="",
+            contract_value="",
+            winners=[WinnerInput(name="Fresh Electricals", bid_number="1")],
+            attach=False,
+        )
+        save_manual_tender(
+            current,
+            tender_id="2026_X_1",
+            title="Typed over",
+            organisation="Works dept",
+            status="AOC",
+            contract_date="",
+            contract_value="",
+            winners=[WinnerInput(name="Other Electricals", bid_number="1")],
+            attach=False,
+        )
+        rows = [current.get(Tender, fresh), current.get(Tender, "2026_X_1")]
+
+        for tender in rows:
+            assert tender.origin == ORIGIN_MANUAL
+            assert (
+                tender.search_mode,
+                tender.search_fields,
+                tender.listing_page,
+                tender.listing_serial,
+                tender.scrape_job_id,
+            ) == (None, None, None, None, None)
 
 
 def test_a_known_name_asks_before_attaching_and_keeps_the_email(bind):

@@ -20,6 +20,7 @@ from .queries import (
     outreach_breakdown,
     outreach_queue_counts,
     pipeline_funnel,
+    recheck_model_contacts,
 )
 
 
@@ -297,6 +298,34 @@ def cmd_import_xlsx(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_recheck_contacts(args: argparse.Namespace) -> int:
+    """Drop saved model answers the address rule would not keep. Dry run unless --apply."""
+    path = _target(args)
+    if not path.is_file():
+        print(f"{path} does not exist - run: pipeline-db init", file=sys.stderr)
+        return 1
+
+    with session(engine(path)) as current:
+        rows = recheck_model_contacts(current, apply=args.apply)
+        if not args.apply:
+            current.rollback()
+
+    if not rows:
+        print("Every saved model answer passes the address rule. Nothing to do.")
+        return 0
+    verb = "Changed" if args.apply else "Would change"
+    print(f"{verb} {len(rows)} company(ies):")
+    for row in rows:
+        print(f"  {row.vendor_id:>5}  {row.name}")
+        for item in row.dropped:
+            print(f"         drop {item}")
+        if row.status_after != row.status_before:
+            print(f"         status {row.status_before} -> {row.status_after}")
+    if not args.apply:
+        print("\nDry run. Nothing was changed. Run again with --apply to make these changes.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pipeline-db",
@@ -348,6 +377,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Report what would change, write nothing"
     )
     imp.set_defaults(func=cmd_import_xlsx)
+
+    recheck = sub.add_parser(
+        "recheck-contacts",
+        help="Drop saved model answers that are government addresses or bad phones",
+    )
+    recheck.add_argument(
+        "--apply", action="store_true", help="Make the changes (default: report only)"
+    )
+    recheck.set_defaults(func=cmd_recheck_contacts)
 
     return parser
 

@@ -11,6 +11,7 @@ from pipeline_core.manual import NeedsAttach, WinnerInput, save_manual_tender
 from pipeline_core.queries import (
     ContactError,
     classify_selection,
+    set_do_not_mail,
     set_typed_contact,
 )
 
@@ -62,6 +63,27 @@ async def post_contact(request: Request, vendor_id: int):
                 vendor_id,
                 email=str(form.get("email") or ""),
                 phone=str(form.get("phone") or ""),
+            )
+    except ContactError as exc:
+        return Response(str(exc), status_code=400, media_type="text/plain")
+    return RedirectResponse(back, status_code=303)
+
+
+@router.post("/vendor/{vendor_id}/do-not-mail")
+async def post_do_not_mail(request: Request, vendor_id: int):
+    path = database_path(request)
+    snapshot = load_home(path)
+    if not snapshot.ready:
+        return Response(snapshot.message, status_code=404, media_type="text/plain")
+    form = await request.form()
+    back = str(form.get("back") or "/")
+    ensure_schema(engine(path))
+    try:
+        with session(engine(path)) as current:
+            set_do_not_mail(
+                current,
+                vendor_id,
+                stopped=str(form.get("do_not_mail") or "") in {"1", "on", "true", "yes"},
             )
     except ContactError as exc:
         return Response(str(exc), status_code=400, media_type="text/plain")

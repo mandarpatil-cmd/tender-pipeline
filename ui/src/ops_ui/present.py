@@ -43,6 +43,11 @@ STAGE_COLUMNS: dict[str, tuple[str, ...]] = {
         "pdf_phone",
         "source",
         "scraped_at",
+        "origin",
+        "search_mode",
+        "listing_page",
+        "listing_serial",
+        "scrape_job_id",
     ),
     "enrich": (
         "name_raw",
@@ -56,6 +61,8 @@ STAGE_COLUMNS: dict[str, tuple[str, ...]] = {
         "enrichment_status",
         "email",
         "phone",
+        "found_at",
+        "lookups",
         "pdf_email",
         "pdf_phone",
     ),
@@ -265,12 +272,12 @@ def stage_query(stage: str, params) -> AwardQuery:
         chosen = query.enrichment_status if len(query.enrichment_status) == 1 else ("pending",)
         query = replace(query, enrichment_status=chosen)
     elif stage == "mail":
-        outreach = query.outreach_status if query.outreach_status in {"sent", "failed", "none"} else "none"
-        query = replace(
-            query,
-            outreach_status=outreach,
-            mailable="yes" if outreach == "none" else "",
+        outreach = (
+            query.outreach_status
+            if query.outreach_status in {"sent", "failed", "test", "none", "do_not_mail"}
+            else "none"
         )
+        query = replace(query, outreach_status=outreach)
     allowed = tuple(key for key in STAGE_COLUMNS[stage] if key not in FILE_COLUMNS)
     if query.sort not in allowed:
         query = replace(query, sort="tender_id", direction="asc")

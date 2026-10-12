@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import inspect
 
 from pipeline_core.db import drop_all, engine, ensure_schema, session, table_counts
-from pipeline_core.models import TABLES, Vendor
+from pipeline_core.models import TABLES, Tender, Vendor
 
 # The scraper's hand-rolled DDL, exactly as it shipped: five reserved columns
 # that nothing ever wrote, no `source`, and no `outreach` table.
@@ -99,6 +99,95 @@ def test_ensure_schema_migrates_the_legacy_database(tmp_path):
         assert vendor.name_raw == "Kanta enterprises"
         assert vendor.enrichment_status == "pending"
         assert vendor.source is None
+
+
+def test_adding_origin_labels_old_tenders_once(tmp_path):
+    """Old rows get a best-guess origin. The rest of the source stays unknown."""
+    path = tmp_path / "aoc.sqlite3"
+    _legacy_db(path)
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO tenders (tender_id, scraped_at) VALUES (?, '2026-10-09T00:00:00+00:00')",
+        [("2026_SVNIT_919473_1",), ("MANUAL-AB12CD34",)],
+    )
+    conn.commit()
+    conn.close()
+    bind = engine(path)
+
+    report = ensure_schema(bind)
+
+    assert "tenders.origin" in report.added_columns
+    assert "tenders.listing_serial" in report.added_columns
+    with session(bind) as current:
+        portal = current.get(Tender, "2026_SVNIT_919473_1")
+        typed = current.get(Tender, "MANUAL-AB12CD34")
+        assert portal.origin == "eprocure.gov.in"
+        assert typed.origin == "manual"
+        assert portal.search_mode is None
+        assert portal.listing_page is None
+        assert portal.scrape_job_id is None
+        portal.origin = None
+
+    ensure_schema(bind)
+    with session(bind) as current:
+        assert current.get(Tender, "2026_SVNIT_919473_1").origin is None
+
+
+def test_adding_source_url_links_old_model_contacts_once(tmp_path):
+    """Addresses saved before the source columns existed are linked to their answer."""
+    from pipeline_core.db import dispose_engines
+    from pipeline_core.models import VendorContact
+    from pipeline_core.queries import record_llm_run, upsert_vendor
+
+    path = tmp_path / "fresh.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        vendor_id = upsert_vendor(current, name_raw="Traced Ltd")
+        run_id = record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="test",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json=(
+                '{"email": "found@co.example", "phone": null, '
+                '"source": "https://co.example/about"}'
+            ),
+            status="ok",
+        )
+        current.add(
+            VendorContact(
+                vendor_id=vendor_id,
+                channel="email",
+                value="found@co.example",
+                source="model",
+                valid=1,
+            )
+        )
+    dispose_engines()
+    connection = sqlite3.connect(path)
+    connection.execute("ALTER TABLE vendor_contacts DROP COLUMN source_url")
+    connection.execute("ALTER TABLE vendor_contacts DROP COLUMN llm_run_id")
+    connection.execute("ALTER TABLE llm_runs DROP COLUMN job_id")
+    connection.commit()
+    connection.close()
+
+    bind = engine(path)
+    report = ensure_schema(bind)
+
+    assert "vendor_contacts.source_url" in report.added_columns
+    assert "llm_runs.job_id" in report.added_columns
+    with session(bind) as current:
+        row = current.query(VendorContact).one()
+        assert row.source_url == "https://co.example/about"
+        assert row.llm_run_id == run_id
+        row.llm_run_id = None
+        row.source_url = None
+
+    assert "vendor_contacts.source_url" not in ensure_schema(bind).added_columns
+    with session(bind) as current:
+        assert current.query(VendorContact).one().source_url is None
 
 
 def test_ensure_schema_creates_missing_indexes_on_existing_tables(tmp_path):

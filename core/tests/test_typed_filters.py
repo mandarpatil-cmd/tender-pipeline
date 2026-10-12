@@ -305,7 +305,7 @@ def test_mail_filters_follow_email_and_attempt_status(bind):
         )
         current.get(Outreach, later).sent_at = "2026-06-01T00:00:00+00:00"
 
-    assert _ids(bind, mailable="yes", outreach_status="none") == ["READY"]
+    assert _ids(bind, mailable="yes", outreach_status="none") == ["FAIL", "READY"]
     assert _ids(bind, outreach_status="sent") == ["SENT"]
     assert _ids(bind, outreach_status="failed") == ["FAIL"]
     assert "PHONE" not in _ids(bind, mailable="yes")

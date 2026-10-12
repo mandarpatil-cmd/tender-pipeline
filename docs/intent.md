@@ -80,8 +80,7 @@ per vendor, with that vendor's tenders aggregated, matching today's
 GSTIN and the document filenames are read from the stored tender files, not
 from a database column.
 
-**FR-103.** Evidence is visually distinct from the contact. The UI never offers
-to mail a `pdf_email`.
+**FR-103.** Evidence is visually distinct from the contact. A valid PDF email can be mailed, and it is offered first. A government or buyer address is not mailed.
 
 **FR-104.** Every column is filterable: free text for names and titles, a picker
 for `enrichment_status`, `source`, `outreach_status` and tender `status`, a date
@@ -189,15 +188,13 @@ estimated duration.
 has an address, not already successfully sent to — comes from the pipeline's
 existing definition of the queue. The UI does not write its own.
 
-**FR-503.** A vendor already sent to is excluded from every later send, bulk or
-single. Each attempt is recorded immediately, so a crash or a cancel mid-batch
-cannot cause a re-send. A rejected address is logged and the batch continues. A
-failed attempt can be retried, one row or every failure in the current view.
+**FR-503.** An address already sent, or one recorded as sending, is excluded from every later send. A different address for the same company and tender stays eligible. Each attempt is recorded before the next recipient, so a crash or a cancel mid-batch cannot cause a re-send of an address already handed to the mailbox. A rejected address is logged and the batch continues. A failed attempt can be retried.
 
 **FR-504.** The rendered subject and body can be previewed without sending.
 A preflight sends one message to the operator's own mailbox and is not recorded
-as outreach. The operator can redirect every message to their own address; the
-UI warns that this still marks the real vendor as done.
+as outreach. The operator can redirect every message to their own address. That
+delivery is recorded as a test, and the company stays eligible for a real send.
+The UI says so.
 
 **FR-505.** A live send is refused while the pitch still contains its
 placeholder, or while the sender name and organisation are unset. Previews
@@ -207,9 +204,9 @@ still work. The UI says why, and what to fix.
 credential is reported before the run starts. A delay between sends is
 enforced and cannot be set below a safe floor.
 
-**FR-507.** Every attempt is visible: vendor, address actually used, subject,
-transport, status, error, timestamp. The unsubscribe footer cannot be removed
-from the UI.
+**FR-507.** Every attempt is visible: vendor, the company address, subject,
+transport, status, error, timestamp. The closing line cannot be removed
+from the letter.
 
 ---
 

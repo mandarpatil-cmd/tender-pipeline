@@ -169,10 +169,21 @@ def ensure_schema(bind: Engine | None = None) -> SchemaReport:
             index.create(eng, checkfirst=True)
             report.created_indexes.append(index.name or "<unnamed>")
 
-    from .queries import backfill_vendor_contacts
+    from .queries import (
+        backfill_model_contact_sources,
+        backfill_tender_origin,
+        backfill_vendor_contacts,
+    )
 
     with session(eng) as current:
+        if "tenders.origin" in report.added_columns:
+            backfill_tender_origin(current)
         backfill_vendor_contacts(current)
+        if (
+            "vendor_contacts.source_url" in report.added_columns
+            or "vendor_contacts" in report.created_tables
+        ):
+            backfill_model_contact_sources(current)
     return report
 
 

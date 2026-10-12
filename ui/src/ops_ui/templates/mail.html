@@ -28,7 +28,7 @@
 <p class="meta"><a href="{{ stage_path }}">Change the list</a></p>
 <h2>The letter</h2>
 {% if mailable %}
-<p class="meta">Filled in for {{ sample_company }}. Send the default uses the saved letter. Change some phrases applies to this send only. The unsubscribe line at the end is added to every email and cannot be removed.</p>
+<p class="meta">Filled in for {{ sample_company }}. Send the default uses the saved letter. Change some phrases applies to this send only. The closing line at the end is added to every email and cannot be removed.</p>
 <p class="cost">Subject: {{ sample_subject }}</p>
 <p class="cost">Attachments: {% if files %}{{ files | map(attribute='name') | join(', ') }}{% else %}none{% endif %}</p>
 <pre>{{ sample_body }}</pre>
@@ -88,7 +88,7 @@
       <input name="redirect_to" value="{{ redirect_to }}" placeholder="leave blank to use each address">
     </label>
   </div>
-  <p class="warn">If that address is filled in, every message goes there, and each company is still marked sent.</p>
+  <p class="warn">If that address is filled in, every message goes there. The company stays on the list to send.</p>
   <label class="check"><input type="checkbox" name="send_again" value="1" {% if include_sent %}checked{% endif %}> Send again to awards that were already sent</label>
   <label class="check"><input type="checkbox" name="send" value="1"> Send for real</label>
   <p class="meta">

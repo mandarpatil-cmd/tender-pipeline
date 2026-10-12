@@ -18,14 +18,17 @@ from sqlalchemy.orm import Session
 from .loose import loose_date
 from .money import format_amount, parse_money
 from .models import (
+    CONTACT_MODEL,
     ENRICHMENT_STATUSES,
     OUTREACH_FAILED,
     OUTREACH_SENT,
+    OUTREACH_TEST,
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_NOT_FOUND,
     STATUS_PENDING,
     Award,
+    LlmRun,
     Outreach,
     Tender,
     Vendor,
@@ -84,6 +87,11 @@ COLUMNS: tuple[tuple[str, str, str, bool], ...] = (
     ("contract_value", "Contract value", "Tender", False),
     ("contract_currency", "Contract currency", "Tender", False),
     ("scraped_at", "Scraped", "Tender", False),
+    ("origin", "Origin", "Tender", False),
+    ("search_mode", "Portal search", "Tender", False),
+    ("listing_page", "Page", "Tender", False),
+    ("listing_serial", "S.No", "Tender", False),
+    ("scrape_job_id", "Run", "Tender", False),
     ("bid_number", "Bid", "Award", False),
     ("rank", "Rank", "Award", False),
     ("quoted_value", "Quoted", "Award", False),
@@ -105,6 +113,8 @@ COLUMNS: tuple[tuple[str, str, str, bool], ...] = (
     ("phone", "Phone", "Contact", False),
     ("enrichment_status", "Enrichment", "Contact", False),
     ("enriched_at", "Enriched", "Contact", False),
+    ("found_at", "Found at", "Contact", False),
+    ("lookups", "Lookups", "Contact", False),
     ("outreach_status", "Outreach", "Outreach", False),
     ("last_attempt_at", "Last attempt", "Outreach", False),
     ("attempts", "Attempts", "Outreach", False),
@@ -185,7 +195,8 @@ class AwardQuery:
         enrichment = _status_set(self.enrichment_status)
         outreach = (
             self.outreach_status
-            if self.outreach_status in {OUTREACH_SENT, OUTREACH_FAILED, "none"}
+            if self.outreach_status
+            in {OUTREACH_SENT, OUTREACH_FAILED, OUTREACH_TEST, "none", "do_not_mail"}
             else ""
         )
         mailable = self.mailable if self.mailable in {"yes", "no"} else ""
@@ -292,7 +303,7 @@ def choices(session: Session) -> dict[str, list[str]]:
         "source": source,
         "state": [*INDIA_STATES, *sorted(stored, key=str.casefold)],
         "enrichment_status": list(ENRICHMENT_STATUSES),
-        "outreach_status": [OUTREACH_SENT, OUTREACH_FAILED, "none"],
+        "outreach_status": [OUTREACH_SENT, OUTREACH_FAILED, OUTREACH_TEST, "do_not_mail", "none"],
     }
 
 
@@ -444,6 +455,31 @@ def _attempt_total():
     return named + covered
 
 
+def _found_at():
+    """The page the company's newest stored model answer names. The model's claim."""
+    return (
+        select(VendorContact.source_url)
+        .where(
+            VendorContact.vendor_id == Vendor.vendor_id,
+            VendorContact.source == CONTACT_MODEL,
+            VendorContact.source_url.is_not(None),
+        )
+        .order_by(VendorContact.contact_id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+
+
+def _lookups():
+    """Model calls made for this company, paid or failed. Repeat spend shows here."""
+    return (
+        select(func.count())
+        .select_from(LlmRun)
+        .where(LlmRun.vendor_id == Vendor.vendor_id)
+        .scalar_subquery()
+    )
+
+
 def _row_columns(specific, legacy) -> dict[str, Any]:
     return {
         "tender_id": Tender.tender_id,
@@ -454,6 +490,11 @@ def _row_columns(specific, legacy) -> dict[str, Any]:
         "contract_value": Tender.contract_value,
         "contract_currency": Tender.contract_currency,
         "scraped_at": Tender.scraped_at,
+        "origin": Tender.origin,
+        "search_mode": Tender.search_mode,
+        "listing_page": Tender.listing_page,
+        "listing_serial": Tender.listing_serial,
+        "scrape_job_id": Tender.scrape_job_id,
         "bid_number": Award.bid_number,
         "rank": Award.rank,
         "quoted_value": Award.quoted_value,
@@ -473,6 +514,8 @@ def _row_columns(specific, legacy) -> dict[str, Any]:
         "phone": Vendor.phone,
         "enrichment_status": Vendor.enrichment_status,
         "enriched_at": Vendor.enriched_at,
+        "found_at": _found_at(),
+        "lookups": _lookups(),
         "outreach_status": _prefer(specific, legacy, "status"),
         "last_attempt_at": _prefer(specific, legacy, "sent_at"),
         "attempts": _attempt_total(),
@@ -515,11 +558,18 @@ def _filtered(statement, query: AwardQuery, specific, legacy):
         statement = statement.where(
             Vendor.enrichment_status.in_(query.enrichment_status)
         )
-    status = _prefer(specific, legacy, "status")
     if query.outreach_status == "none":
-        statement = statement.where(status.is_(None))
+        statement = statement.where(_sendable_award())
+    elif query.outreach_status == "do_not_mail":
+        statement = statement.where(_company_stopped())
+    elif query.outreach_status == OUTREACH_SENT:
+        statement = statement.where(_sent_award_finished())
+    elif query.outreach_status == OUTREACH_FAILED:
+        statement = statement.where(_sendable_with_status(OUTREACH_FAILED))
+    elif query.outreach_status == OUTREACH_TEST:
+        statement = statement.where(_sendable_with_status(OUTREACH_TEST))
     elif query.outreach_status:
-        statement = statement.where(status == query.outreach_status)
+        statement = statement.where(_prefer(specific, legacy, "status") == query.outreach_status)
     if query.source:
         statement = statement.where(Vendor.source == query.source)
     if query.state:
@@ -583,6 +633,30 @@ def _range(statement, column, low, high, *, keep_unparsed: bool = True):
     if keep_unparsed:
         return statement.where(or_(column.is_(None), matched))
     return statement.where(matched)
+
+
+def _sendable_award():
+    from .queries import sendable_award
+
+    return sendable_award()
+
+
+def _company_stopped():
+    from .queries import company_stopped
+
+    return company_stopped()
+
+
+def _sent_award_finished():
+    from .queries import sent_award_finished
+
+    return sent_award_finished()
+
+
+def _sendable_with_status(status: str):
+    from .queries import sendable_with_status
+
+    return sendable_with_status(status)
 
 
 def _has_mail_address():

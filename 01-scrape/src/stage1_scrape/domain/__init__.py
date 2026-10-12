@@ -7,7 +7,7 @@ from .errors import (
     ScraperError,
     SessionExpiredError,
 )
-from .models import BidRow, DocumentLink, ListingRow, NextPage, TenderRecord
+from .models import BidRow, DocumentLink, ListingRow, NextPage, ScrapeSource, TenderRecord
 
 __all__ = [
     "BidRow",
@@ -19,6 +19,7 @@ __all__ = [
     "ListingRow",
     "NextPage",
     "ParseError",
+    "ScrapeSource",
     "ScraperError",
     "SessionExpiredError",
     "TenderRecord",

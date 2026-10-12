@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from stage1_scrape.app.pipeline import scrape_aoc
+from stage1_scrape.app.pipeline import SEARCH_AWARDED, scrape_aoc
 from stage1_scrape.config import DEFAULT_DELAY_SECONDS
 from stage1_scrape.export.vendor_sheet import write_vendor_sheet
 from stage1_scrape.persist.store import Store
@@ -28,6 +28,8 @@ def run_scrape(
     should_stop: "Callable[[], bool] | None" = None,
     ask: "Callable[[Path], str] | None" = None,
     only_aoc: bool = False,
+    search_mode: str = SEARCH_AWARDED,
+    job_id: int | None = None,
 ) -> dict[str, Any]:
     """Scrape AOC records, then export every stored vendor to CSV and Excel.
 
@@ -49,6 +51,8 @@ def run_scrape(
         should_stop=should_stop,
         ask=ask,
         only_aoc=only_aoc,
+        search_mode=search_mode,
+        job_id=job_id,
     )
     store = Store(out_dir)
     csv_path, xlsx_path = write_vendor_sheet(store, out_dir)

@@ -85,8 +85,7 @@ DELAY = 5.0
 
 # None -> each row's real address.
 # "you@company.com" -> redirect EVERY message to you instead. Live testing.
-# The outreach row still records the vendor, so a redirected test send will
-# still mark that vendor as done. Use LIMIT with it.
+# The outreach row is recorded as a test. The company stays on the list to send.
 TO = None
 
 # ====================================================================

@@ -44,7 +44,7 @@ def test_saved_tender_survives_a_failed_next_page(tmp_path, monkeypatch):
             order.append("next")
             raise ScraperError("dns down")
 
-    def save_one(client, listing, store, download_pdfs):
+    def save_one(client, listing, store, download_pdfs, **_kwargs):
         order.append(listing.tender_id)
         return TenderRecord(listing=listing)
 
@@ -80,7 +80,7 @@ def test_no_page_cap_walks_until_the_portal_stops(tmp_path, monkeypatch):
 
     saved: list[str] = []
 
-    def save_one(client, listing, store, download_pdfs):
+    def save_one(client, listing, store, download_pdfs, **_kwargs):
         saved.append(listing.tender_id)
         return TenderRecord(listing=listing)
 
@@ -109,7 +109,7 @@ def test_organisation_search_opens_only_aoc_rows(tmp_path, monkeypatch, caplog):
     """
     saved: list[str] = []
 
-    def save_one(client, listing, store, download_pdfs):
+    def save_one(client, listing, store, download_pdfs, **_kwargs):
         saved.append(listing.tender_id)
         return TenderRecord(listing=listing)
 

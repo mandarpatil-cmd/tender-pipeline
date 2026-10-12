@@ -449,6 +449,95 @@ def test_refresh_reruns_stage_one_and_contract_dates_stay_contract(tmp_path, mon
     assert job is not None and job.state == "done"
 
 
+def test_a_ui_scrape_tells_stage_one_its_search_and_run(tmp_path, monkeypatch):
+    """Every tender this run saves is stamped with the search and the run id."""
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    seen = {}
+
+    def fake(out, **kwargs):
+        seen.update(kwargs)
+        return {"scraped": 0, "vendors": 0}
+
+    monkeypatch.setattr("stage1_scrape.app.run.run_scrape", fake)
+    client = TestClient(create_app(path))
+    response = client.post("/jobs/scrape", data={"search": "awarded"}, follow_redirects=False)
+
+    assert response.status_code == 303
+    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    for _ in range(50):
+        if seen:
+            break
+        threading.Event().wait(0.05)
+    assert seen["search_mode"] == "awarded"
+    assert seen["job_id"] == job_id
+
+
+def test_an_enrich_run_tells_stage_two_its_job(tmp_path, monkeypatch):
+    from pipeline_core.db import session
+    from pipeline_core.queries import upsert_vendor
+
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        upsert_vendor(current, name_raw="Waiting Ltd")
+    seen = {}
+
+    class Summary:
+        def render(self) -> str:
+            return "1 vendor(s) attempted: 0 done, 0 not found, 0 failed"
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return Summary()
+
+    monkeypatch.setattr("stage2_enrich.runner.enrich_pending", fake)
+    monkeypatch.setattr("stage2_enrich.settings.require_env", lambda: None)
+    monkeypatch.setattr("stage2_enrich.settings.model", lambda: "test-model")
+    client = TestClient(create_app(path))
+    response = client.post(
+        "/jobs/enrich",
+        data={"limit": "1", "delay": "0", "source": "scrape"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    for _ in range(50):
+        if seen:
+            break
+        threading.Event().wait(0.05)
+    assert seen["job_id"] == job_id
+
+
+def test_download_pdfs_tells_stage_one_its_run(tmp_path, monkeypatch):
+    from ops_ui.runs import run_fetch_pdfs
+
+    seen = {}
+
+    def fake(out, tender_id, **kwargs):
+        seen.update(kwargs, tender_id=tender_id)
+        return {"ok": True, "stopped": False, "message": "Saved clues."}
+
+    class Log:
+        job_id = 12
+        database = tmp_path / "pipeline.sqlite3"
+
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def write(self, message: str) -> None:
+            self.lines.append(message)
+
+    monkeypatch.setattr("stage1_scrape.app.pipeline.fetch_tender_pdfs", fake)
+    log = Log()
+
+    assert run_fetch_pdfs(log, threading.Event(), tender_id="2026_X_1") == 0
+    assert seen["tender_id"] == "2026_X_1"
+    assert seen["job_id"] == 12
+    assert "Saved clues." in log.lines
+
+
 def test_download_pdfs_starts_a_pdf_job(tmp_path, monkeypatch):
     path = tmp_path / "pipeline.sqlite3"
     ensure_schema(engine(path))
@@ -569,6 +658,8 @@ def test_organisation_search_posts_only_that_group(tmp_path, monkeypatch):
         "KeyWord": "",
     }
     job = get_job(path, int(response.headers["location"].rsplit("/", 1)[-1]))
+    assert seen["search_mode"] == "organisation"
+    assert seen["job_id"] == job.job_id
     params = json.loads(job.params_json)
     assert params["organ_label"] == "Ministry of Road Transport and Highways"
     assert params["fromDate"] == ""

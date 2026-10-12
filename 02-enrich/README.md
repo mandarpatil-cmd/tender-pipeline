@@ -26,12 +26,18 @@ vendors WHERE enrichment_status = 'pending'
         ▼
    OpenRouter (LangChain, structured output -> ContactInfo)
         │
-        ├─ email and/or phone  -> vendors.email / .phone, status 'done'
-        ├─ both null           -> status 'not_found'   (never retried)
-        └─ call errored        -> status 'failed'      (safe to retry)
+        ├─ usable email and/or phone -> vendors.email / .phone, status 'done'
+        ├─ nothing usable            -> status 'not_found'   (never retried)
+        └─ call errored              -> status 'failed'      (safe to retry)
         │
-        └─ every call, win or lose, is appended to llm_runs
+        └─ every call, win or lose, is appended to llm_runs, with the raw answer
 ```
+
+"Usable" is `pipeline_core.emailcheck.usable_contact`: a well-formed email that is not
+a government or buyer address (`gov.in`, `nic.in`, the portal, the VNIT letterhead), and
+a phone with at least 10 digits. Anything else is left out of `vendors` and
+`vendor_contacts`, and named in the run's log. The same buyer rule is what stage 1
+uses on PDF clues.
 
 **Each vendor is committed on its own, the moment its answer arrives.** A crash, a rate
 limit, or Ctrl-C at company 300 of 500 costs one call, not the run. Re-running simply
@@ -94,8 +100,11 @@ Searching is billed per result, on top of the model's tokens.
 `settings.WEB_SEARCH_RESULTS` (default 3) caps results per call and is the main
 cost dial; it multiplies across every vendor in the queue.
 
-Each answer also carries the URL it came from, stored in `llm_runs.output_json`, so an
-address can be traced back to where it was found.
+Each answer also carries the URL it came from. It is kept in `llm_runs.output_json` and
+on each stored address as `vendor_contacts.source_url`, next to `llm_run_id`, so an
+address can be traced back to where it was found. The URL is the model's claim and is
+not checked; a `vertexaisearch.cloud.google.com/grounding-api-redirect/...` link is
+Google's search redirect, not the company's page.
 
 Each stage keeps its own `.env`. The scraper's captcha key and the mailer's credentials
 are not read from here.
@@ -110,8 +119,8 @@ three is what stops this stage burning money re-asking questions it already answ
 | Status | Meaning | Retried? |
 | --- | --- | --- |
 | `pending` | not looked at yet | — it *is* the queue |
-| `done` | an email and/or phone was found | no |
-| `not_found` | the call worked; the answer was "nothing public" | **no** — unless the *method* changed (see `RETRY_NOT_FOUND`) |
+| `done` | a usable email and/or phone was found | no |
+| `not_found` | the call worked; the answer was "nothing public", or nothing usable | **no** — unless the *method* changed (see `RETRY_NOT_FOUND`) |
 | `failed` | the call itself errored (timeout, 429, bad shape) | yes, while `RETRY_FAILED = True` (the default) |
 
 A `failed` vendor keeps its blank contact columns, so a retry can fill them.
@@ -126,10 +135,10 @@ A `failed` vendor keeps its blank contact columns, so a retry can fill them.
   reads.
 - **It does not cache per company.** It cannot need to: the queue comes from `vendors`,
   which is unique on `name_norm`, so a company cannot appear twice.
-- **It does not trust `pdf_email`.** Stage 1 reads contacts out of the work order's
-  embedded text layer, not by OCR, and those characters are often already wrong —
-  `acmctechworks0l@` for `acmetechworks01@`. They go into the prompt as a lead to
-  confirm or correct, never straight into `vendors.email`.
+- **It does not trust `pdf_email`.** Stage 1 reads contacts out of the work order by
+  OCR, with the PDF's own text layer as the backup, and those characters are often
+  already wrong — `acmctechworks0l@` for `acmetechworks01@`. They go into the prompt as
+  a lead to confirm or correct, never straight into `vendors.email`.
 
 ---
 

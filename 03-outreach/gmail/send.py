@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import smtplib
-import sys
 from email.message import EmailMessage
 
 from dotenv import load_dotenv
@@ -35,7 +34,7 @@ class GmailTransport:
         user = os.getenv("GMAIL_USER", "").strip()
         password = os.getenv("GMAIL_APP_PASSWORD", "").strip().replace(" ", "")
         if not user or not password:
-            sys.exit(
+            raise GmailError(
                 "Missing GMAIL_USER or GMAIL_APP_PASSWORD in .env\n"
                 "Use a Gmail app password (Google Account → Security → App passwords),\n"
                 "not your normal Google password."

@@ -148,6 +148,8 @@ def test_each_stage_offers_only_its_own_filters(tmp_path):
     assert "Mail these" not in enrich
     assert "Look up contacts" in enrich
     assert "To send" in mail
+    assert "Do not mail" in mail
+    assert "letter" in mail
     assert "Mail these" in mail
     assert 'aria-label="Select rows on this page"' in enrich
     assert 'name="sort"' in enrich
@@ -178,16 +180,18 @@ def test_export_matches_the_filter_and_writes_na_for_blanks(tmp_path):
     master = load_workbook(BytesIO(client.get("/export.xlsx").content))
     sheet = master.active
     assert sheet.max_row == 4
-    assert sheet.max_column == 34
+    assert sheet.max_column == 41
     headers = [cell.value for cell in sheet[1]]
     assert headers[0] == "Tender"
+    assert "Found at" in headers
+    assert "Lookups" in headers
     assert "PDF email" in headers
     assert "GSTIN" in headers
 
     workbook = load_workbook(BytesIO(client.get("/scrape/export.xlsx?q=electrical").content))
     sheet = workbook.active
     assert sheet.max_row == 2
-    assert sheet.max_column == 22
+    assert sheet.max_column == 27
     headers = [cell.value for cell in sheet[1]]
     assert headers[0] == "Tender"
     assert "Contract value" in headers
@@ -283,7 +287,7 @@ def _shown(html: str) -> set[str]:
         ("/enrich?tender_status=Retender", {"SMALL"}),
         ("/mail", set()),
         ("/mail?outreach_status=sent", {"LARGE"}),
-        ("/mail?outreach_status=failed", {"FAIL"}),
+        ("/mail?outreach_status=failed", set()),
         ("/mail?outreach_status=none", set()),
         ("/mail?mailable=no", set()),
     ],

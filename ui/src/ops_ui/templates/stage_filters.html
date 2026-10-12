@@ -101,6 +101,8 @@
       <option value="none" {% if query.outreach_status == 'none' %}selected{% endif %}>To send</option>
       <option value="sent" {% if query.outreach_status == 'sent' %}selected{% endif %}>Sent</option>
       <option value="failed" {% if query.outreach_status == 'failed' %}selected{% endif %}>Failed</option>
+      <option value="test" {% if query.outreach_status == 'test' %}selected{% endif %}>Test</option>
+      <option value="do_not_mail" {% if query.outreach_status == 'do_not_mail' %}selected{% endif %}>Do not mail</option>
     </select>
   </label>
   <label>Organisation

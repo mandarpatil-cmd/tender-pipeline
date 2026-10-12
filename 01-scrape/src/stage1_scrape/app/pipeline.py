@@ -5,11 +5,12 @@ import logging
 import shutil
 import tempfile
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 from stage1_scrape.config import APP_URL, DEFAULT_DELAY_SECONDS, TENDER_STATUS_AOC
 from stage1_scrape.domain.errors import CaptchaError, ParseError, ScraperError
-from stage1_scrape.domain.models import TenderRecord
+from stage1_scrape.domain.models import ScrapeSource, TenderRecord
 from stage1_scrape.parse import (
     find_next_page,
     find_stage_summary_url,
@@ -33,6 +34,23 @@ log = logging.getLogger(__name__)
 
 SEARCH_AWARDED = "awarded"
 SEARCH_ORGANISATION = "organisation"
+SEARCH_TENDER_ID = "tender_id"
+
+
+def search_fields(extra: dict[str, str] | None) -> dict[str, str]:
+    """What the portal was asked, as stored in ``tenders.search_fields``.
+
+    ``submit_search`` always sends ``tenderStatus``: AOC unless ``extra`` says
+    otherwise. Blank fields and the ``0`` that means "no organisation" are left
+    out, so the stored value names only what narrowed the search.
+    """
+    fields = {"tenderStatus": TENDER_STATUS_AOC}
+    for key, value in (extra or {}).items():
+        text = (value or "").strip()
+        if not text or (key == "OrganName" and text == "0"):
+            continue
+        fields[key] = text
+    return fields
 
 
 def search_overrides(
@@ -126,7 +144,7 @@ def iter_listing_pages(
             store.write_debug(f"listing_page_{page_no}_empty.html", html)
             return
         store.write_debug(f"listing_page_{page_no}.html", html)
-        yield page_no, rows
+        yield page_no, [replace(row, page=page_no) for row in rows]
         if max_pages is not None and page_no >= max_pages:
             return
         nxt = find_next_page(html)
@@ -158,6 +176,7 @@ def scrape_one_tender(
     store: Store,
     download_pdfs: bool,
     copy_pdfs_to: Path | None = None,
+    source: ScrapeSource | None = None,
 ) -> TenderRecord:
     status_html = client.get(listing.status_page_url).text
     store.write_debug(f"status_{_slug_id(listing.tender_id)}.html", status_html)
@@ -197,7 +216,7 @@ def scrape_one_tender(
                 copy_pdfs_to.mkdir(parents=True, exist_ok=True)
                 for path in pdf_paths(dest):
                     shutil.copy2(path, copy_pdfs_to / path.name)
-        store.save_tender(record, replace_documents=download_pdfs)
+        store.save_tender(record, replace_documents=download_pdfs, source=source)
     if download_pdfs and record.downloaded_files:
         log.info(
             "Read %s PDF(s) for %s, stored the clues, and deleted the files.",
@@ -226,6 +245,7 @@ def fetch_tender_pdfs(
     delay: float = DEFAULT_DELAY_SECONDS,
     ask: "Callable[[Path], str] | None" = None,
     should_stop: "Callable[[], bool] | None" = None,
+    job_id: int | None = None,
 ) -> dict:
     """Search by tender id, download that tender's PDFs, store the clues.
 
@@ -237,12 +257,16 @@ def fetch_tender_pdfs(
         return {"ok": False, "stopped": True, "message": "Stopped before the search."}
     store = Store(out_dir)
     client = GePNICClient(delay=delay)
+    extra = {"tenderId": wanted}
+    source = ScrapeSource(
+        search_mode=SEARCH_TENDER_ID, search_fields=search_fields(extra), job_id=job_id
+    )
     results_html = _search_with_captcha(
         client,
         store,
         captcha_text=None,
         retries=captcha_retries,
-        extra_fields={"tenderId": wanted},
+        extra_fields=extra,
         captcha_solver=captcha_solver,
         ask=ask,
     )
@@ -258,10 +282,11 @@ def fetch_tender_pdfs(
     with tempfile.TemporaryDirectory(prefix="tender-zip-") as hold:
         record = scrape_one_tender(
             client,
-            match,
+            replace(match, page=1),
             store,
             download_pdfs=True,
             copy_pdfs_to=Path(hold),
+            source=source,
         )
         files = pdf_paths(Path(hold))
         if files:
@@ -296,9 +321,14 @@ def scrape_aoc(
     should_stop: "Callable[[], bool] | None" = None,
     ask: "Callable[[Path], str] | None" = None,
     only_aoc: bool = False,
+    search_mode: str = SEARCH_AWARDED,
+    job_id: int | None = None,
 ) -> list[TenderRecord]:
     store = Store(out_dir)
     client = GePNICClient(delay=delay)
+    source = ScrapeSource(
+        search_mode=search_mode, search_fields=search_fields(extra_fields), job_id=job_id
+    )
     results_html = _search_with_captcha(
         client,
         store,
@@ -327,7 +357,9 @@ def scrape_aoc(
                     log.info("Skipping already-saved %s", listing.tender_id)
                     continue
                 try:
-                    record = scrape_one_tender(client, listing, store, download_pdfs=download_pdfs)
+                    record = scrape_one_tender(
+                        client, listing, store, download_pdfs=download_pdfs, source=source
+                    )
                 except ParseError as exc:
                     log.warning("Tender %s skipped: %s", listing.tender_id, exc)
                     continue

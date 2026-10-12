@@ -1,7 +1,16 @@
+import json
 from pathlib import Path
 
-from stage1_scrape.domain.models import BidRow, ListingRow, TenderRecord
-from stage1_scrape.persist.store import Store, backfill_blank_status
+from pipeline_core.db import session
+from pipeline_core.models import Award, Tender, Vendor
+
+from stage1_scrape.domain.models import BidRow, ListingRow, ScrapeSource, TenderRecord
+from stage1_scrape.persist.store import (
+    Store,
+    backfill_blank_status,
+    listing_status,
+    serial_number,
+)
 
 
 def test_store_roundtrip(tmp_path):
@@ -256,3 +265,109 @@ def test_backfill_copies_json_extracts_once(tmp_path):
             "SELECT filename, emails, gstins FROM tender_documents"
         ).fetchone()
     assert row == ("work-order.pdf", "clue@example.com", "27ABCDE1234F1Z5")
+
+
+def _sourced(page: int | None = 3, **record) -> TenderRecord:
+    listing = ListingRow(
+        serial="25.",
+        tender_id="2026_MoRTH_7_1",
+        title_and_ref="Road works / REF-7",
+        organisation_chain="Ministry of Road Transport and Highways||P2 Delhi - MoRTH",
+        tender_stage="AOC",
+        status="",
+        status_page_url="https://eprocure.gov.in/eprocure/app?sp=S",
+        page=page,
+    )
+    return TenderRecord(listing=listing, **record)
+
+
+_AWARDED_SEARCH = ScrapeSource(
+    search_mode="awarded",
+    search_fields={"tenderStatus": "6", "fromDate": "01/01/2026"},
+    job_id=9,
+)
+
+
+def test_save_tender_records_where_the_tender_came_from(tmp_path):
+    store = Store(tmp_path)
+    store.save_tender(_sourced(), source=_AWARDED_SEARCH)
+
+    with session(store.engine) as current:
+        tender = current.get(Tender, "2026_MoRTH_7_1")
+        assert tender.origin == "eprocure.gov.in"
+        assert tender.search_mode == "awarded"
+        assert json.loads(tender.search_fields) == {"fromDate": "01/01/2026", "tenderStatus": "6"}
+        assert tender.listing_page == 3
+        assert tender.listing_serial == 25
+        assert tender.scrape_job_id == 9
+
+
+def test_a_save_without_a_search_keeps_the_recorded_source(tmp_path):
+    """A reindex re-reads saved HTML. It cannot know the search, so it keeps it."""
+    store = Store(tmp_path)
+    store.save_tender(_sourced(), source=_AWARDED_SEARCH)
+    store.save_tender(_sourced(page=None))
+
+    with session(store.engine) as current:
+        tender = current.get(Tender, "2026_MoRTH_7_1")
+        assert tender.origin == "eprocure.gov.in"
+        assert tender.search_mode == "awarded"
+        assert tender.listing_page == 3
+        assert tender.listing_serial == 25
+        assert tender.scrape_job_id == 9
+
+
+def test_the_last_run_that_saved_a_tender_is_the_one_recorded(tmp_path):
+    store = Store(tmp_path)
+    store.save_tender(_sourced(), source=_AWARDED_SEARCH)
+    terminal = ScrapeSource(search_mode="awarded", search_fields={"tenderStatus": "6"})
+    store.save_tender(_sourced(page=1), source=terminal)
+
+    with session(store.engine) as current:
+        tender = current.get(Tender, "2026_MoRTH_7_1")
+        assert tender.listing_page == 1
+        assert tender.scrape_job_id is None
+        assert json.loads(tender.search_fields) == {"tenderStatus": "6"}
+
+
+def test_award_takes_its_quote_by_bid_number_and_falls_back_to_the_contract_value(tmp_path):
+    awarded = BidRow("1", "77", "Road Builders Pvt Ltd", "", "", "", "", value=None)
+    other_quote = BidRow("1", "76", "Other Co", "", "", "", "", value="1,00,000.00", rank="L2")
+    winning_quote = BidRow(
+        "2", "77", "Road Builders Pvt Ltd", "", "", "", "", value="90,000.50", rank="L1"
+    )
+    record = _sourced(
+        financial_bids=[other_quote, winning_quote],
+        awarded_bids=[awarded],
+        aoc={"Total Contract Value": "INR 95,000.00"},
+    )
+    store = Store(tmp_path)
+    store.save_tender(record)
+
+    with session(store.engine) as current:
+        award = current.query(Award).one()
+        vendor = current.query(Vendor).one()
+        assert award.bid_number == "77"
+        assert award.rank == "L1"
+        assert award.quoted_value == 9000050
+        assert award.awarded_value == 9500000
+        assert award.awarded_currency == "INR"
+        assert award.work_title == "Road works / REF-7"
+        # The buyer's office, read from the organisation chain, not the company's.
+        assert (vendor.city, vendor.state) == ("Delhi", "Delhi")
+
+
+def test_listing_status_uses_the_stage_when_the_cell_is_blank():
+    assert listing_status("", "AOC") == "AOC"
+    assert listing_status(None, " AOC ") == "AOC"
+    assert listing_status("Awarded", "AOC") == "Awarded"
+    assert listing_status("", "") == ""
+
+
+def test_serial_number_reads_the_portal_s_no():
+    assert serial_number("1.") == 1
+    assert serial_number(" 5001. ") == 5001
+    assert serial_number("12") == 12
+    assert serial_number("") is None
+    assert serial_number(None) is None
+    assert serial_number("S.No") is None

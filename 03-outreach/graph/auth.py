@@ -11,6 +11,7 @@ from pathlib import Path
 
 import msal
 from dotenv import load_dotenv
+from transport import TransportError
 
 # This module lives in graph/, so the project root is one level up.
 ROOT = Path(__file__).resolve().parent.parent
@@ -72,7 +73,7 @@ def explain(error_code: str, description: str) -> str:
 def get_token(quiet: bool = False) -> str:
     """Return a Graph access token, prompting for device login only if needed."""
     if not CLIENT_ID or not TENANT_ID:
-        sys.exit(
+        raise TransportError(
             "Missing GRAPH_CLIENT_ID or GRAPH_TENANT_ID in .env\n"
             "Both come from Entra > App registrations > your app > Overview.\n"
             "Add them yourself -- this script only reads them."
@@ -100,7 +101,7 @@ def get_token(quiet: bool = False) -> str:
             desc = flow.get("error_description", str(flow))
             print(f"\nCould not start device flow: {desc}\n")
             print(explain(flow.get("error", ""), desc))
-            sys.exit(1)
+            raise TransportError(desc or "Could not start device flow.")
 
         print("\n" + "=" * 68)
         print(flow["message"])
@@ -116,11 +117,14 @@ def get_token(quiet: bool = False) -> str:
         hint = explain(result.get("error", ""), desc)
         if hint:
             print(hint)
-        sys.exit(1)
+        raise TransportError(desc or "Token request failed.")
 
     return result["access_token"]
 
 
 if __name__ == "__main__":
-    token = get_token()
+    try:
+        token = get_token()
+    except TransportError as exc:
+        sys.exit(str(exc) or 1)
     print(f"\nOK -- got a token ({len(token)} chars). Cached in {CACHE_PATH.name}")

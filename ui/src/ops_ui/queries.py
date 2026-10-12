@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pipeline_core.db import BUSY_TIMEOUT_MS, engine, ensure_schema, session
 from pipeline_core.models import STATUS_PENDING, TABLES, Tender, Vendor
-from pipeline_core.queries import backfill_tender_documents, outreach_targets
+from pipeline_core.queries import backfill_tender_documents, mail_messages
 from sqlalchemy import func, select
 from sqlalchemy.exc import DatabaseError, OperationalError
 
@@ -83,7 +83,7 @@ def load_home(path: Path) -> HomeSnapshot:
                 )
                 or 0
             )
-            to_mail = len(outreach_targets(current))
+            to_mail = len(mail_messages(current))
     except OperationalError as exc:
         return _unread(path, _operational_message(exc))
     except DatabaseError:

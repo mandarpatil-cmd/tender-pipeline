@@ -9,7 +9,16 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from pipeline_core.db import engine, session
 from pipeline_core.detail import award_detail
-from pipeline_core.grid import COLUMNS, FILE_COLUMNS, PAGE_SIZE, award_view, choices
+from pipeline_core.grid import (
+    COLUMNS,
+    FILE_COLUMNS,
+    PAGE_SIZE,
+    award_view,
+    choices,
+    filtered_award_keys,
+)
+from pipeline_core.queries import apply_mail_addresses, mail_messages
+from stage1_scrape.config import SEARCH_PAGE_URL, TENDER_STATUS_LABELS
 
 from ops_ui.deps import database_path
 from ops_ui.evidence import fill_evidence, read_documents
@@ -39,6 +48,11 @@ router = APIRouter()
 
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _COOKIE = 60 * 60 * 24 * 30
+_SEARCH_LABELS = {
+    "awarded": "Awarded (AOC)",
+    "organisation": "One organisation",
+    "tender_id": "One tender id (Download PDFs)",
+}
 
 
 def load_view(path: Path, query, *, page_size: int | None):
@@ -58,6 +72,9 @@ def stage_context(request: Request, path: Path, stage: str) -> dict:
     query = stage_query(stage, request.query_params)
     stage_path = STAGE_PATHS[stage]
     snapshot, view, picked = load_view(path, query, page_size=PAGE_SIZE)
+    if stage == "mail" and view is not None:
+        with session(engine(path)) as current:
+            apply_mail_addresses(current, view.rows)
     keys = STAGE_COLUMNS[stage]
     columns = [
         {"key": key, "evidence": evidence}
@@ -105,7 +122,17 @@ def stage_context(request: Request, path: Path, stage: str) -> dict:
         "contract_to_mode": "" if query.date_to else "any",
         "enrich_cost_text": "",
         "organisations": organisation_choices() if stage == "scrape" else [],
+        "letters": _letters(path, query) if stage == "mail" else 0,
     }
+
+
+def _letters(path: Path, query) -> int:
+    """Letters ``mail_messages`` would send for the awards in this filter."""
+    with session(engine(path)) as current:
+        keys = filtered_award_keys(current, query)
+        if not keys:
+            return 0
+        return len(mail_messages(current, awards=keys))
 
 
 def remember(response: Response, stage: str, query) -> None:
@@ -180,36 +207,46 @@ def award(
             detail = award_detail(current, tender_id, bid)
             if detail is not None:
                 documents = read_documents(current, tender_id)
+                from pipeline_core.models import LlmRun
                 from pipeline_core.queries import ordered_contacts
+                from sqlalchemy import select
 
+                stored = [
+                    *ordered_contacts(
+                        current,
+                        detail.vendor["vendor_id"],
+                        tender_id,
+                        channel="email",
+                    ),
+                    *ordered_contacts(
+                        current,
+                        detail.vendor["vendor_id"],
+                        tender_id,
+                        channel="phone",
+                    ),
+                ]
+                run_ids = [row.llm_run_id for row in stored if row.llm_run_id]
+                jobs = {}
+                if run_ids:
+                    jobs = {
+                        int(run_id): job_id
+                        for run_id, job_id in current.execute(
+                            select(LlmRun.run_id, LlmRun.job_id).where(
+                                LlmRun.run_id.in_(run_ids)
+                            )
+                        )
+                    }
                 contacts = [
                     {
                         "channel": row.channel,
                         "value": row.value,
                         "source": row.source,
                         "valid": bool(row.valid),
+                        "source_url": row.source_url or "",
+                        "job_id": jobs.get(row.llm_run_id),
                     }
-                    for row in ordered_contacts(
-                        current,
-                        detail.vendor["vendor_id"],
-                        tender_id,
-                        channel="email",
-                    )
+                    for row in stored
                 ]
-                contacts.extend(
-                    {
-                        "channel": row.channel,
-                        "value": row.value,
-                        "source": row.source,
-                        "valid": bool(row.valid),
-                    }
-                    for row in ordered_contacts(
-                        current,
-                        detail.vendor["vendor_id"],
-                        tender_id,
-                        channel="phone",
-                    )
-                )
     status = 200 if detail is not None or not snapshot.ready else 404
     return TEMPLATES.TemplateResponse(
         request=request,
@@ -222,6 +259,9 @@ def award(
             "contacts": contacts,
             "email_count": sum(1 for item in contacts if item["channel"] == "email"),
             "back": back_href(back),
+            "portal_search_url": SEARCH_PAGE_URL,
+            "search_labels": _SEARCH_LABELS,
+            "status_labels": TENDER_STATUS_LABELS,
         },
     )
 
@@ -261,6 +301,9 @@ def _stage_export(stage: str, path: Path, request: Request, kind: str) -> Respon
     snapshot, view, _picked = load_view(path, query, page_size=None)
     if not snapshot.ready or view is None:
         return Response(snapshot.message, status_code=404, media_type="text/plain")
+    if stage == "mail":
+        with session(engine(path)) as current:
+            apply_mail_addresses(current, view.rows)
     return _file(view.rows, kind, stage, STAGE_COLUMNS[stage])
 
 

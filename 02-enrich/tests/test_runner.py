@@ -61,7 +61,7 @@ def test_stop_keeps_the_vendor_already_done_and_skips_the_rest():
 
 def test_a_found_contact_is_written_back_to_the_vendor():
     (vendor_id,) = _seed("Kanta Enterprises")
-    chain = FakeChain(ContactInfo(email="hi@kanta.example", phone="+91 712 111"))
+    chain = FakeChain(ContactInfo(email="hi@kanta.example", phone="+91 712 251 1111"))
 
     summary = enrich_pending(chain=chain)
 
@@ -69,7 +69,7 @@ def test_a_found_contact_is_written_back_to_the_vendor():
     with session() as current:
         vendor = current.get(Vendor, vendor_id)
         assert vendor.email == "hi@kanta.example"
-        assert vendor.phone == "+91 712 111"
+        assert vendor.phone == "+91 712 251 1111"
         assert vendor.enrichment_status == STATUS_DONE
         assert vendor.enriched_at
 
@@ -340,3 +340,115 @@ def test_only_source_narrows_the_queue_without_touching_the_rest():
         rows = {v.name_raw: v.enrichment_status for v in current.query(Vendor).all()}
     assert rows["Local Contractor"] == "done"
     assert rows["Imported Ltd"] == "pending"  # never touched, never paid for
+
+
+def test_a_government_email_is_dropped_and_a_real_phone_is_kept():
+    (vendor_id,) = _seed("Ord Supplies")
+    noted: list[str] = []
+
+    summary = enrich_pending(
+        chain=FakeChain(
+            ContactInfo(
+                email="rfi@ord.gov.in",
+                phone="9876543210",
+                source="https://aweil.in",
+            )
+        ),
+        report=lambda _vendor, _status, detail: noted.append(detail),
+    )
+
+    assert summary.done == 1
+    assert "not kept: rfi@ord.gov.in (government or buyer address)" in noted[0]
+    with session() as current:
+        vendor = current.get(Vendor, vendor_id)
+        assert vendor.email is None
+        assert vendor.phone == "9876543210"
+        assert "rfi@ord.gov.in" in current.query(LlmRun).one().output_json
+
+
+def test_nothing_usable_is_not_found_and_the_raw_answer_stays():
+    (vendor_id,) = _seed("Bad Answer Ltd")
+
+    summary = enrich_pending(
+        chain=FakeChain(
+            ContactInfo(email="desk@nic.in", phone="+918043867273,6957")
+        )
+    )
+
+    assert summary.not_found == 1
+    with session() as current:
+        vendor = current.get(Vendor, vendor_id)
+        assert vendor.email is None
+        assert vendor.phone is None
+        assert vendor.enrichment_status == STATUS_NOT_FOUND
+        stored = current.query(LlmRun).one().output_json
+        assert "desk@nic.in" in stored
+        assert "+918043867273,6957" in stored
+
+
+def test_a_kept_address_names_its_page_and_its_run():
+    from pipeline_core.models import VendorContact
+
+    (vendor_id,) = _seed("Traced Ltd")
+
+    enrich_pending(
+        chain=FakeChain(
+            ContactInfo(
+                email="hi@traced.example",
+                phone="9876543210",
+                source="https://traced.example/contact",
+            )
+        ),
+        job_id=4,
+    )
+
+    with session() as current:
+        run = current.query(LlmRun).one()
+        assert run.job_id == 4
+        rows = current.query(VendorContact).filter_by(vendor_id=vendor_id).all()
+        assert {row.channel for row in rows} == {"email", "phone"}
+        assert {row.source_url for row in rows} == {"https://traced.example/contact"}
+        assert {row.llm_run_id for row in rows} == {run.run_id}
+
+
+def test_the_prompt_uses_the_newest_tender_and_names_it():
+    from pipeline_core.queries import replace_awards, upsert_tender, utcnow
+
+    with session() as current:
+        vendor_id = upsert_vendor(current, name_raw="Repeat Winner")
+        upsert_tender(
+            current, tender_id="T-OLD", scraped_at="2020-01-01T00:00:00+00:00"
+        )
+        upsert_tender(
+            current, tender_id="T-NEW", scraped_at="2026-06-01T00:00:00+00:00"
+        )
+        for tender_id, title in (("T-OLD", "Old fans"), ("T-NEW", "New cables")):
+            replace_awards(
+                current,
+                tender_id,
+                [
+                    {
+                        "bid_number": "1",
+                        "vendor_id": vendor_id,
+                        "bidder_name": "Repeat Winner",
+                        "work_title": title,
+                    }
+                ],
+            )
+
+    chain = FakeChain(ContactInfo(email="hi@repeat.example"))
+    enrich_pending(chain=chain)
+
+    assert chain.calls[0]["title"] == "New cables"
+    with session() as current:
+        assert '"tender_id": "T-NEW"' in current.query(LlmRun).one().input_json
+
+
+def test_ticked_companies_are_looked_up_in_id_order():
+    from pipeline_core.queries import pending_vendors
+
+    ids = _seed("Later Ltd", "Earlier Ltd")
+    with session() as current:
+        rows = pending_vendors(current, vendor_ids=[ids[1], ids[0]])
+
+    assert [vendor.vendor_id for vendor in rows] == [ids[0], ids[1]]

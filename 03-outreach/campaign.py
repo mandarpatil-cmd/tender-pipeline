@@ -18,9 +18,21 @@ from pathlib import Path
 
 from dotenv import dotenv_values, load_dotenv
 from pipeline_core.db import session
-from pipeline_core.emailcheck import EMAIL_RE
-from pipeline_core.models import OUTREACH_FAILED, OUTREACH_SENT, MailLetter
-from pipeline_core.queries import OutreachTarget, outreach_targets, record_outreach, utcnow
+from pipeline_core.emailcheck import is_email
+from pipeline_core.models import (
+    OUTREACH_FAILED,
+    OUTREACH_SENDING,
+    OUTREACH_SENT,
+    OUTREACH_TEST,
+    MailLetter,
+)
+from pipeline_core.queries import (
+    OutreachTarget,
+    finish_outreach,
+    mail_messages,
+    record_outreach,
+    utcnow,
+)
 
 from transport import TransportError, build_transport
 
@@ -91,7 +103,10 @@ Warm regards,
 
 UNSUBSCRIBE = """---
 You received this one-off message because your address is published as a
-business contact. Reply with "unsubscribe" and I will not contact you again."""
+business contact. This is a business introduction. If you would rather not
+receive it, reply and a person will take you off the list."""
+
+_FOOTER_MARK = "a person will take you off the list"
 
 #: Tokens the letter may use. company, title, and contract_date come from each
 #: award. The rest come from the signature saved with the letter. There is no
@@ -296,7 +311,7 @@ def render_letter(
     }
     subject = fill(letter.subject, values)
     body = fill(letter.body, values).rstrip()
-    if 'Reply with "unsubscribe"' not in body:
+    if _FOOTER_MARK not in body:
         body = f"{body}\n\n{UNSUBSCRIBE}"
     return subject, body
 
@@ -529,30 +544,66 @@ def read_attachments(
     return [(name, attachment_path(name).read_bytes()) for name in letter.attachment_names]
 
 
+def header_text(value: str | None) -> str:
+    """One header line. A company name must not be able to add another header."""
+    return (value or "").replace("\r", "").replace("\n", "").strip()
+
+
+def redirect_problem(override_to: str | None) -> str | None:
+    """Why a filled redirect box must not start a send. Blank is a real send."""
+    if not (override_to or "").strip():
+        return None
+    inbox = header_text(override_to)
+    if not is_email(inbox):
+        return "The redirect address is not an email. Nothing was sent."
+    return None
+
+
 def load_recipients(
     limit: int | None = None, *, include_sent: bool = False
 ) -> list[OutreachTarget]:
-    """Everyone with an address who has not already been sent to.
+    """Every valid address that has not already been sent to.
 
-    The query already excludes anyone with a successful `outreach` row, so there
-    is no `already_sent()` set to maintain — an interrupted run resumes by being
-    run again. Addresses that cannot be valid are dropped here rather than being
-    handed to a transport that would only reject them.
+    The same list the Mail page uses. An interrupted run resumes by being run
+    again. A ``sending`` row is left alone: that message is not mailed twice.
     """
     with session() as current:
-        people = outreach_targets(current, limit=None, include_sent=include_sent)
-
-    usable = [p for p in people if EMAIL_RE.match(p.email or "")]
-    if len(usable) != len(people):
-        print(f"skipping {len(people) - len(usable)} malformed address(es)")
-
-    if limit is not None:
-        usable = usable[:limit]
-    return usable
+        return mail_messages(current, limit=limit, include_sent=include_sent)
 
 
 def message_for(person: OutreachTarget, bind=None) -> tuple[str, str]:
     return render_for(load_letter(bind), person)
+
+
+def open_attempt(
+    target: OutreachTarget,
+    email: str,
+    subject: str,
+    transport_name: str,
+    bind=None,
+) -> int:
+    """Write ``sending`` and commit it before the mailbox is asked."""
+    with session(bind) as current:
+        return record_outreach(
+            current,
+            vendor_id=target.vendor_id,
+            tender_id=target.tender_id,
+            email=email,
+            subject=subject,
+            transport=transport_name,
+            status=OUTREACH_SENDING,
+        )
+
+
+def close_attempt(
+    outreach_id: int,
+    status: str,
+    error: str = "",
+    bind=None,
+) -> None:
+    """Move the ``sending`` row to sent, failed, or test. Committed immediately."""
+    with session(bind) as current:
+        finish_outreach(current, outreach_id, status=status, error=error or None)
 
 
 def log_result(
@@ -564,7 +615,7 @@ def log_result(
     error: str = "",
     bind=None,
 ) -> None:
-    """Record one attempt. Committed immediately, so a crash cannot re-mail anyone."""
+    """Record one finished attempt. Prefer open_attempt before a live delivery."""
     with session(bind) as current:
         record_outreach(
             current,
@@ -677,10 +728,14 @@ def send_all(
     source: str = LETTER_PAGE,
     letter: Letter | None = None,
 ) -> None:
+    problem = redirect_problem(override_to)
+    if problem:
+        raise SystemExit(problem)
+    inbox = header_text(override_to) if (override_to or "").strip() else None
     files = read_attachments(bind, source, letter)
     letter = letter if letter is not None else choose_letter(source, bind)
 
-    target_note = f" (all redirected to {override_to})" if override_to else ""
+    target_note = f" (all redirected to {inbox})" if inbox else ""
     print(f"Transport: {transport_name}")
     print(f"Sending {len(people)} message(s){target_note}, {delay}s apart ...")
     transport = build_transport(transport_name)
@@ -691,21 +746,31 @@ def send_all(
             if should_stop and should_stop():
                 stopped = True
                 break
-            to = override_to or person.email
+            company_email = header_text(person.email)
+            deliver_to = inbox or company_email
             subject, body = render_for(letter, person)
+            subject = header_text(subject)
+            attempt_id = open_attempt(person, company_email, subject, transport_name, bind=bind)
             try:
-                transport.send(to, subject, body, attachments=files)
-            except TransportError as err:
+                transport.send(deliver_to, subject, body, attachments=files)
+            except (TransportError, ValueError) as err:
                 failed += 1
-                log_result(
-                    person, to, subject, transport_name, OUTREACH_FAILED, str(err), bind=bind
-                )
-                print(f"  [{i}/{len(people)}] FAILED {person.email}: {err}")
+                close_attempt(attempt_id, OUTREACH_FAILED, str(err), bind=bind)
+                print(f"  [{i}/{len(people)}] FAILED {company_email}: {err}")
                 continue
 
             sent += 1
-            log_result(person, to, subject, transport_name, OUTREACH_SENT, bind=bind)
-            print(f"  [{i}/{len(people)}] sent to {person.company} <{to}>")
+            if inbox:
+                close_attempt(
+                    attempt_id,
+                    OUTREACH_TEST,
+                    f"redirected to {inbox}",
+                    bind=bind,
+                )
+                print(f"  [{i}/{len(people)}] test to {inbox} for {person.company} <{company_email}>")
+            else:
+                close_attempt(attempt_id, OUTREACH_SENT, bind=bind)
+                print(f"  [{i}/{len(people)}] sent to {person.company} <{deliver_to}>")
             if i < len(people) and _pause(delay, should_stop):
                 stopped = True
                 break

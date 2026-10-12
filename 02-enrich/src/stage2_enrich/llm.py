@@ -63,7 +63,7 @@ PROMPT = ChatPromptTemplate.from_messages(
 )
 
 #: Shown when stage 1 pulled contact details out of the tender's work order.
-#: Those come from the PDF's embedded text layer, not from OCR run here, and the
+#: Stage 1 OCRs the scan, with the PDF's text layer as the backup, and the
 #: characters are often already wrong -- so they are a lead to verify, not an
 #: answer. The address pair below is illustrative of that failure mode.
 #:

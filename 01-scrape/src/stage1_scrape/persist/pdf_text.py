@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pipeline_core.emailcheck import is_buyer_email
+
 log = logging.getLogger(__name__)
 
 MAX_STORE_CHARS = 8000
@@ -15,17 +17,6 @@ _EMAIL = re.compile(
 _MOBILE = re.compile(r"(?:\+91[\s\-]?)?([6-9]\d{9})")
 _GSTIN = re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b", re.I)
 _GSTIN_BODY = re.compile(r"\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]")
-_BUYER_EMAIL_MARKERS = (
-    "vnit",
-    "ynit",
-    "vnii",
-    "nic.in",
-    "gov.in",
-    "eprocure",
-    "storesoffic",
-    "sioresoffic",
-    "storesoffice",
-)
 # Institute GSTIN on VNIT letterhead — never treat as the vendor.
 _BUYER_GSTIN = ("27AAATV9885C1Z2", "27AAATV9885C1ZZ")
 
@@ -194,17 +185,12 @@ def _normalize_email(raw: str) -> str:
     return f"{local}@{domain.lower()}"
 
 
-def _is_buyer_email(email: str) -> bool:
-    lowered = email.lower()
-    return any(marker in lowered for marker in _BUYER_EMAIL_MARKERS)
-
-
 def harvest_contacts(text: str) -> dict[str, list[str]]:
     """Pull emails / Indian mobiles / GSTINs. Drop obvious buyer (VNIT) contacts."""
     emails = []
     for match in _EMAIL.findall(text or ""):
         email = _normalize_email(match)
-        if _is_buyer_email(email):
+        if is_buyer_email(email):
             continue
         if email.lower() not in {item.lower() for item in emails}:
             emails.append(email)

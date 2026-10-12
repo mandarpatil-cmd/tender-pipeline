@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 from pipeline_core.db import session
-from pipeline_core.models import OUTREACH_FAILED, OUTREACH_SENT, MailLetter, Outreach
+from pipeline_core.models import (
+    OUTREACH_FAILED,
+    OUTREACH_SENT,
+    OUTREACH_TEST,
+    MailLetter,
+    Outreach,
+)
 from pipeline_core.queries import mark_enriched, replace_awards, upsert_tender, upsert_vendor
 
 import campaign
@@ -188,8 +194,8 @@ def test_stop_keeps_the_sends_already_made(fake_transport):
         assert current.query(Outreach).count() == 1
 
 
-def test_redirecting_still_records_the_real_vendor(fake_transport):
-    """TO= sends everything to you, but the vendor is still marked as done."""
+def test_redirecting_records_a_test_and_leaves_the_company_unsent(fake_transport):
+    """TO= delivers to the test inbox and does not take the company off the list."""
     vendor_id = _vendor("Kanta Enterprises", "hi@kanta.example")
 
     campaign.run(send=True, delay=0, to="me@mine.example")
@@ -198,8 +204,100 @@ def test_redirecting_still_records_the_real_vendor(fake_transport):
     with session() as current:
         row = current.query(Outreach).one()
         assert row.vendor_id == vendor_id
-        assert row.email == "me@mine.example"
-    assert campaign.load_recipients() == []
+        assert row.email == "hi@kanta.example"
+        assert row.status == OUTREACH_TEST
+        assert row.error == "redirected to me@mine.example"
+    assert [person.email for person in campaign.load_recipients()] == ["hi@kanta.example"]
+
+
+def test_a_bad_redirect_sends_nothing(fake_transport):
+    _vendor("Kanta Enterprises", "hi@kanta.example")
+
+    with pytest.raises(SystemExit, match="redirect"):
+        campaign.run(send=True, delay=0, to="not-an-address")
+
+    assert "transport" not in fake_transport
+    with session() as current:
+        assert current.query(Outreach).count() == 0
+
+
+def test_a_pdf_only_company_is_on_the_send_list():
+    from pipeline_core.queries import add_contact
+
+    with session() as current:
+        vendor_id = upsert_vendor(current, name_raw="Pdf Only Ltd")
+        upsert_tender(
+            current,
+            tender_id="T-PDF",
+            title="Work",
+            contract_date="01-Jan-2026",
+            scraped_at="2020-01-01T00:00:00+00:00",
+        )
+        replace_awards(
+            current,
+            "T-PDF",
+            [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "Pdf Only Ltd"}],
+        )
+        add_contact(
+            current,
+            vendor_id,
+            channel="email",
+            value="clue@pdf.example",
+            source="pdf",
+            tender_id="T-PDF",
+        )
+
+    assert [person.email for person in campaign.load_recipients()] == ["clue@pdf.example"]
+
+
+def test_a_newline_in_the_company_name_does_not_stop_the_next_letter(fake_transport):
+    _vendor("Bad\nLtd", "bad@x.example")
+    _vendor("Good Ltd", "good@x.example")
+
+    campaign.run(send=True, delay=0)
+
+    sent = fake_transport["transport"].sent
+    assert [address for address, _subject in sent] == ["bad@x.example", "good@x.example"]
+    assert all("\n" not in subject and "\r" not in subject for _address, subject in sent)
+
+
+def test_a_bad_header_fails_one_recipient_and_the_batch_continues(monkeypatch, written_pitch):
+    _vendor("Bad Ltd", "bad@x.example")
+    _vendor("Good Ltd", "good@x.example")
+    transport = FakeTransport()
+    deliver = transport.send
+
+    def send(to, subject, body, attachments=None):
+        if to == "bad@x.example":
+            raise ValueError("bad header")
+        deliver(to, subject, body, attachments)
+
+    transport.send = send
+    monkeypatch.setattr(campaign, "build_transport", lambda name: transport)
+
+    campaign.run(send=True, delay=0)
+
+    assert [address for address, _subject in transport.sent] == ["good@x.example"]
+    with session() as current:
+        rows = {row.email: row.status for row in current.query(Outreach).all()}
+    assert rows["bad@x.example"] == OUTREACH_FAILED
+    assert rows["good@x.example"] == OUTREACH_SENT
+
+
+def test_a_missing_mailbox_raises_instead_of_exiting(monkeypatch):
+    monkeypatch.setenv("GMAIL_USER", "")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "")
+    from gmail.send import GmailTransport
+
+    with pytest.raises(TransportError):
+        GmailTransport()
+
+    import graph.auth as auth
+
+    monkeypatch.setattr(auth, "CLIENT_ID", "")
+    monkeypatch.setattr(auth, "TENANT_ID", "")
+    with pytest.raises(TransportError):
+        auth.get_token()
 
 
 def test_nothing_to_do_is_not_an_error(fake_transport):
@@ -239,7 +337,8 @@ def test_a_dry_run_writes_the_letter_and_both_attachment_names():
     assert "Surety Insurance:" in text
     assert "Attachment: PolicyPact_Corporate_Insurance_Pitch.pdf" in text
     assert "Attachment: Surety_Bond_Corporate_Presentation_PolicyPact.pdf" in text
-    assert "unsubscribe" in text
+    assert "a person will take you off the list" in text
+    assert 'Reply with "unsubscribe"' not in text
     assert campaign.PLACEHOLDER not in text
     assert "This note is about tender" not in text
 
@@ -283,7 +382,7 @@ def test_a_blank_signature_token_is_filled_as_empty_in_a_preview(monkeypatch):
     assert "{{sender_name}}" not in body
     assert "{{sender_org}}" not in body
     assert "Acme Ltd" in body
-    assert "unsubscribe" in body
+    assert "a person will take you off the list" in body
     assert "Your name" in (campaign.letter_refusal() or "")
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -57,6 +58,7 @@ def award_detail(session: Session, tender_id: str, bid_number: str) -> AwardDeta
             LlmRun.error,
             LlmRun.created_at,
             LlmRun.output_json,
+            LlmRun.job_id,
         )
         .where(LlmRun.vendor_id == vendor.vendor_id)
         .order_by(LlmRun.created_at.desc(), LlmRun.run_id.desc())
@@ -81,7 +83,7 @@ def award_detail(session: Session, tender_id: str, bid_number: str) -> AwardDeta
         tender=_tender_dict(tender),
         vendor=_vendor_dict(vendor),
         awards=tuple(_shown_award(row) for row in award_rows),
-        runs=tuple(dict(row) for row in runs),
+        runs=tuple(_shown_run(row) for row in runs),
         attempts=tuple(dict(row) for row in attempts),
         focus_bid=bid_number,
     )
@@ -98,7 +100,48 @@ def _tender_dict(tender: Tender) -> dict[str, Any]:
         "contract_currency": tender.contract_currency,
         "scraped_at": tender.scraped_at,
         "json_path": tender.json_path,
+        "origin": tender.origin,
+        "search_mode": tender.search_mode,
+        "search_fields": _fields(tender.search_fields),
+        "listing_page": tender.listing_page,
+        "listing_serial": tender.listing_serial,
+        "scrape_job_id": tender.scrape_job_id,
     }
+
+
+def _fields(raw: str | None) -> dict[str, str]:
+    """The stored portal fields. Text that is not a JSON object shows as nothing."""
+    try:
+        value = json.loads(raw or "{}")
+    except ValueError:
+        return {}
+    return {str(key): str(item) for key, item in value.items()} if isinstance(value, dict) else {}
+
+
+def _shown_run(row) -> dict[str, Any]:
+    """One model call, with what the address rule left out of its answer."""
+    from .emailcheck import usable_contact
+
+    shown = dict(row)
+    answer = _answer(row["output_json"]) if row["status"] == "ok" else {}
+    shown["not_kept"] = usable_contact(
+        _text(answer.get("email")), _text(answer.get("phone"))
+    ).dropped
+    return shown
+
+
+def _answer(raw: str | None) -> dict:
+    try:
+        value = json.loads(raw or "{}")
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _shown_award(row) -> dict[str, Any]:
@@ -123,4 +166,5 @@ def _vendor_dict(vendor: Vendor) -> dict[str, Any]:
         "contact_origin": vendor.contact_origin,
         "pdf_email": vendor.pdf_email,
         "pdf_phone": vendor.pdf_phone,
+        "do_not_mail": vendor.do_not_mail,
     }

@@ -108,8 +108,8 @@ Everything is in the `CONFIG` block at the top of `main.py`. There are no flags.
 | `DELAY` | `5.0` | Seconds between sends. 5.0 ≈ 12/min, inside provider limits |
 | `TO` | `None` | Redirect **every** message to one address, for live testing |
 
-> `TO` redirects the delivery but still records the real vendor, so a redirected send
-> marks that vendor as done. Use it with `LIMIT`.
+> `TO` delivers every message to one inbox and records a test. The company stays
+> on the list for a real send.
 
 ### Environment
 
@@ -184,8 +184,9 @@ person's name.
 Add and remove PDFs on the same page. PDF files only, each under 2 MB, all of them
 together under 2.5 MB. A real send needs at least one. They are stored in `attachments/`.
 
-Previews work before the letter is perfect, so you can read it first. The unsubscribe
-line is added to every email and is not part of the editable text. A live send also
+Previews work before the letter is perfect, so you can read it first. The closing
+line is added to every email and is not part of the editable text. It does not
+promise that a reply is read automatically. A live send also
 refuses while the old placeholder `<-- replace this paragraph with your actual pitch -->`
 is still in the letter.
 

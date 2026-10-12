@@ -13,10 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from .emailcheck import BUYER_EMAIL_MARKERS
 from .money import iso_day, parse_money
 from .models import (
     CHANNEL_EMAIL,
@@ -24,7 +25,12 @@ from .models import (
     CONTACT_MODEL,
     CONTACT_PDF,
     CONTACT_TYPED,
+    ORIGIN_MANUAL,
+    ORIGIN_PORTAL,
+    OUTREACH_FAILED,
+    OUTREACH_SENDING,
     OUTREACH_SENT,
+    OUTREACH_TEST,
     SOURCE_SCRAPE,
     STATUS_DONE,
     STATUS_FAILED,
@@ -85,6 +91,28 @@ def upsert_tender(session: Session, **values: Any) -> None:
     )
 
 
+def backfill_tender_origin(session: Session) -> int:
+    """Label tenders saved before ``origin`` existed. Returns how many changed.
+
+    A ``MANUAL-`` id came from the window's form. Every other writer of
+    ``tenders`` is the scraper. A hand-typed tender that was given a portal-style
+    id is labelled portal: nothing stored can tell the two apart.
+    """
+    return int(
+        session.query(Tender)
+        .filter(Tender.origin.is_(None))
+        .update(
+            {
+                Tender.origin: case(
+                    (Tender.tender_id.like("MANUAL-%"), ORIGIN_MANUAL),
+                    else_=ORIGIN_PORTAL,
+                )
+            },
+            synchronize_session=False,
+        )
+    )
+
+
 def upsert_vendor(
     session: Session,
     *,
@@ -96,9 +124,10 @@ def upsert_vendor(
 ) -> int:
     """Insert a vendor, or refresh the identity columns of an existing one.
 
-    Never touches the contact block — `email`, `phone`, `enrichment_status` and
-    `enriched_at` belong to stage 2. City and state are only filled in when
-    blank, so a better value already on the row is not overwritten.
+    Never touches the contact block or `do_not_mail` — `email`, `phone`,
+    `enrichment_status` and `enriched_at` belong to stage 2, and the mail
+    stop belongs to stage 3. City and state are only filled in when blank, so
+    a better value already on the row is not overwritten.
     """
     statement = sqlite_insert(Vendor).values(
         name_raw=name_raw,
@@ -360,10 +389,13 @@ def add_contact(
     value: str | None,
     source: str,
     tender_id: str | None = None,
+    source_url: str | None = None,
+    llm_run_id: int | None = None,
 ) -> bool:
     """Insert one address unless this company already has that value from this source.
 
     A PDF address is kept per tender. An enrichment or typed address has no tender.
+    ``source_url`` and ``llm_run_id`` say which model answer gave a ``model`` row.
     Returns True when a row was added.
     """
     text = (value or "").strip()
@@ -395,6 +427,8 @@ def add_contact(
             value=text,
             source=source,
             valid=1 if contact_is_valid(channel, text) else 0,
+            source_url=(source_url or "").strip() or None,
+            llm_run_id=llm_run_id,
         )
     )
     session.flush()
@@ -408,6 +442,8 @@ def replace_company_contact(
     source: str,
     channel: str,
     value: str | None,
+    source_url: str | None = None,
+    llm_run_id: int | None = None,
 ) -> None:
     """The new enrichment or typed value replaces only that source and channel."""
     session.query(VendorContact).filter(
@@ -422,6 +458,8 @@ def replace_company_contact(
         channel=channel,
         value=value,
         source=source,
+        source_url=source_url,
+        llm_run_id=llm_run_id,
     )
 
 
@@ -586,6 +624,41 @@ def backfill_vendor_contacts(session: Session) -> int:
     return written
 
 
+def backfill_model_contact_sources(session: Session) -> int:
+    """Link model addresses saved before ``source_url`` existed to their answer.
+
+    Each takes the source and run id of the newest ``ok`` call for that company
+    whose answer holds the same value. Returns how many rows were linked.
+    """
+    answers: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for run_id, vendor_id, output in session.execute(
+        select(LlmRun.run_id, LlmRun.vendor_id, LlmRun.output_json)
+        .where(LlmRun.status == "ok", LlmRun.output_json.is_not(None))
+        .order_by(LlmRun.run_id.desc())
+    ):
+        try:
+            answer = json.loads(output)
+        except ValueError:
+            continue
+        if isinstance(answer, dict):
+            answers.setdefault(int(vendor_id), []).append((int(run_id), answer))
+    linked = 0
+    rows = session.scalars(
+        select(VendorContact).where(
+            VendorContact.source == CONTACT_MODEL, VendorContact.llm_run_id.is_(None)
+        )
+    ).all()
+    for row in rows:
+        for run_id, answer in answers.get(row.vendor_id, []):
+            given = str(answer.get(row.channel) or "").strip()
+            if given.casefold() == row.value.strip().casefold():
+                row.llm_run_id = run_id
+                row.source_url = str(answer.get("source") or "").strip() or None
+                linked += 1
+                break
+    return linked
+
+
 def _pdf_value_known(session: Session, vendor_id: int, channel: str, value: str) -> bool:
     folded = value.strip().casefold()
     rows = session.scalars(
@@ -606,13 +679,16 @@ class PendingVendor:
     name_raw: str
     city: str | None
     state: str | None
-    #: One `awards.work_title` — fills the `{title}` slot in the prompt.
+    #: The `awards.work_title` of the company's newest tender — fills the
+    #: `{title}` slot in the prompt.
     context: str | None
-    #: Read from the work order's embedded text layer, not by OCR, so characters
-    #: may already be wrong. Evidence for the model to confirm or correct, never
-    #: an answer in itself.
+    #: Read from the work order by OCR or its text layer, so characters may
+    #: already be wrong. Evidence for the model to confirm or correct, never an
+    #: answer in itself.
     pdf_email: str | None = None
     pdf_phone: str | None = None
+    #: The tender `context` came from.
+    context_tender_id: str | None = None
 
     @property
     def title(self) -> str:
@@ -637,22 +713,29 @@ def _vendor_rows(
             return []
     else:
         ids = None
-    context = (
-        select(Award.work_title)
-        .where(Award.vendor_id == Vendor.vendor_id)
-        .limit(1)
-        .correlate(Vendor)
-        .scalar_subquery()
-    )
+    def newest(column):
+        """One value from the company's most recently scraped tender."""
+        return (
+            select(column)
+            .select_from(Award)
+            .join(Tender, Tender.tender_id == Award.tender_id)
+            .where(Award.vendor_id == Vendor.vendor_id)
+            .order_by(Tender.scraped_at.desc(), Award.tender_id.desc(), Award.bid_number)
+            .limit(1)
+            .correlate(Vendor)
+            .scalar_subquery()
+        )
+
     statement = (
         select(
             Vendor.vendor_id,
             Vendor.name_raw,
             Vendor.city,
             Vendor.state,
-            context.label("context"),
+            newest(Award.work_title).label("context"),
             Vendor.pdf_email,
             Vendor.pdf_phone,
+            newest(Award.tender_id).label("context_tender_id"),
         )
         .where(where)
         .order_by(Vendor.vendor_id)
@@ -696,14 +779,21 @@ def mark_enriched(
     *,
     email: str | None,
     phone: str | None,
+    source_url: str | None = None,
+    llm_run_id: int | None = None,
 ) -> str:
     """Record what the model found. Returns the status the row landed on.
 
-    A result with neither an email nor a phone is `not_found`, not `failed` —
-    the call worked, the answer was "nothing public". Only `failed` is retried.
+    Only what `usable_contact` keeps is stored: a government address or a phone
+    that cannot be dialled is left out, and the raw answer stays in ``llm_runs``.
+    A result with nothing usable is `not_found`, not `failed` — the call worked,
+    the answer was "nothing we can use". Only `failed` is retried.
     """
-    clean_email = (email or "").strip() or None
-    clean_phone = (phone or "").strip() or None
+    from .emailcheck import usable_contact
+
+    verdict = usable_contact(email, phone)
+    clean_email = verdict.email
+    clean_phone = verdict.phone
     status = STATUS_DONE if (clean_email or clean_phone) else STATUS_NOT_FOUND
     session.query(Vendor).filter(Vendor.vendor_id == vendor_id).update(
         {
@@ -715,20 +805,16 @@ def mark_enriched(
         },
         synchronize_session=False,
     )
-    replace_company_contact(
-        session,
-        vendor_id,
-        source=CONTACT_MODEL,
-        channel=CHANNEL_EMAIL,
-        value=clean_email,
-    )
-    replace_company_contact(
-        session,
-        vendor_id,
-        source=CONTACT_MODEL,
-        channel=CHANNEL_PHONE,
-        value=clean_phone,
-    )
+    for channel, value in ((CHANNEL_EMAIL, clean_email), (CHANNEL_PHONE, clean_phone)):
+        replace_company_contact(
+            session,
+            vendor_id,
+            source=CONTACT_MODEL,
+            channel=channel,
+            value=value,
+            source_url=source_url,
+            llm_run_id=llm_run_id,
+        )
     return status
 
 
@@ -980,6 +1066,60 @@ def _lookup_where():
     )
 
 
+@dataclass(frozen=True)
+class RecheckRow:
+    """One company whose saved model answer the address rule would change."""
+
+    vendor_id: int
+    name: str
+    dropped: tuple[str, ...]
+    status_before: str
+    status_after: str
+
+
+def recheck_model_contacts(session: Session, *, apply: bool = False) -> list[RecheckRow]:
+    """Apply `usable_contact` to model answers saved before the rule existed.
+
+    Only companies whose contact came from the model are looked at; a typed
+    contact is a person's decision and is left alone. Without ``apply`` nothing
+    changes and the list says what would.
+    """
+    from .emailcheck import usable_contact
+
+    changed: list[RecheckRow] = []
+    vendors = session.scalars(
+        select(Vendor).where(Vendor.contact_origin == CONTACT_MODEL).order_by(Vendor.vendor_id)
+    ).all()
+    for vendor in vendors:
+        verdict = usable_contact(vendor.email, vendor.phone)
+        if not verdict.dropped:
+            continue
+        after = STATUS_DONE if (verdict.email or verdict.phone) else STATUS_NOT_FOUND
+        changed.append(
+            RecheckRow(
+                vendor_id=int(vendor.vendor_id),
+                name=vendor.name_raw,
+                dropped=verdict.dropped,
+                status_before=vendor.enrichment_status,
+                status_after=after,
+            )
+        )
+        if not apply:
+            continue
+        vendor.email = verdict.email
+        vendor.phone = verdict.phone
+        vendor.enrichment_status = after
+        for channel, kept in ((CHANNEL_EMAIL, verdict.email), (CHANNEL_PHONE, verdict.phone)):
+            if kept is None:
+                session.query(VendorContact).filter(
+                    VendorContact.vendor_id == vendor.vendor_id,
+                    VendorContact.source == CONTACT_MODEL,
+                    VendorContact.channel == channel,
+                    VendorContact.tender_id.is_(None),
+                ).delete(synchronize_session=False)
+    return changed
+
+
 def mark_failed(session: Session, vendor_id: int) -> str:
     """The call itself errored. Leaves contact columns alone so a retry can fill them."""
     session.query(Vendor).filter(Vendor.vendor_id == vendor_id).update(
@@ -1031,6 +1171,7 @@ def record_llm_run(
     output_json: str | None,
     status: str,
     error: str | None = None,
+    job_id: int | None = None,
 ) -> int:
     run = LlmRun(
         vendor_id=vendor_id,
@@ -1041,6 +1182,7 @@ def record_llm_run(
         status=status,
         error=error,
         created_at=utcnow(),
+        job_id=job_id,
     )
     session.add(run)
     session.flush()
@@ -1158,6 +1300,189 @@ def _has_mail_address():
     return or_(and_(Vendor.email.is_not(None), Vendor.email != ""), contact)
 
 
+#: Mail filter for a company taken off the list. Not an ``outreach.status`` value.
+MAIL_STOPPED = "do_not_mail"
+
+
+def _trimmed(column):
+    return func.trim(column)
+
+
+def _is_email_sql(column):
+    """The same shape as ``is_email``: local@domain.tld, no spaces."""
+    text = _trimmed(column)
+    at_pos = func.instr(text, "@")
+    domain = func.substr(text, at_pos + 1)
+    dot_pos = func.instr(domain, ".")
+    return and_(
+        at_pos > 1,
+        func.instr(domain, "@") == 0,
+        dot_pos > 1,
+        func.length(domain) > dot_pos,
+        func.instr(text, " ") == 0,
+        func.instr(text, "\t") == 0,
+        func.instr(text, "\n") == 0,
+        func.instr(text, "\r") == 0,
+    )
+
+
+def _is_buyer_sql(column):
+    lowered = func.lower(_trimmed(column))
+    return or_(*[lowered.contains(marker) for marker in BUYER_EMAIL_MARKERS])
+
+
+def _mail_contact_for_award():
+    """A valid email contact ``choose_addresses`` would consider for this tender."""
+    return and_(
+        VendorContact.vendor_id == Vendor.vendor_id,
+        VendorContact.channel == CHANNEL_EMAIL,
+        VendorContact.valid == 1,
+        or_(
+            and_(
+                VendorContact.source == CONTACT_PDF,
+                VendorContact.tender_id == Award.tender_id,
+            ),
+            and_(VendorContact.source == CONTACT_PDF, VendorContact.tender_id.is_(None)),
+            VendorContact.source.in_((CONTACT_MODEL, CONTACT_TYPED)),
+        ),
+    )
+
+
+def _address_blocked(address):
+    """``sent`` or ``sending`` for this company, tender, and address."""
+    return (
+        select(Outreach.outreach_id)
+        .where(
+            Outreach.vendor_id == Vendor.vendor_id,
+            Outreach.tender_id == Award.tender_id,
+            func.lower(_trimmed(Outreach.email)) == func.lower(_trimmed(address)),
+            Outreach.status.in_((OUTREACH_SENT, OUTREACH_SENDING)),
+        )
+        .correlate_except(Outreach)
+        .exists()
+    )
+
+
+def _legacy_send_covers_award():
+    """An old company-level ``sent`` row covers tenders scraped at or before it."""
+    return (
+        select(Outreach.outreach_id)
+        .where(
+            Outreach.vendor_id == Vendor.vendor_id,
+            Outreach.tender_id.is_(None),
+            Outreach.status == OUTREACH_SENT,
+            Tender.scraped_at <= Outreach.sent_at,
+        )
+        .exists()
+    )
+
+
+def _company_can_be_mailed():
+    return or_(Vendor.do_not_mail.is_(None), Vendor.do_not_mail == "")
+
+
+def sendable_award():
+    """True when ``mail_messages`` would emit at least one address for this award.
+
+    A valid contact is used when one exists. ``vendors.email`` is only the
+    fallback when no valid contact row exists, matching ``choose_addresses``.
+    A buyer address and an address already ``sent`` or ``sending`` do not count.
+    """
+    usable_contact = (
+        select(VendorContact.contact_id)
+        .where(
+            _mail_contact_for_award(),
+            ~_is_buyer_sql(VendorContact.value),
+            ~_address_blocked(VendorContact.value),
+        )
+        .exists()
+    )
+    any_valid_contact = (
+        select(VendorContact.contact_id).where(_mail_contact_for_award()).exists()
+    )
+    fallback = and_(
+        ~any_valid_contact,
+        _is_email_sql(Vendor.email),
+        ~_is_buyer_sql(Vendor.email),
+        ~_address_blocked(Vendor.email),
+    )
+    return and_(
+        _company_can_be_mailed(),
+        ~_legacy_send_covers_award(),
+        or_(usable_contact, fallback),
+    )
+
+
+def sent_award_finished():
+    """A send covers this award, and nothing is left for ``mail_messages``."""
+    named = (
+        select(Outreach.outreach_id)
+        .where(
+            Outreach.vendor_id == Vendor.vendor_id,
+            Outreach.tender_id == Award.tender_id,
+            Outreach.status == OUTREACH_SENT,
+        )
+        .exists()
+    )
+    return and_(or_(named, _legacy_send_covers_award()), ~sendable_award())
+
+
+def sendable_with_status(status: str):
+    """This award still has a letter, and an attempt with ``status`` for it."""
+    attempt = (
+        select(Outreach.outreach_id)
+        .where(
+            Outreach.vendor_id == Vendor.vendor_id,
+            Outreach.tender_id == Award.tender_id,
+            Outreach.status == status,
+        )
+        .exists()
+    )
+    return and_(sendable_award(), attempt)
+
+
+def company_stopped():
+    return and_(Vendor.do_not_mail.is_not(None), Vendor.do_not_mail != "")
+
+
+def apply_mail_addresses(session: Session, rows: list[dict]) -> None:
+    """Show the addresses a send would use. A finished award shows what was sent."""
+    if not rows:
+        return
+    pairs = [(int(row["vendor_id"]), str(row["tender_id"])) for row in rows]
+    grouped: dict[tuple[int, str], list[str]] = {}
+    for message in mail_messages(session, awards=pairs):
+        grouped.setdefault((message.vendor_id, message.tender_id), []).append(message.email)
+    missing = [pair for pair in pairs if pair not in grouped]
+    sent: dict[tuple[int, str], list[str]] = {}
+    if missing:
+        vendor_ids = {vendor_id for vendor_id, _tender_id in missing}
+        for vendor_id, tender_id, email in session.execute(
+            select(Outreach.vendor_id, Outreach.tender_id, Outreach.email)
+            .where(
+                Outreach.vendor_id.in_(vendor_ids),
+                Outreach.status == OUTREACH_SENT,
+                Outreach.email.is_not(None),
+                Outreach.email != "",
+            )
+            .order_by(Outreach.outreach_id)
+        ):
+            if not tender_id:
+                continue
+            key = (int(vendor_id), str(tender_id))
+            if key not in missing:
+                continue
+            folded = email.casefold()
+            bucket = sent.setdefault(key, [])
+            if folded not in {item.casefold() for item in bucket}:
+                bucket.append(email)
+    for row in rows:
+        key = (int(row["vendor_id"]), str(row["tender_id"]))
+        addresses = grouped.get(key) or sent.get(key)
+        if addresses:
+            row["email"] = ", ".join(addresses)
+
+
 def outreach_targets(
     session: Session,
     limit: int | None = None,
@@ -1258,6 +1583,147 @@ def expand_targets(
     return expanded
 
 
+def _blocked_addresses(
+    session: Session,
+) -> tuple[set[tuple[int, str, str]], set[tuple[int, str, str]], list[tuple[int, str]]]:
+    """Addresses already ``sent`` or ``sending``, plus old company-level sends.
+
+    A company-level row has no tender id. It covers every tender scraped at or
+    before that send, and it covers every address on those tenders.
+    """
+    sent: set[tuple[int, str, str]] = set()
+    sending: set[tuple[int, str, str]] = set()
+    legacy: list[tuple[int, str]] = []
+    rows = session.execute(
+        select(
+            Outreach.vendor_id,
+            Outreach.tender_id,
+            Outreach.email,
+            Outreach.status,
+            Outreach.sent_at,
+        ).where(Outreach.status.in_((OUTREACH_SENT, OUTREACH_SENDING)))
+    ).all()
+    for vendor_id, tender_id, email, status, sent_at in rows:
+        if not tender_id:
+            if status == OUTREACH_SENT:
+                legacy.append((int(vendor_id), sent_at or ""))
+            continue
+        key = (int(vendor_id), str(tender_id), (email or "").strip().casefold())
+        if not key[2]:
+            continue
+        if status == OUTREACH_SENDING:
+            sending.add(key)
+        else:
+            sent.add(key)
+    return sent, sending, legacy
+
+
+def _covered_by_old_send(
+    vendor_id: int, scraped_at: str, legacy: list[tuple[int, str]]
+) -> bool:
+    return any(
+        covered_id == vendor_id and (scraped_at or "") <= sent_at
+        for covered_id, sent_at in legacy
+    )
+
+
+def mail_messages(
+    session: Session,
+    limit: int | None = None,
+    *,
+    include_sent: bool = False,
+    awards: Iterable[tuple[int, str]] | None = None,
+    vendor_ids: Iterable[int] | None = None,
+) -> list[OutreachTarget]:
+    """One message per valid company address that a live send would deliver.
+
+    The Mail page, the terminal, and the export all call this. Order is the
+    PDF clue for that tender, then the model address, then a typed address.
+    A buyer address, a company marked do-not-mail, and an address that already
+    has ``sent`` or ``sending`` for that company and tender are left out.
+    ``include_sent`` brings ``sent`` addresses back and still skips ``sending``.
+    Do-not-mail is never overridden.
+    """
+    from .emailcheck import is_buyer_email, is_email
+
+    wanted = {(int(vendor_id), str(tender_id)) for vendor_id, tender_id in awards} if awards is not None else None
+    wanted_vendors = {int(vendor_id) for vendor_id in vendor_ids} if vendor_ids is not None else None
+    statement = (
+        select(
+            Vendor.vendor_id,
+            Vendor.name_raw,
+            Vendor.email,
+            Award.tender_id,
+            Tender.title,
+            Tender.contract_date,
+            Tender.scraped_at,
+        )
+        .join(Award, Award.vendor_id == Vendor.vendor_id)
+        .join(Tender, Tender.tender_id == Award.tender_id)
+        .where(_has_mail_address())
+        .where(or_(Vendor.do_not_mail.is_(None), Vendor.do_not_mail == ""))
+        .distinct()
+        .order_by(Vendor.vendor_id, Award.tender_id)
+    )
+    sent, sending, legacy = _blocked_addresses(session)
+    messages: list[OutreachTarget] = []
+    for vendor_id, company, email, tender_id, title, contract_date, scraped_at in session.execute(
+        statement
+    ).all():
+        pair = (int(vendor_id), str(tender_id))
+        if wanted is not None and pair not in wanted:
+            continue
+        if wanted_vendors is not None and pair[0] not in wanted_vendors:
+            continue
+        if not include_sent and _covered_by_old_send(pair[0], scraped_at or "", legacy):
+            continue
+        person = OutreachTarget(
+            vendor_id=pair[0],
+            company=company,
+            email=email or "",
+            tender_id=pair[1],
+            title=title or "",
+            contract_date=contract_date or "",
+        )
+        for address in choose_addresses(
+            session,
+            person.vendor_id,
+            person.tender_id,
+            mode=ADDRESS_ALL,
+            chosen_ids=set(),
+            fallback=person.email,
+        ):
+            cleaned = address.strip()
+            if not is_email(cleaned) or is_buyer_email(cleaned):
+                continue
+            key = (person.vendor_id, person.tender_id, cleaned.casefold())
+            if key in sending:
+                continue
+            if key in sent and not include_sent:
+                continue
+            messages.append(
+                OutreachTarget(
+                    vendor_id=person.vendor_id,
+                    company=person.company,
+                    email=cleaned,
+                    tender_id=person.tender_id,
+                    title=person.title,
+                    contract_date=person.contract_date,
+                )
+            )
+            if limit is not None and len(messages) >= limit:
+                return messages
+    return messages
+
+
+def set_do_not_mail(session: Session, vendor_id: int, *, stopped: bool) -> None:
+    """Take a company off the mail list, or put it back. Stage 3 writes this."""
+    vendor = session.get(Vendor, vendor_id)
+    if vendor is None:
+        raise ContactError("No company with that id.")
+    vendor.do_not_mail = utcnow() if stopped else None
+
+
 def record_outreach(
     session: Session,
     *,
@@ -1284,6 +1750,22 @@ def record_outreach(
     return int(row.outreach_id)
 
 
+def finish_outreach(
+    session: Session,
+    outreach_id: int,
+    *,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Move a ``sending`` row to ``sent``, ``failed``, or ``test``."""
+    row = session.get(Outreach, outreach_id)
+    if row is None:
+        return
+    row.status = status
+    row.error = (error or "")[:500] or None
+    row.sent_at = utcnow()
+
+
 def outreach_breakdown(session: Session) -> dict[str, int]:
     rows = session.execute(
         select(Outreach.status, func.count()).group_by(Outreach.status)
@@ -1294,7 +1776,7 @@ def outreach_breakdown(session: Session) -> dict[str, int]:
 def outreach_queue_counts(session: Session) -> dict[str, int]:
     """What stage 3 would do on its next run.
 
-    `remaining` calls `outreach_targets` rather than re-deriving the same
+    `remaining` calls `mail_messages` rather than re-deriving the same
     filter, so the number you decide on and the list that gets mailed cannot
     drift apart. That is the same reason `get_data.py` calls it instead of
     writing a lookalike query.
@@ -1314,7 +1796,7 @@ def outreach_queue_counts(session: Session) -> dict[str, int]:
     failed_attempts = int(
         session.scalar(
             select(func.count()).select_from(Outreach).where(
-                Outreach.status != OUTREACH_SENT
+                Outreach.status == OUTREACH_FAILED
             )
         )
         or 0
@@ -1323,7 +1805,7 @@ def outreach_queue_counts(session: Session) -> dict[str, int]:
         "mailable": mailable,
         "already_sent": already_sent,
         "failed_attempts": failed_attempts,
-        "remaining": len(outreach_targets(session)),
+        "remaining": len(mail_messages(session)),
     }
 
 
