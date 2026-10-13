@@ -132,7 +132,7 @@ def enrich_one(
 def _detail(info: ContactInfo) -> str:
     """What was kept, and what was left out and why. One log line."""
     verdict = usable_contact(info.email, info.phone)
-    kept = verdict.email or verdict.phone
+    kept = ", ".join([*verdict.emails, *verdict.phones])
     if not kept:
         kept = "nothing usable found" if verdict.dropped else "nothing public found"
     if verdict.dropped:

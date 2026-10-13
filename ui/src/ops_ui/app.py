@@ -10,6 +10,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
+from pipeline_core import settings
+
+from ops_ui.jobs import close_orphaned_jobs
 from ops_ui.routes.awards import router as awards_router
 from ops_ui.routes.entry import router as entry_router
 from ops_ui.routes.jobs import router as jobs_router
@@ -64,4 +67,5 @@ app = create_app()
 
 
 def main() -> None:
+    close_orphaned_jobs(settings.db_path())
     uvicorn.run(app, host=HOST, port=PORT)

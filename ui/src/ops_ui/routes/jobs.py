@@ -230,6 +230,29 @@ def job_live(request: Request, job_id: int, path: Path = Depends(database_path))
     )
 
 
+@router.get("/jobs/{job_id}/log")
+def job_log(job_id: int, offset: int = 0, path: Path = Depends(database_path)):
+    job = get_job(path, job_id)
+    if job is None:
+        return Response("No run with that id.", status_code=404)
+    text = job.log or ""
+    if offset < 0:
+        start = 0
+    elif offset > len(text):
+        start = len(text)
+    else:
+        start = offset
+    return Response(
+        text[start:],
+        media_type="text/plain",
+        headers={
+            "X-Log-Next": str(len(text)),
+            "X-Job-State": job.state,
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @router.get("/jobs/{job_id}/pdfs")
 def job_pdfs(job_id: int, path: Path = Depends(database_path)):
     if get_job(path, job_id) is None:

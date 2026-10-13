@@ -4,12 +4,13 @@ import base64
 import logging
 import re
 import unicodedata
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from stage1_scrape.domain.errors import CaptchaError
+from stage1_scrape.domain.errors import CaptchaError, StopRequested
 from stage1_scrape.settings import (
     OpenRouterEndpoint,
     openrouter_endpoint,
@@ -88,6 +89,7 @@ def read_captcha_image(
     *,
     model: str | None = None,
     timeout: float = 45.0,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """Send a local captcha PNG to OpenRouter vision and return 6 characters."""
     endpoint = openrouter_endpoint()
@@ -105,6 +107,8 @@ def read_captcha_image(
     try:
         code = normalize_captcha_text(text)
     except CaptchaError:
+        if should_stop is not None and should_stop():
+            raise StopRequested("Stopped before the captcha was read again.")
         log.info("OCR answer %r was not 6 ASCII chars; asking the same image again", text)
         text = _vision(endpoint, chosen, data_url, REPAIR_PROMPT, timeout)
         code = normalize_captcha_text(text)

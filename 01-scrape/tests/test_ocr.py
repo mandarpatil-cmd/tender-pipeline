@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from stage1_scrape.domain.errors import CaptchaError
+from stage1_scrape.domain.errors import CaptchaError, StopRequested
 from stage1_scrape.scraping.captcha import parse_captcha_option, resolve_captcha_code
 from stage1_scrape.scraping.ocr import normalize_captcha_text, read_captcha_image
 
@@ -123,3 +123,22 @@ def test_read_captcha_image_repairs_short_first_answer(tmp_path: Path):
         assert read_captcha_image(image) == "1yFi9R"
     assert post.call_count == 2
     assert "exactly 6 ASCII" in post.call_args_list[1].kwargs["json"]["messages"][0]["content"][0]["text"]
+
+
+def test_read_captcha_image_skips_repair_when_stopped(tmp_path: Path):
+    image = tmp_path / "captcha.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    source = MagicMock()
+    source.api_key = "test-key"
+    source.chat_url = "https://openrouter.ai/api/v1/chat/completions"
+    source.extra_headers = {}
+    first = MagicMock(ok=True, status_code=200)
+    first.json.return_value = {"choices": [{"message": {"content": "1yF.9R"}}]}
+    with (
+        patch("stage1_scrape.scraping.ocr.openrouter_endpoint", return_value=source),
+        patch("stage1_scrape.scraping.ocr.openrouter_ocr_model", return_value="google/gemini-2.5-flash"),
+        patch("stage1_scrape.scraping.ocr.requests.post", return_value=first) as post,
+    ):
+        with pytest.raises(StopRequested):
+            read_captcha_image(image, should_stop=lambda: True)
+    assert post.call_count == 1

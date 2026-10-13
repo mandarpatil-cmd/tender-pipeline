@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from stage1_scrape.app import pipeline
-from stage1_scrape.domain.errors import CaptchaError
+from stage1_scrape.domain.errors import CaptchaError, StopRequested
 from stage1_scrape.persist.store import Store
 
 
@@ -124,3 +124,39 @@ def test_rejections_without_a_window_still_fail(tmp_path, monkeypatch):
         )
 
     assert client.fetch_search_form.call_count == 2
+
+
+def test_stop_before_the_second_attempt_does_not_read_again(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    client = MagicMock()
+    client.fetch_search_form.return_value = "<form></form>"
+    calls: list[str] = []
+
+    def resolve(image, text, *, solver, ask=None, should_stop=None):
+        calls.append(solver)
+        return "OCR123"
+
+    def stop() -> bool:
+        return len(calls) >= 1
+
+    monkeypatch.setattr(pipeline, "resolve_captcha_code", resolve)
+    monkeypatch.setattr(pipeline, "save_captcha", _save)
+    monkeypatch.setattr(
+        pipeline,
+        "submit_search",
+        lambda *args, **kwargs: "<html>captcha still</html>",
+    )
+    monkeypatch.setattr(pipeline, "search_still_showing_form", lambda html: True)
+
+    with pytest.raises(StopRequested):
+        pipeline._search_with_captcha(
+            client,
+            store,
+            None,
+            retries=3,
+            captcha_solver="openrouter",
+            should_stop=stop,
+        )
+
+    assert calls == ["openrouter"]
+    assert client.fetch_search_form.call_count == 1

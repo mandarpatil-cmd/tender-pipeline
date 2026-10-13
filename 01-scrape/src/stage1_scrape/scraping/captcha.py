@@ -99,6 +99,7 @@ def resolve_captcha_code(
     *,
     solver: str = "manual",
     ask: Callable[[Path], str] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """Use typed text, the vision model, a window callback, or a terminal prompt.
 
@@ -113,7 +114,7 @@ def resolve_captcha_code(
         from stage1_scrape.scraping.ocr import read_captcha_image
 
         try:
-            return read_captcha_image(image_path)
+            return read_captcha_image(image_path, should_stop=should_stop)
         except CaptchaError:
             if ask is None:
                 raise

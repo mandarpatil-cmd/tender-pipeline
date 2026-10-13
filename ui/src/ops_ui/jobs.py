@@ -96,15 +96,45 @@ def start_job(
 
 def request_stop(database: Path, job_id: int) -> None:
     stop = _STOPS.get(job_id)
-    if stop is not None:
-        stop.set()
     waiting = _CAPTCHA.get(job_id)
     if waiting is not None:
         waiting.event.set()
     with session(engine(database)) as current:
         job = current.get(UiJob, job_id)
-        if job is not None and job.state in {"running", "waiting"}:
-            job.log = (job.log or "") + "Stop requested. Work already saved is kept.\n"
+        if job is None or job.state not in {"running", "waiting"}:
+            return
+        if stop is None:
+            job.state = "stopped"
+            job.exit_code = 0
+            job.finished_at = utcnow()
+            job.log = (job.log or "") + "No worker was running. Marked stopped.\n"
+            return
+        stop.set()
+        job.log = (job.log or "") + "Stop requested. Work already saved is kept.\n"
+
+
+def close_orphaned_jobs(database: Path) -> int:
+    """Mark runs left open by a process that has already exited.
+
+    Call this before any worker in this process starts. A live thread is not an orphan.
+    """
+    ensure_schema(engine(database))
+    with session(engine(database)) as current:
+        rows = list(
+            current.scalars(
+                select(UiJob).where(UiJob.state.in_(("running", "waiting")))
+            )
+        )
+        now = utcnow()
+        for job in rows:
+            job.state = "stopped"
+            job.exit_code = 0
+            job.finished_at = now
+            job.log = (
+                (job.log or "")
+                + "The window restarted. This run was left unfinished.\n"
+            )
+        return len(rows)
 
 
 def begin_captcha(database: Path, job_id: int, image: Path) -> CaptchaWait:

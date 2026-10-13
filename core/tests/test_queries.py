@@ -28,6 +28,7 @@ from pipeline_core.queries import (
     mark_failed,
     outreach_targets,
     pending_vendors,
+    reapply_saved_answers,
     recheck_model_contacts,
     record_llm_run,
     record_outreach,
@@ -230,11 +231,26 @@ def test_usable_contact_keeps_a_company_address_and_drops_the_rest():
     assert not is_buyer_email("quality@acme.com")
     kept = usable_contact("hi@kanta.example", "9876543210")
     assert (kept.email, kept.phone, kept.dropped) == ("hi@kanta.example", "9876543210", ())
+    assert kept.emails == ("hi@kanta.example",)
+    assert kept.phones == ("9876543210",)
+    pair = usable_contact(
+        "rfi@ord.gov.in / hi@kanta.example",
+        "+91 7020008149 / +91 9422102422",
+    )
+    assert pair.email == "hi@kanta.example"
+    assert pair.emails == ("hi@kanta.example",)
+    assert pair.phones == ("+91 7020008149", "+91 9422102422")
+    assert pair.dropped == ("rfi@ord.gov.in (government or buyer address)",)
+    assert usable_contact("a@b.example b@c.example", None).emails == (
+        "a@b.example",
+        "b@c.example",
+    )
     dropped = usable_contact("rfi@ord.gov.in", "+918043867273,6957")
     assert dropped.email is None
-    assert dropped.phone is None
+    assert dropped.phone == "+918043867273"
+    assert dropped.phones == ("+918043867273",)
     assert "government or buyer address" in dropped.dropped[0]
-    assert "not a phone number" in dropped.dropped[1]
+    assert dropped.dropped[1] == "6957 (not a phone number)"
     assert usable_contact("not-an-email", None).dropped == ("not-an-email (not an email address)",)
 
 
@@ -319,15 +335,76 @@ def test_recheck_reports_then_fixes_model_answers_and_leaves_typed_ones(bind):
         assert [row.vendor_id for row in preview] == [model_id]
         assert current.get(Vendor, model_id).email == "rfi@ord.gov.in"
         applied = recheck_model_contacts(current, apply=True)
-        assert applied[0].status_after == STATUS_NOT_FOUND
+        assert applied[0].status_after == STATUS_DONE
         fixed = current.get(Vendor, model_id)
         assert fixed.email is None
-        assert fixed.phone is None
-        assert fixed.enrichment_status == STATUS_NOT_FOUND
+        assert fixed.phone == "+918043867273"
+        assert fixed.enrichment_status == STATUS_DONE
         assert current.query(VendorContact).filter_by(vendor_id=model_id).count() == 0
         typed = current.get(Vendor, typed_id)
         assert typed.email == "boss@gov.in"
         assert typed.enrichment_status == STATUS_DONE
+
+
+def test_reapply_saved_answers_keeps_every_phone_from_the_latest_run(bind):
+    raw = (
+        '{"email": "rameshvarandani@gmail.com", '
+        '"phone": "+91 7020008149 / +91 9422102422", '
+        '"source": "https://example.test/prime"}'
+    )
+    with session(bind) as current:
+        vendor_id = upsert_vendor(current, name_raw="Prime Infrastructure")
+        typed_id = upsert_vendor(current, name_raw="Typed Roads")
+        vendor = current.get(Vendor, vendor_id)
+        vendor.email = "rameshvarandani@gmail.com"
+        vendor.enrichment_status = STATUS_DONE
+        vendor.contact_origin = CONTACT_MODEL
+        record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="old",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json='{"phone": "+91 1111111111"}',
+            status="ok",
+        )
+        record_llm_run(
+            current,
+            vendor_id=vendor_id,
+            model="new",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json=raw,
+            status="ok",
+        )
+        typed = current.get(Vendor, typed_id)
+        typed.email = "boss@typed.example"
+        typed.phone = "9000000000"
+        typed.enrichment_status = STATUS_DONE
+        typed.contact_origin = CONTACT_TYPED
+        record_llm_run(
+            current,
+            vendor_id=typed_id,
+            model="new",
+            prompt_version="contact-v1",
+            input_json="{}",
+            output_json='{"phone": "+91 7020008149 / +91 9422102422"}',
+            status="ok",
+        )
+
+        assert reapply_saved_answers(current) == [vendor_id]
+        fixed = current.get(Vendor, vendor_id)
+        assert fixed.email == "rameshvarandani@gmail.com"
+        assert fixed.phone == "+91 7020008149"
+        phones = [
+            row.value
+            for row in current.query(VendorContact)
+            .filter_by(vendor_id=vendor_id, channel="phone", source=CONTACT_MODEL)
+            .order_by(VendorContact.contact_id)
+        ]
+        assert phones == ["+91 7020008149", "+91 9422102422"]
+        assert current.get(Vendor, typed_id).phone == "9000000000"
+        assert reapply_saved_answers(current) == []
 
 
 def test_recheck_contacts_command_changes_nothing_until_apply(bind, tmp_path):

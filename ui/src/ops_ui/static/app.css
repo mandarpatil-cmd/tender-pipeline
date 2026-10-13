@@ -594,6 +594,17 @@ td.wrap {
   max-width: 18rem;
 }
 
+/* URLs have no spaces, so the cell's own width has to be allowed to break them.
+   An inner box with a fixed width is what the table actually sizes to. */
+td[data-col="found_at"] .in-col {
+  width: 16rem;
+  max-width: 16rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
 th.evidence, td.evidence {
   color: var(--accent-foreground);
   background: color-mix(in oklch, var(--accent) 28%, var(--card));

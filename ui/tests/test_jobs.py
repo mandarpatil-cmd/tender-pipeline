@@ -270,6 +270,127 @@ def test_stop_marks_the_run_stopped(tmp_path):
     assert state == "stopped"
 
 
+def test_stop_finishes_a_run_with_no_worker(tmp_path):
+    from pipeline_core.models import UiJob
+    from pipeline_core.queries import utcnow
+
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        job = UiJob(
+            stage="scrape",
+            state="running",
+            operator="local",
+            log="OpenRouter OCR\n",
+            started_at=utcnow(),
+        )
+        current.add(job)
+        current.flush()
+        job_id = int(job.job_id)
+
+    client = TestClient(create_app(path))
+    response = client.post(f"/jobs/{job_id}/stop", follow_redirects=False)
+
+    assert response.status_code == 303
+    stopped = get_job(path, job_id)
+    assert stopped is not None
+    assert stopped.state == "stopped"
+    assert stopped.finished_at
+    assert "No worker was running" in (stopped.log or "")
+
+    def work(log, stop):
+        log.write("started")
+        return 0
+
+    new_id = start_job(path, "scrape", {}, work)
+    assert new_id != job_id
+    state = ""
+    for _ in range(50):
+        later = get_job(path, new_id)
+        state = later.state if later is not None else ""
+        if state == "done":
+            break
+        threading.Event().wait(0.05)
+    assert state == "done"
+
+
+def test_startup_closes_runs_left_by_a_dead_process(tmp_path):
+    from pipeline_core.models import UiJob
+    from pipeline_core.queries import utcnow
+
+    from ops_ui.jobs import close_orphaned_jobs
+
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        waiting = UiJob(
+            stage="enrich",
+            state="waiting",
+            operator="local",
+            log="ocr\n",
+            started_at=utcnow(),
+        )
+        finished = UiJob(
+            stage="scrape",
+            state="done",
+            operator="local",
+            log="kept\n",
+            started_at=utcnow(),
+        )
+        current.add(waiting)
+        current.add(finished)
+        current.flush()
+        waiting_id = int(waiting.job_id)
+        finished_id = int(finished.job_id)
+
+    assert close_orphaned_jobs(path) == 1
+    closed = get_job(path, waiting_id)
+    kept = get_job(path, finished_id)
+    assert closed is not None and closed.state == "stopped"
+    assert closed.finished_at
+    assert "window restarted" in (closed.log or "")
+    assert kept is not None and kept.state == "done"
+    assert "window restarted" not in (kept.log or "")
+
+
+def test_the_log_stays_outside_the_live_fragment(tmp_path):
+    from pipeline_core.models import UiJob
+    from pipeline_core.queries import utcnow
+
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    text = "one\ntwo\n"
+    with session(engine(path)) as current:
+        job = UiJob(
+            stage="enrich",
+            state="running",
+            operator="local",
+            log=text,
+            started_at=utcnow(),
+        )
+        current.add(job)
+        current.flush()
+        job_id = int(job.job_id)
+
+    client = TestClient(create_app(path))
+    page = client.get(f"/jobs/{job_id}")
+    assert page.status_code == 200
+    assert 'id="job-log"' in page.text
+    assert page.text.index('id="live"') < page.text.index('id="job-log"')
+
+    live = client.get(f"/jobs/{job_id}/live")
+    assert live.status_code == 200
+    assert 'id="job-log"' not in live.text
+    assert "<pre" not in live.text
+    assert "one" not in live.text
+
+    chunk = client.get(f"/jobs/{job_id}/log", params={"offset": 4})
+    assert chunk.status_code == 200
+    assert chunk.text == "two\n"
+    assert chunk.headers["x-log-next"] == str(len(text))
+    assert chunk.headers["x-job-state"] == "running"
+
+
 def test_no_cap_requires_both_dates(tmp_path, monkeypatch):
     path = tmp_path / "pipeline.sqlite3"
     ensure_schema(engine(path))

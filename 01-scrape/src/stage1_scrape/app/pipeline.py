@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from stage1_scrape.config import APP_URL, DEFAULT_DELAY_SECONDS, TENDER_STATUS_AOC
-from stage1_scrape.domain.errors import CaptchaError, ParseError, ScraperError
+from stage1_scrape.domain.errors import CaptchaError, ParseError, ScraperError, StopRequested
 from stage1_scrape.domain.models import ScrapeSource, TenderRecord
 from stage1_scrape.parse import (
     find_next_page,
@@ -261,15 +261,19 @@ def fetch_tender_pdfs(
     source = ScrapeSource(
         search_mode=SEARCH_TENDER_ID, search_fields=search_fields(extra), job_id=job_id
     )
-    results_html = _search_with_captcha(
-        client,
-        store,
-        captcha_text=None,
-        retries=captcha_retries,
-        extra_fields=extra,
-        captcha_solver=captcha_solver,
-        ask=ask,
-    )
+    try:
+        results_html = _search_with_captcha(
+            client,
+            store,
+            captcha_text=None,
+            retries=captcha_retries,
+            extra_fields=extra,
+            captcha_solver=captcha_solver,
+            ask=ask,
+            should_stop=should_stop,
+        )
+    except StopRequested:
+        return {"ok": False, "stopped": True, "message": "Stopped during the search."}
     if should_stop and should_stop():
         return {"ok": False, "stopped": True, "message": "Stopped after the search."}
     rows = parse_results_table(results_html)
@@ -329,16 +333,21 @@ def scrape_aoc(
     source = ScrapeSource(
         search_mode=search_mode, search_fields=search_fields(extra_fields), job_id=job_id
     )
-    results_html = _search_with_captcha(
-        client,
-        store,
-        captcha_text=captcha_text,
-        retries=captcha_retries,
-        extra_fields=extra_fields,
-        from_probe=from_probe,
-        captcha_solver=captcha_solver,
-        ask=ask,
-    )
+    try:
+        results_html = _search_with_captcha(
+            client,
+            store,
+            captcha_text=captcha_text,
+            retries=captcha_retries,
+            extra_fields=extra_fields,
+            from_probe=from_probe,
+            captcha_solver=captcha_solver,
+            ask=ask,
+            should_stop=should_stop,
+        )
+    except StopRequested:
+        log.info("Stop requested. Tenders already saved are kept.")
+        return []
     known = store.known_ids() if skip_known else set()
     records: list[TenderRecord] = []
     skipped = 0
@@ -388,6 +397,12 @@ def scrape_aoc(
             )
 
 
+def _captcha_kwargs(should_stop: "Callable[[], bool] | None") -> dict:
+    if should_stop is None:
+        return {}
+    return {"should_stop": should_stop}
+
+
 def _search_with_captcha(
     client: GePNICClient,
     store: Store,
@@ -397,12 +412,15 @@ def _search_with_captcha(
     from_probe: bool = False,
     captcha_solver: str = "manual",
     ask: "Callable[[Path], str] | None" = None,
+    should_stop: "Callable[[], bool] | None" = None,
 ) -> str:
     last_error: Exception | None = None
     session_path = store.root / "session.pkl"
     form_path = store.debug_dir / "search_form.html"
     attempts = max(1, retries)
     for attempt in range(1, attempts + 1):
+        if should_stop is not None and should_stop():
+            raise StopRequested("Stopped before the next captcha attempt.")
         if from_probe and attempt == 1:
             if not session_path.exists() or not form_path.exists():
                 raise CaptchaError(
@@ -423,6 +441,7 @@ def _search_with_captcha(
                 image_path,
                 captcha_text if attempt == 1 else None,
                 solver=captcha_solver,
+                **_captcha_kwargs(should_stop),
             )
         except CaptchaError as exc:
             last_error = exc
@@ -448,11 +467,19 @@ def _search_with_captcha(
         return _accepted_results(client, store, session_path, results)
     if ask is not None:
         while True:
+            if should_stop is not None and should_stop():
+                raise StopRequested("Stopped before the next captcha attempt.")
             html = client.fetch_search_form()
             client.save_state(session_path)
             store.write_debug("search_form.html", html)
             image_path = save_captcha(html, store.root / "captcha")
-            code = resolve_captcha_code(image_path, None, solver="manual", ask=ask)
+            code = resolve_captcha_code(
+                image_path,
+                None,
+                solver="manual",
+                ask=ask,
+                **_captcha_kwargs(should_stop),
+            )
             results = submit_search(client, html, code, extra=extra_fields)
             if not search_still_showing_form(results):
                 return _accepted_results(client, store, session_path, results)

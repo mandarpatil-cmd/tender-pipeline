@@ -27,3 +27,7 @@ class SessionExpiredError(ScraperError):
 
 class ExportError(ScraperError):
     """The vendor spreadsheet could not be written."""
+
+
+class StopRequested(Exception):
+    """The operator asked to stop before the next portal or OCR call."""

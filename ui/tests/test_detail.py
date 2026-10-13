@@ -184,7 +184,7 @@ def test_award_page_shows_where_the_model_found_the_address(tmp_path):
     assert 'href="/jobs/9"' in html
     assert "Not kept:" in html
     assert "rfi@ord.gov.in (government or buyer address)" in html
-    assert "+918043867273,6957 (not a phone number)" in html
+    assert "6957 (not a phone number)" in html
 
 
 def test_row_links_to_the_award(tmp_path):

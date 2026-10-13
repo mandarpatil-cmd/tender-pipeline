@@ -446,21 +446,44 @@ def replace_company_contact(
     llm_run_id: int | None = None,
 ) -> None:
     """The new enrichment or typed value replaces only that source and channel."""
+    replace_company_contacts(
+        session,
+        vendor_id,
+        source=source,
+        channel=channel,
+        values=[value] if value else [],
+        source_url=source_url,
+        llm_run_id=llm_run_id,
+    )
+
+
+def replace_company_contacts(
+    session: Session,
+    vendor_id: int,
+    *,
+    source: str,
+    channel: str,
+    values: Iterable[str],
+    source_url: str | None = None,
+    llm_run_id: int | None = None,
+) -> None:
+    """Replace one source and channel with every value, in the order given."""
     session.query(VendorContact).filter(
         VendorContact.vendor_id == vendor_id,
         VendorContact.source == source,
         VendorContact.channel == channel,
         VendorContact.tender_id.is_(None),
     ).delete(synchronize_session=False)
-    add_contact(
-        session,
-        vendor_id,
-        channel=channel,
-        value=value,
-        source=source,
-        source_url=source_url,
-        llm_run_id=llm_run_id,
-    )
+    for value in values:
+        add_contact(
+            session,
+            vendor_id,
+            channel=channel,
+            value=value,
+            source=source,
+            source_url=source_url,
+            llm_run_id=llm_run_id,
+        )
 
 
 def record_pdf_contacts(
@@ -786,8 +809,10 @@ def mark_enriched(
 
     Only what `usable_contact` keeps is stored: a government address or a phone
     that cannot be dialled is left out, and the raw answer stays in ``llm_runs``.
-    A result with nothing usable is `not_found`, not `failed` — the call worked,
-    the answer was "nothing we can use". Only `failed` is retried.
+    The company columns keep the first value. Every kept email and phone is its
+    own ``vendor_contacts`` row. A result with nothing usable is `not_found`,
+    not `failed` — the call worked, the answer was "nothing we can use". Only
+    `failed` is retried.
     """
     from .emailcheck import usable_contact
 
@@ -805,13 +830,16 @@ def mark_enriched(
         },
         synchronize_session=False,
     )
-    for channel, value in ((CHANNEL_EMAIL, clean_email), (CHANNEL_PHONE, clean_phone)):
-        replace_company_contact(
+    for channel, values in (
+        (CHANNEL_EMAIL, verdict.emails),
+        (CHANNEL_PHONE, verdict.phones),
+    ):
+        replace_company_contacts(
             session,
             vendor_id,
             source=CONTACT_MODEL,
             channel=channel,
-            value=value,
+            values=values,
             source_url=source_url,
             llm_run_id=llm_run_id,
         )
@@ -1117,6 +1145,84 @@ def recheck_model_contacts(session: Session, *, apply: bool = False) -> list[Rec
                     VendorContact.channel == channel,
                     VendorContact.tender_id.is_(None),
                 ).delete(synchronize_session=False)
+    return changed
+
+
+def _saved_answer(raw: str | None) -> tuple[str | None, str | None, str | None]:
+    """``email``, ``phone``, and ``source`` from one ``llm_runs.output_json``."""
+    try:
+        value = json.loads(raw or "{}")
+    except ValueError:
+        return None, None, None
+    if not isinstance(value, dict):
+        return None, None, None
+
+    def text(key: str) -> str | None:
+        item = value.get(key)
+        if item is None:
+            return None
+        return str(item)
+
+    return text("email"), text("phone"), text("source")
+
+
+def _model_contact_values(session: Session, vendor_id: int, channel: str) -> tuple[str, ...]:
+    rows = session.scalars(
+        select(VendorContact.value)
+        .where(
+            VendorContact.vendor_id == vendor_id,
+            VendorContact.source == CONTACT_MODEL,
+            VendorContact.channel == channel,
+            VendorContact.tender_id.is_(None),
+        )
+        .order_by(VendorContact.contact_id)
+    ).all()
+    return tuple(rows)
+
+
+def reapply_saved_answers(session: Session) -> list[int]:
+    """Store every value the current rule keeps from the latest successful answer.
+
+    Reads ``llm_runs``. Does not call the model. A typed contact is a person's
+    decision and is left alone. Returns the companies whose stored contacts changed.
+    """
+    from .emailcheck import usable_contact
+
+    latest = (
+        select(func.max(LlmRun.run_id))
+        .where(LlmRun.vendor_id == Vendor.vendor_id, LlmRun.status == "ok")
+        .correlate(Vendor)
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(Vendor, LlmRun)
+        .join(LlmRun, LlmRun.run_id == latest)
+        .where(Vendor.contact_origin == CONTACT_MODEL)
+        .order_by(Vendor.vendor_id)
+    ).all()
+    changed: list[int] = []
+    for vendor, run in rows:
+        email, phone, source = _saved_answer(run.output_json)
+        verdict = usable_contact(email, phone)
+        stored_email = (vendor.email or "").strip() or None
+        stored_phone = (vendor.phone or "").strip() or None
+        if (
+            stored_email == verdict.email
+            and stored_phone == verdict.phone
+            and _model_contact_values(session, vendor.vendor_id, CHANNEL_EMAIL) == verdict.emails
+            and _model_contact_values(session, vendor.vendor_id, CHANNEL_PHONE) == verdict.phones
+        ):
+            continue
+        mark_enriched(
+            session,
+            int(vendor.vendor_id),
+            email=email,
+            phone=phone,
+            source_url=source,
+            llm_run_id=int(run.run_id),
+        )
+        session.expire(vendor)
+        changed.append(int(vendor.vendor_id))
     return changed
 
 

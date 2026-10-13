@@ -6,4 +6,47 @@
 {% if refused %}<p class="warn">A new run was refused. This one is still going.</p>{% endif %}
 {% if captcha_error %}<p class="warn">Type all 6 characters shown in the image, then Continue.</p>{% endif %}
 {% include "job_live.html" %}
+<p class="label">Log</p>
+<pre id="job-log" data-job="{{ job.job_id }}" data-offset="{{ (job.log or '')|length }}" data-active="{% if job.state == 'running' or job.state == 'waiting' %}1{% else %}0{% endif %}">{{ job.log }}</pre>
+<script>
+(function () {
+  var panel = document.getElementById("job-log");
+  if (!panel) return;
+  var active = panel.getAttribute("data-active") === "1";
+  if (active) panel.scrollTop = panel.scrollHeight;
+  if (!active) return;
+  var jobId = panel.getAttribute("data-job");
+  var offset = Number(panel.getAttribute("data-offset") || "0");
+  function atBottom() {
+    return panel.scrollHeight - panel.scrollTop - panel.clientHeight < 24;
+  }
+  function poll() {
+    fetch("/jobs/" + jobId + "/log?offset=" + offset)
+      .then(function (response) {
+        if (!response.ok) return null;
+        var next = response.headers.get("X-Log-Next");
+        var state = response.headers.get("X-Job-State") || "";
+        return response.text().then(function (chunk) {
+          return { chunk: chunk, next: next, state: state };
+        });
+      })
+      .then(function (update) {
+        if (!update) return;
+        if (update.chunk) {
+          var follow = atBottom();
+          panel.appendChild(document.createTextNode(update.chunk));
+          if (follow) panel.scrollTop = panel.scrollHeight;
+        }
+        if (update.next) offset = Number(update.next);
+        if (update.state === "running" || update.state === "waiting") {
+          window.setTimeout(poll, 1000);
+        }
+      })
+      .catch(function () {
+        window.setTimeout(poll, 1000);
+      });
+  }
+  window.setTimeout(poll, 1000);
+})();
+</script>
 {% endblock %}

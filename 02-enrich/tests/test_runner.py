@@ -370,9 +370,7 @@ def test_nothing_usable_is_not_found_and_the_raw_answer_stays():
     (vendor_id,) = _seed("Bad Answer Ltd")
 
     summary = enrich_pending(
-        chain=FakeChain(
-            ContactInfo(email="desk@nic.in", phone="+918043867273,6957")
-        )
+        chain=FakeChain(ContactInfo(email="desk@nic.in", phone="6957"))
     )
 
     assert summary.not_found == 1
@@ -383,7 +381,42 @@ def test_nothing_usable_is_not_found_and_the_raw_answer_stays():
         assert vendor.enrichment_status == STATUS_NOT_FOUND
         stored = current.query(LlmRun).one().output_json
         assert "desk@nic.in" in stored
-        assert "+918043867273,6957" in stored
+        assert "6957" in stored
+
+
+def test_two_phones_in_one_answer_are_both_kept():
+    from pipeline_core.models import VendorContact
+
+    (vendor_id,) = _seed("Prime Infrastructure")
+    noted: list[str] = []
+
+    summary = enrich_pending(
+        chain=FakeChain(
+            ContactInfo(
+                email="rameshvarandani@gmail.com",
+                phone="+91 7020008149 / +91 9422102422",
+            )
+        ),
+        report=lambda _vendor, _status, detail: noted.append(detail),
+    )
+
+    assert summary.done == 1
+    assert noted == [
+        "rameshvarandani@gmail.com, +91 7020008149, +91 9422102422"
+    ]
+    with session() as current:
+        vendor = current.get(Vendor, vendor_id)
+        assert vendor.email == "rameshvarandani@gmail.com"
+        assert vendor.phone == "+91 7020008149"
+        phones = [
+            row.value
+            for row in current.query(VendorContact)
+            .filter_by(vendor_id=vendor_id, channel="phone")
+            .order_by(VendorContact.contact_id)
+        ]
+        assert phones == ["+91 7020008149", "+91 9422102422"]
+        stored = current.query(LlmRun).one().output_json
+        assert "+91 7020008149 / +91 9422102422" in stored
 
 
 def test_a_kept_address_names_its_page_and_its_run():

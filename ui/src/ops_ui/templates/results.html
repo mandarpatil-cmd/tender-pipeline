@@ -37,7 +37,7 @@
         <td class="tick"><input type="checkbox" name="vendor_id" value="{{ row.vendor_id }}:{{ row.tender_id }}"></td>
         {% endif %}
         {% for col in columns %}
-        <td class="{{ 'evidence' if col.evidence else '' }}{{ ' wrap' if col.key in ['title', 'organisation', 'work_title', 'name_raw', 'found_at'] else '' }}" data-col="{{ col.key }}">{% if col.key == 'tender_id' %}<a class="open" href="/award?tender_id={{ row.tender_id|urlencode }}&bid={{ row.bid_number|urlencode }}&back={{ (request.url.path ~ ('?' ~ request.url.query if request.url.query else ''))|urlencode }}">{{ row.tender_id }}</a>{% elif col.key == 'scrape_job_id' and row.scrape_job_id is not none %}<a href="/jobs/{{ row.scrape_job_id }}">{{ row.scrape_job_id }}</a>{% else %}{{ "" if row[col.key] is none else row[col.key] }}{% endif %}</td>
+        <td class="{{ 'evidence' if col.evidence else '' }}{{ ' wrap' if col.key in ['title', 'organisation', 'work_title', 'name_raw', 'found_at'] else '' }}" data-col="{{ col.key }}">{% if col.key == 'tender_id' %}<a class="open" href="/award?tender_id={{ row.tender_id|urlencode }}&bid={{ row.bid_number|urlencode }}&back={{ (request.url.path ~ ('?' ~ request.url.query if request.url.query else ''))|urlencode }}">{{ row.tender_id }}</a>{% elif col.key == 'scrape_job_id' and row.scrape_job_id is not none %}<a href="/jobs/{{ row.scrape_job_id }}">{{ row.scrape_job_id }}</a>{% elif col.key == 'found_at' %}<div class="in-col">{{ "" if row[col.key] is none else row[col.key] }}</div>{% else %}{{ "" if row[col.key] is none else row[col.key] }}{% endif %}</td>
         {% endfor %}
       </tr>
       {% else %}
