@@ -1,0 +1,121 @@
+"""A scrape, lookup, or send stays on the page that started it."""
+
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+from pipeline_core.db import engine, ensure_schema, session
+from pipeline_core.models import UiJob
+from pipeline_core.queries import (
+    mark_enriched,
+    record_llm_run,
+    replace_awards,
+    upsert_tender,
+    upsert_vendor,
+    utcnow,
+)
+
+from ops_ui.app import create_app
+from ops_ui.present import job_id_from
+
+
+def _job(current, stage: str, *, params: str = "{}", log: str = "started") -> int:
+    job = UiJob(
+        stage=stage,
+        state="done",
+        operator="local",
+        params_json=params,
+        log=log,
+        started_at=utcnow(),
+        finished_at=utcnow(),
+    )
+    current.add(job)
+    current.flush()
+    return int(job.job_id)
+
+
+def test_scrape_job_page_lists_only_that_run(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        job_id = _job(current, "scrape", log="saved the tender")
+        winner = upsert_vendor(current, name_raw="This Run Ltd")
+        other = upsert_vendor(current, name_raw="Older Run Ltd")
+        upsert_tender(
+            current,
+            tender_id="THIS",
+            title="This run",
+            scraped_at=utcnow(),
+            scrape_job_id=job_id,
+        )
+        upsert_tender(current, tender_id="OLDER", title="Older", scraped_at=utcnow(), scrape_job_id=9)
+        replace_awards(
+            current,
+            "THIS",
+            [{"bid_number": "1", "vendor_id": winner, "bidder_name": "This Run Ltd"}],
+        )
+        replace_awards(
+            current,
+            "OLDER",
+            [{"bid_number": "1", "vendor_id": other, "bidder_name": "Older Run Ltd"}],
+        )
+    client = TestClient(create_app(path))
+    html = client.get(f"/scrape?job={job_id}").text
+
+    assert "saved the tender" in html
+    assert ">THIS</a>" in html
+    assert ">OLDER</a>" not in html
+    assert f'href="/scrape/export.xlsx?job={job_id}"' in html
+    assert "Stored awards, with their filters, are on" not in html
+    assert "Add a tender" in html
+
+
+def test_scrape_and_enrich_and_mail_stay_on_their_pages(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        vendor_id = upsert_vendor(current, name_raw="Waiting Works")
+        mark_enriched(current, vendor_id, email="wait@example.com", phone=None)
+        upsert_tender(current, tender_id="T-1", title="Wait", scraped_at=utcnow())
+        replace_awards(
+            current,
+            "T-1",
+            [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "Waiting Works"}],
+        )
+    monkeypatch.setattr("ops_ui.routes.jobs.run_scrape", lambda log, stop, **params: 0)
+    monkeypatch.setattr("ops_ui.routes.jobs.run_enrich", lambda log, stop, **params: 0)
+    monkeypatch.setattr("ops_ui.runs.run_outreach", lambda log, stop, **params: 0)
+    client = TestClient(create_app(path))
+
+    scrape = client.post("/jobs/scrape", data={"search": "awarded"}, follow_redirects=False)
+    assert scrape.status_code == 303
+    assert scrape.headers["location"].startswith("/scrape?job=")
+
+    enrich = client.post(
+        "/jobs/enrich",
+        data={"limit": "1", "delay": "0", "source": "scrape", "dry_run": "on"},
+        follow_redirects=False,
+    )
+    assert enrich.headers["location"].startswith("/enrich?job=")
+    enrich_page = client.get(enrich.headers["location"]).text
+    assert "Nothing was looked up." in enrich_page
+    assert 'name="enrichment_status"' not in enrich_page
+
+    lookup = client.post(
+        "/selection/lookup",
+        data={"vendor_id": str(vendor_id), "dry_run": "on"},
+        follow_redirects=False,
+    )
+    assert lookup.headers["location"].startswith("/enrich?job=")
+
+    sent = client.post(
+        "/mail",
+        data={"mode": "preview", "delay": "5", "award": f"{vendor_id}:T-1"},
+        follow_redirects=False,
+    )
+    assert sent.headers["location"].startswith("/mail?job=")
+    mail_page = client.get(sent.headers["location"]).text
+    assert ">T-1</a>" in mail_page
+    assert "Send state" not in mail_page
+    job_id = job_id_from(sent.headers["location"])
+    assert f'href="/mail/export.xlsx?job={job_id}"' in mail_page

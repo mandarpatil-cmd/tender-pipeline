@@ -146,12 +146,11 @@ that cost real money. New vendors are left `enrichment_status = 'pending'`, whic
 exactly how stage 2 finds its work.
 
 `pdf_email` and `pdf_phone` are the exception, and they are **evidence, not answers**.
-They are read from the work order's embedded text layer with `pypdf`, not by OCR — a page
-that is purely a scanned image yields nothing at all. When text is present it is often a
-layer the issuing department's scanner produced, so characters can already be wrong:
-`acmctechworks0l@example.com` for `acmetechworks01@example.com`. Stage 2 passes them to the
-model to confirm or correct; nothing mails them directly. They are only attributed when
-a tender had exactly one winner, since a work order names one firm.
+LiteParse reads every page: the page's own text when the PDF is digital, OCR at 300 DPI
+when the page is a scan. A document model then pulls the email and phone from that text.
+Stage 2 passes them to the contact model to confirm or correct; nothing mails them
+directly. They are only attributed when a tender had exactly one winner, since a work
+order names one firm.
 
 `name_norm` is the unique key. It comes from `pipeline_core.naming.normalize_name`,
 shared by every stage — change those rules and one company becomes two rows.

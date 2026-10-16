@@ -1,0 +1,19 @@
+<form class="entry" method="post" action="/tender/new">
+  <label>Tender id <input name="tender_id" value="{{ fields.tender_id if fields is defined else '' }}" placeholder="blank for MANUAL-"></label>
+  <label>Status <input name="status" value="{{ fields.status if fields is defined else '' }}"></label>
+  <label class="span">Title <input name="title" value="{{ fields.title if fields is defined else '' }}"></label>
+  <label class="span">Organisation <input name="organisation" value="{{ fields.organisation if fields is defined else '' }}"></label>
+  <label>Contract date <input name="contract_date" value="{{ fields.contract_date if fields is defined else '' }}" placeholder="21-Sep-2026"></label>
+  <label>Contract value <input name="contract_value" value="{{ fields.contract_value if fields is defined else '' }}"></label>
+  <fieldset>
+    <h2>Winner</h2>
+    <label class="span">Company <input name="winner_name" value="{{ winner_name if winner_name is defined else '' }}" required></label>
+    <label>Bid number <input name="bid_number" value="{{ bid_number if bid_number is defined else '1' }}"></label>
+    <label>Rank <input name="rank" value="{{ rank if rank is defined else '' }}"></label>
+    <label>Quoted value <input name="quoted_value" value="{{ quoted_value if quoted_value is defined else '' }}"></label>
+    <label>Awarded value <input name="awarded_value" value="{{ awarded_value if awarded_value is defined else '' }}"></label>
+    <label>Currency <input name="awarded_currency" value="{{ awarded_currency if awarded_currency is defined else '' }}"></label>
+    <label class="span">Work title <input name="work_title" value="{{ work_title if work_title is defined else '' }}"></label>
+  </fieldset>
+  <button type="submit">Save tender</button>
+</form>

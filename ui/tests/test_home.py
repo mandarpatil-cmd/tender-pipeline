@@ -81,7 +81,7 @@ def test_home_counts_match_the_database(tmp_path):
     assert "phone-only" not in html
     assert "can never be mailed" not in html
     assert 'data-count="enriched"' not in html
-    assert 'data-count="awards"' not in html
+    assert 'data-count="awards"' in html
     assert str(path) in html
 
 

@@ -12,6 +12,7 @@ from pipeline_core.models import Vendor
 from pipeline_core.queries import mark_failed, upsert_vendor
 
 from ops_ui.app import create_app
+from ops_ui.present import job_id_from
 from ops_ui.jobs import Busy, get_job, start_job
 from pipeline_core.db import session
 
@@ -24,7 +25,7 @@ def test_status_run_writes_the_log(tmp_path):
     response = client.post("/jobs/status", follow_redirects=False)
 
     assert response.status_code == 303
-    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(response.headers["location"])
     log = ""
     for _ in range(50):
         page = client.get(f"/jobs/{job_id}")
@@ -75,7 +76,7 @@ def test_enrich_dry_run_lists_the_company_and_does_not_spend(tmp_path):
         data={"limit": "1", "delay": "0", "source": "scrape", "dry_run": "on"},
         follow_redirects=False,
     )
-    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(response.headers["location"])
     text = ""
     for _ in range(50):
         page = client.get(f"/jobs/{job_id}")
@@ -112,6 +113,7 @@ def test_enrich_page_names_the_limit_and_the_delay(tmp_path):
     assert "One organisation" in scrape
     assert "Pause between portal requests" in scrape
     assert "Award of Contract" in scrape
+    assert "Add a tender" in scrape
     assert "fetch and store each one again" in scrape
     assert 'name="date_field"' not in scrape
     assert 'type="date"' in scrape
@@ -144,7 +146,7 @@ def test_enrich_dry_run_does_not_requeue(tmp_path):
         },
         follow_redirects=False,
     )
-    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(response.headers["location"])
     text = ""
     for _ in range(50):
         page = client.get(f"/jobs/{job_id}")
@@ -197,7 +199,7 @@ def test_typed_captcha_reaches_the_same_run(tmp_path):
         follow_redirects=False,
     )
     assert short.status_code == 303
-    assert short.headers["location"].endswith(f"/jobs/{job_id}?captcha=1")
+    assert short.headers["location"].endswith(f"/scrape?job={job_id}&captcha=1")
     assert "Type all 6 characters" in client.get(short.headers["location"]).text
     posted = client.post(
         f"/jobs/{job_id}/captcha",
@@ -440,7 +442,7 @@ def test_no_cap_stores_unlimited_bounds(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 303
-    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(response.headers["location"])
     job = get_job(path, job_id)
     assert job is not None
     params = json.loads(job.params_json)
@@ -475,7 +477,7 @@ def test_scrape_preset_is_measured_from_the_to_date(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 303
-    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(response.headers["location"])
     job = get_job(path, job_id)
     params = json.loads(job.params_json)
     assert params["fromDate"] == "08/08/2026"
@@ -550,7 +552,7 @@ def test_refresh_reruns_stage_one_and_contract_dates_stay_contract(tmp_path, mon
         follow_redirects=False,
     )
     assert response.status_code == 303
-    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(response.headers["location"])
     for _ in range(50):
         if seen:
             break
@@ -585,7 +587,7 @@ def test_a_ui_scrape_tells_stage_one_its_search_and_run(tmp_path, monkeypatch):
     response = client.post("/jobs/scrape", data={"search": "awarded"}, follow_redirects=False)
 
     assert response.status_code == 303
-    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(response.headers["location"])
     for _ in range(50):
         if seen:
             break
@@ -623,7 +625,7 @@ def test_an_enrich_run_tells_stage_two_its_job(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 303
-    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(response.headers["location"])
     for _ in range(50):
         if seen:
             break
@@ -676,7 +678,7 @@ def test_download_pdfs_starts_a_pdf_job(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 303
-    job_id = int(response.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(response.headers["location"])
     job = get_job(path, job_id)
     assert job is not None
     assert job.stage == "pdfs"
@@ -778,7 +780,7 @@ def test_organisation_search_posts_only_that_group(tmp_path, monkeypatch):
         "tenderId": "",
         "KeyWord": "",
     }
-    job = get_job(path, int(response.headers["location"].rsplit("/", 1)[-1]))
+    job = get_job(path, job_id_from(response.headers["location"]))
     assert seen["search_mode"] == "organisation"
     assert seen["job_id"] == job.job_id
     params = json.loads(job.params_json)

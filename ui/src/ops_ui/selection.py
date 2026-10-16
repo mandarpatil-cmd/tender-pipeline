@@ -67,7 +67,7 @@ def selected_awards(form, path: Path) -> list[tuple[int, str]]:
 
 def _table_query(form):
     stage = str(form.get("stage") or "")
-    if stage in {"scrape", "enrich", "mail"}:
+    if stage in {"home", "scrape", "enrich", "mail"}:
         return stage_query(stage, form)
     return query_from(form)
 

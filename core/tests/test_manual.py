@@ -6,7 +6,7 @@ import pytest
 
 from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.emailcheck import is_email
-from pipeline_core.manual import NeedsAttach, WinnerInput, save_manual_tender
+from pipeline_core.manual import NeedsAttach, TenderExists, WinnerInput, save_manual_tender
 from pipeline_core.models import (
     CONTACT_MODEL,
     CONTACT_TYPED,
@@ -55,7 +55,7 @@ def test_a_new_company_is_manual_and_has_no_contact(bind):
 
 
 def test_a_typed_tender_is_manual_with_no_portal_search(bind):
-    """Typing over a scraped id makes the row the person's, so the portal search goes."""
+    """A blank id is manual. An id that is already stored is left unchanged."""
     with session(bind) as current:
         upsert_tender(
             current,
@@ -79,28 +79,32 @@ def test_a_typed_tender_is_manual_with_no_portal_search(bind):
             winners=[WinnerInput(name="Fresh Electricals", bid_number="1")],
             attach=False,
         )
-        save_manual_tender(
-            current,
-            tender_id="2026_X_1",
-            title="Typed over",
-            organisation="Works dept",
-            status="AOC",
-            contract_date="",
-            contract_value="",
-            winners=[WinnerInput(name="Other Electricals", bid_number="1")],
-            attach=False,
-        )
-        rows = [current.get(Tender, fresh), current.get(Tender, "2026_X_1")]
+        with pytest.raises(TenderExists) as raised:
+            save_manual_tender(
+                current,
+                tender_id="2026_X_1",
+                title="Typed over",
+                organisation="Works dept",
+                status="AOC",
+                contract_date="",
+                contract_value="",
+                winners=[WinnerInput(name="Other Electricals", bid_number="1")],
+                attach=False,
+            )
+        kept = current.get(Tender, "2026_X_1")
+        fresh_row = current.get(Tender, fresh)
 
-        for tender in rows:
-            assert tender.origin == ORIGIN_MANUAL
-            assert (
-                tender.search_mode,
-                tender.search_fields,
-                tender.listing_page,
-                tender.listing_serial,
-                tender.scrape_job_id,
-            ) == (None, None, None, None, None)
+    assert raised.value.tender_id == "2026_X_1"
+    assert fresh_row.origin == ORIGIN_MANUAL
+    assert (
+        fresh_row.search_mode,
+        fresh_row.search_fields,
+        fresh_row.listing_page,
+        fresh_row.listing_serial,
+        fresh_row.scrape_job_id,
+    ) == (None, None, None, None, None)
+    assert kept.origin == "eprocure.gov.in"
+    assert kept.title != "Typed over"
 
 
 def test_a_known_name_asks_before_attaching_and_keeps_the_email(bind):

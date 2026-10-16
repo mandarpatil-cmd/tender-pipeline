@@ -46,11 +46,11 @@ the *identity* (`name_raw`, `name_norm`, `legal_form`, `city`, `state`, `buyer_h
 `phone`, `enrichment_status` or `enriched_at` — those belong to stage 2, and overwriting
 them would throw away paid-for results.
 
-`pdf_email` / `pdf_phone` are read from the work order's embedded text layer with `pypdf`,
-not by OCR — the only OCR in this project is the captcha. A purely scanned page yields no
-text at all; what does come back is often a scanner-produced layer, so characters can
-already be wrong. They are a lead for stage 2 to confirm, never an address to mail, and
-they are only attributed when a tender had exactly one winner — a work order names one firm.
+`pdf_email` / `pdf_phone` come from LiteParse text of the whole work order, then one
+document-model call. LiteParse uses the page's own text when the PDF is digital and OCR
+at 300 DPI when the page is a scan. The only other OCR in this project is the captcha.
+Those clues are a lead for stage 2 to confirm, never an address to mail, and they are
+only attributed when a tender had exactly one winner — a work order names one firm.
 
 `name_norm` is the unique key on `vendors`. It comes from
 `pipeline_core.naming.normalize_name`, which every stage shares; changing those rules

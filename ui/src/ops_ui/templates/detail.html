@@ -11,23 +11,30 @@
 <h1>{{ detail.tender.tender_id }}</h1>
 <p class="intro">{{ detail.vendor.name_raw }} · bid {{ detail.focus_bid }}</p>
 
-<h2 class="section">Tender</h2>
-<dl>
-  {% for label, key in [
-    ("Title", "title"),
-    ("Organisation", "organisation"),
-    ("Status", "status"),
-    ("Contract date", "contract_date"),
-    ("Contract value", "contract_value"),
-    ("Contract currency", "contract_currency"),
-    ("Scraped", "scraped_at")
-  ] %}
-  <div class="pair">
-    <dt>{{ label }}</dt>
-    <dd>{{ detail.tender[key] or "" }}</dd>
-  </div>
+{% if save_error %}<p class="error">{{ save_error }}</p>{% endif %}
+<form class="entry" method="post" action="/award">
+  <input type="hidden" name="tender_id" value="{{ detail.tender.tender_id }}">
+  <input type="hidden" name="bid" value="{{ detail.focus_bid }}">
+  <input type="hidden" name="back" value="{{ back }}">
+  <h2 class="section">Tender</h2>
+  <p class="muted">Tender id {{ detail.tender.tender_id }} stays fixed. Scraped {{ detail.tender.scraped_at or "" }}.</p>
+  <label class="span">Title <input name="title" value="{{ detail.tender.title or '' }}"></label>
+  <label class="span">Organisation <input name="organisation" value="{{ detail.tender.organisation or '' }}"></label>
+  <label>Status <input name="status" value="{{ detail.tender.status or '' }}"></label>
+  <label>Contract date <input name="contract_date" value="{{ detail.tender.contract_date or '' }}"></label>
+  <label>Contract value <input name="contract_value" value="{{ detail.tender.contract_value or '' }}"></label>
+  <label>Contract currency <input name="contract_currency" value="{{ detail.tender.contract_currency or '' }}"></label>
+  <h2 class="section">This award</h2>
+  <p class="muted">Bid {{ detail.focus_bid }} stays fixed.</p>
+  {% for row in detail.awards if row.bid_number == detail.focus_bid %}
+  <label>Rank <input name="rank" value="{{ row.rank or '' }}"></label>
+  <label>Quoted value <input name="quoted_value" value="{{ row.quoted_value or '' }}"></label>
+  <label>Awarded value <input name="awarded_value" value="{{ row.awarded_value or '' }}"></label>
+  <label>Currency <input name="awarded_currency" value="{{ row.awarded_currency or '' }}"></label>
+  <label class="span">Work title <input name="work_title" value="{{ row.work_title or '' }}"></label>
   {% endfor %}
-</dl>
+  <button type="submit">Save tender</button>
+</form>
 
 <h2 class="section">Where this came from</h2>
 {% set tender = detail.tender %}

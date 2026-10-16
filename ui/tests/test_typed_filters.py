@@ -72,7 +72,7 @@ def test_scrape_excel_follows_the_numeric_contract_order(tmp_path):
     _seed(path)
     client = TestClient(create_app(path))
     sheet = load_workbook(
-        BytesIO(client.get("/scrape/export.xlsx?sort=contract_value&dir=asc").content)
+        BytesIO(client.get("/export.xlsx?sort=contract_value&dir=asc").content)
     ).active
     headers = [cell.value for cell in sheet[1]]
     ids = [sheet.cell(row, 1).value for row in range(2, 5)]

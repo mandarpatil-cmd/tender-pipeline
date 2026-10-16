@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Runs{% endblock %}
+{% block title %}Activity{% endblock %}
 {% block body %}
-<p class="kicker">Runs</p>
-<h1>Runs</h1>
-<p class="lede">What has already been started. Scrape starts on Scrape. Enrich starts on Enrich. Mail is not sent from here. Open a run to read the log, type a captcha, or stop it.</p>
+<p class="kicker">Activity</p>
+<h1>Activity</h1>
+<p class="lede">What has already been started. A scrape starts on Collect. A lookup starts on Contacts. Mail is not sent from here. Open a run to read the log, type a captcha, or stop it.</p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% else %}

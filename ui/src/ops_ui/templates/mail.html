@@ -1,15 +1,22 @@
 {% extends "base.html" %}
-{% block title %}Mail{% endblock %}
+{% block title %}Send{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block body %}
-<p class="kicker">Mail</p>
-<h1>Mail</h1>
+<p class="kicker">Send</p>
+<h1>Send</h1>
 <p class="lede">Companies with an email that have not been sent yet. A selected tender is mailed to every valid address for that company: PDF, enrichment, and typed. A phone alone is not mailed. Sending does not change the saved default letter.</p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% else %}
+{% if job %}
+{% include "job_panel.html" %}
+<div id="job-grid"{% if job.state == 'running' or job.state == 'waiting' %} hx-get="{{ request.url }}" hx-trigger="every 2s" hx-select="#job-grid" hx-swap="outerHTML"{% endif %}>
+{% include "results.html" %}
+</div>
+{% else %}
 {% include "stage_filters.html" %}
 {% if view %}{% include "results.html" %}{% endif %}
+{% endif %}
 {% if error %}<p class="warn">{{ error }}</p>{% endif %}
 {% if saved and not error %}<p class="cost">Saved. Nothing was sent.</p>{% endif %}
 {% if not selected %}

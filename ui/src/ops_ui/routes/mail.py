@@ -12,7 +12,8 @@ from pipeline_core.queries import mail_messages, ordered_contacts
 from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
 from ops_ui.queries import load_home
-from ops_ui.routes.awards import remember, stage_context
+from ops_ui.present import job_page
+from ops_ui.routes.awards import remember, stage_context, watched_job
 from ops_ui.runs import credential_gap, live_send_refusal, load_campaign, run_outreach
 from ops_ui.selection import selected_awards
 from ops_ui.templating import TEMPLATES
@@ -170,8 +171,8 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
     try:
         job_id = start_job(path, "outreach", params, work)
     except Busy as exc:
-        return RedirectResponse(f"/jobs/{exc.job_id}?refused=1", status_code=303)
-    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+        return RedirectResponse(job_page("outreach", exc.job_id, refused=True), status_code=303)
+    return RedirectResponse(job_page("outreach", job_id), status_code=303)
 
 
 _LETTER_FIELDS = (
@@ -405,11 +406,16 @@ def _render(
         "view": None,
     }
     if snapshot.ready:
-        context.update(stage_context(request, path, "mail"))
+        job, override = watched_job(request, path, "mail")
+        context.update(
+            stage_context(request, path, "mail", query_override=override, job=job)
+        )
         context["error"] = error
         context["saved"] = saved
         context["selected"] = awards
         context["form"] = form
+        if job is not None:
+            remember_filter = False
     response = TEMPLATES.TemplateResponse(request=request, name="mail.html", context=context)
     if remember_filter and snapshot.ready:
         remember(response, "mail", context["query"])

@@ -1,20 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Tender pipeline{% endblock %}
+{% block title %}Tenders{% endblock %}
+{% block main_class %}wide{% endblock %}
 {% block body %}
 <p class="kicker">Home</p>
-<h1>Tender pipeline</h1>
-<p class="lede">Tenders and the companies that won them. Open a stage to scrape, find a contact, or mail.</p>
+<h1>Tenders</h1>
+<p class="lede">Every stored award. Open Collect to scrape or add a tender, Contacts to find an address, or Send to mail.</p>
 
 {% if snapshot.ready %}
 <section class="strip" aria-label="Pipeline counts">
-  <a href="/scrape">
+  <a href="/">
     <article>
       <p class="label">Tenders</p>
       <p class="count" data-count="tenders">{{ snapshot.tenders }}</p>
       <p class="note">stored</p>
     </article>
   </a>
-  <a href="/scrape">
+  <a href="/">
     <article>
       <p class="label">Companies</p>
       <p class="count" data-count="companies">{{ snapshot.companies }}</p>
@@ -37,12 +38,6 @@
   </a>
 </section>
 
-<p class="meta">
-  <a href="/export.xlsx" hx-boost="false">Excel</a>
-  <a href="/export.csv" hx-boost="false">CSV</a>
-  <span>Every award, every column.</span>
-</p>
-
 {% if running %}
 <h2>Running</h2>
 <ul>
@@ -59,6 +54,8 @@
     <button type="submit">Show status</button>
   </form>
 </section>
+{% include "stage_filters.html" %}
+{% include "results.html" %}
 {% else %}
 <div class="empty">
   <p>{{ snapshot.message }}</p>

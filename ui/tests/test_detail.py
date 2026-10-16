@@ -187,13 +187,46 @@ def test_award_page_shows_where_the_model_found_the_address(tmp_path):
     assert "6957 (not a phone number)" in html
 
 
+def test_opened_award_fields_can_be_saved(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    _seed(path, json_path="")
+    client = TestClient(create_app(path))
+    saved = client.post(
+        "/award",
+        data={
+            "tender_id": "LARGE",
+            "bid": "1",
+            "back": "/",
+            "title": "Rewritten title",
+            "organisation": "New org",
+            "status": "AOC",
+            "contract_date": "21-Sep-2026",
+            "contract_value": "INR 10",
+            "contract_currency": "INR",
+            "rank": "L1",
+            "quoted_value": "100",
+            "awarded_value": "90",
+            "awarded_currency": "INR",
+            "work_title": "Road work",
+        },
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    page = client.get(saved.headers["location"]).text
+    assert 'value="Rewritten title"' in page
+    assert 'value="Road work"' in page
+    assert "LARGE" in page
+
+
 def test_row_links_to_the_award(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path, json_path="")
-    html = TestClient(create_app(path)).get("/scrape").text
+    html = TestClient(create_app(path)).get("/").text
     assert "tender_id=LARGE" in html
     assert "bid=1" in html
     assert ">LARGE</a>" in html
+    assert 'class="open-row"' in html
+    assert "tender_id=LARGE" in html.split('class="open-row"', 1)[1]
 
 
 def test_detail_shows_tender_awards_model_call_and_mail(tmp_path):

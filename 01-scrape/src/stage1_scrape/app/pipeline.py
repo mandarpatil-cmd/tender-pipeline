@@ -32,6 +32,13 @@ from stage1_scrape.scraping import (
 
 log = logging.getLogger(__name__)
 
+
+def _read_documents(extracts: list[dict]) -> None:
+    """Fill contact clues from the document model. A failure keeps the text."""
+    from stage1_scrape.persist.document_extract import apply_document_extracts
+
+    apply_document_extracts(extracts)
+
 SEARCH_AWARDED = "awarded"
 SEARCH_ORGANISATION = "organisation"
 SEARCH_TENDER_ID = "tender_id"
@@ -212,6 +219,7 @@ def scrape_one_tender(
                         exc,
                     )
             record.pdf_extracts = extract_folder(dest)
+            _read_documents(record.pdf_extracts)
             if copy_pdfs_to is not None:
                 copy_pdfs_to.mkdir(parents=True, exist_ok=True)
                 for path in pdf_paths(dest):
@@ -554,6 +562,7 @@ def reindex_saved(out_dir: Path) -> int:
         saved_pdfs = pdf_paths(folder)
         if saved_pdfs:
             record.pdf_extracts = extract_folder(folder)
+            _read_documents(record.pdf_extracts)
         store.save_tender(
             record,
             scraped_at=data.get("scraped_at"),

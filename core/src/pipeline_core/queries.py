@@ -230,12 +230,16 @@ def replace_tender_documents(
     for item in extracts or []:
         filename = str(item.get("filename") or "").strip() or "document.pdf"
         bucket = merged.setdefault(
-            filename, {"emails": [], "phones": [], "gstins": []}
+            filename,
+            {"emails": [], "phones": [], "gstins": [], "text": "", "text_source": ""},
         )
         for key in ("emails", "phones", "gstins"):
             for value in _clue_list(item.get(key)):
                 if value not in bucket[key]:
                     bucket[key].append(value)
+        if not bucket["text"] and item.get("text"):
+            bucket["text"] = str(item.get("text") or "")
+            bucket["text_source"] = str(item.get("text_source") or "")
     session.query(TenderDocument).filter(TenderDocument.tender_id == tender_id).delete(
         synchronize_session=False
     )
@@ -247,6 +251,8 @@ def replace_tender_documents(
                 emails=join_clues(clues["emails"]),
                 phones=join_clues(clues["phones"]),
                 gstins=join_clues(clues["gstins"]),
+                text=clues["text"] or None,
+                text_source=clues["text_source"] or None,
             )
         )
     return len(merged)

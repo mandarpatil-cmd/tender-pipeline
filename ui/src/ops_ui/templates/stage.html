@@ -1,26 +1,39 @@
 {% extends "base.html" %}
-{% block title %}{{ stage|capitalize }}{% endblock %}
+{% block title %}{% if stage == 'scrape' %}Collect{% else %}Contacts{% endif %}{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block body %}
-<p class="kicker">{{ stage|capitalize }}</p>
 {% if stage == 'scrape' %}
-<h1>Scrape</h1>
-<p class="lede">What the portal wrote, and a tender added by hand. One row is one award. The winner’s email and phone are the company’s, so a later tender shows a contact that was already stored.</p>
+<p class="kicker">Collect</p>
+<h1>Collect</h1>
+<p class="lede">Scrape the portal, or add one tender by hand. Stored awards are on Home.</p>
 {% elif stage == 'enrich' %}
-<h1>Enrich</h1>
+<p class="kicker">Contacts</p>
+<h1>Contacts</h1>
 <p class="lede">Find a public email or phone. This opens on companies still waiting. A company that already has either contact is not looked up again.</p>
 {% endif %}
 
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% else %}
-{% include "stage_filters.html" %}
+{% if job %}
+{% include "job_panel.html" %}
+<div id="job-grid"{% if job.state == 'running' or job.state == 'waiting' %} hx-get="{{ request.url }}" hx-trigger="every 2s" hx-select="#job-grid" hx-swap="outerHTML"{% endif %}>
+{% include "results.html" %}
+</div>
+{% endif %}
 {% if stage == 'scrape' %}
-<p class="meta"><a href="/tender/new">Add a tender</a></p>
 {% include "scrape_form.html" %}
-{% elif stage == 'enrich' %}
+<h2>Add a tender</h2>
+<p class="lede">Leave the tender id blank and one starting with MANUAL- is created.</p>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% include "tender_form.html" %}
+{% if not job %}<p class="meta">Stored awards, with their filters, are on <a href="/">Home</a>.</p>{% endif %}
+{% elif stage == 'enrich' and not job %}
+{% include "stage_filters.html" %}
+{% include "enrich_form.html" %}
+{% include "results.html" %}
+{% elif stage == 'enrich' and job %}
 {% include "enrich_form.html" %}
 {% endif %}
-{% include "results.html" %}
 {% endif %}
 {% endblock %}

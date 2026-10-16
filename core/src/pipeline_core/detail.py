@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Award, LlmRun, Outreach, Tender, Vendor
-from .money import format_amount
+from .money import format_amount, iso_day, parse_money
 
 
 @dataclass(frozen=True)
@@ -87,6 +87,63 @@ def award_detail(session: Session, tender_id: str, bid_number: str) -> AwardDeta
         attempts=tuple(dict(row) for row in attempts),
         focus_bid=bid_number,
     )
+
+
+def save_opened_award(
+    session: Session,
+    *,
+    tender_id: str,
+    bid_number: str,
+    title: str,
+    organisation: str,
+    status: str,
+    contract_date: str,
+    contract_value: str,
+    contract_currency: str,
+    rank: str,
+    quoted_value: str,
+    awarded_value: str,
+    awarded_currency: str,
+    work_title: str,
+) -> None:
+    """Save the tender and the opened award. The tender id and bid stay fixed."""
+    award = session.get(Award, (tender_id, bid_number))
+    tender = session.get(Tender, tender_id)
+    if award is None or tender is None:
+        raise LookupError("No award is stored for that tender and bid.")
+    tender.title = title.strip() or None
+    tender.organisation = organisation.strip() or None
+    tender.status = status.strip() or None
+    tender.contract_date = _day(contract_date, "Contract date")
+    amount, code = _amount(contract_value, "Contract value")
+    tender.contract_value = amount
+    tender.contract_currency = contract_currency.strip() or code
+    award.rank = rank.strip() or None
+    award.quoted_value = _amount(quoted_value, "Quoted value")[0]
+    awarded, awarded_code = _amount(awarded_value, "Awarded value")
+    award.awarded_value = awarded
+    award.awarded_currency = awarded_currency.strip() or awarded_code
+    award.work_title = work_title.strip() or None
+
+
+def _day(value: str, label: str) -> str | None:
+    text = value.strip()
+    if not text:
+        return None
+    day = iso_day(text)
+    if day is None:
+        raise ValueError(f"{label} is not a date.")
+    return day
+
+
+def _amount(value: str, label: str) -> tuple[int | None, str | None]:
+    text = value.strip()
+    if not text:
+        return None, None
+    amount, code = parse_money(text)
+    if amount is None:
+        raise ValueError(f"{label} is not an amount.")
+    return amount, code
 
 
 def _tender_dict(tender: Tender) -> dict[str, Any]:

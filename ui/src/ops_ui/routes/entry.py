@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
 from pipeline_core.db import engine, ensure_schema, session
-from pipeline_core.manual import NeedsAttach, WinnerInput, save_manual_tender
+from pipeline_core.detail import save_opened_award
+from pipeline_core.manual import NeedsAttach, TenderExists, WinnerInput, save_manual_tender
 from pipeline_core.queries import (
     ContactError,
     classify_selection,
@@ -17,7 +19,7 @@ from pipeline_core.queries import (
 
 from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
-from ops_ui.present import enrich_plan
+from ops_ui.present import enrich_plan, job_page
 from ops_ui.queries import load_home
 from ops_ui.runs import enrich_cost_line, run_enrich
 from ops_ui.selection import selected_vendor_ids
@@ -33,7 +35,7 @@ def new_tender(request: Request):
     return TEMPLATES.TemplateResponse(
         request=request,
         name="tender_new.html",
-        context={"snapshot": snapshot, "error": ""},
+        context={"snapshot": snapshot, "error": "", "fields": {}, "winner_name": "", "bid_number": "1", "rank": "", "quoted_value": "", "awarded_value": "", "awarded_currency": "", "work_title": ""},
     )
 
 
@@ -45,6 +47,43 @@ async def post_tender(request: Request):
 @router.post("/tender/new/attach")
 async def post_attach(request: Request):
     return await _save_tender(request, attach=True)
+
+
+@router.post("/award")
+async def post_award(request: Request):
+    path = database_path(request)
+    snapshot = load_home(path)
+    if not snapshot.ready:
+        return Response(snapshot.message, status_code=404, media_type="text/plain")
+    form = await request.form()
+    tender_id = str(form.get("tender_id") or "")
+    bid = str(form.get("bid") or "")
+    back = str(form.get("back") or "/")
+    ensure_schema(engine(path))
+    try:
+        with session(engine(path)) as current:
+            save_opened_award(
+                current,
+                tender_id=tender_id,
+                bid_number=bid,
+                title=str(form.get("title") or ""),
+                organisation=str(form.get("organisation") or ""),
+                status=str(form.get("status") or ""),
+                contract_date=str(form.get("contract_date") or ""),
+                contract_value=str(form.get("contract_value") or ""),
+                contract_currency=str(form.get("contract_currency") or ""),
+                rank=str(form.get("rank") or ""),
+                quoted_value=str(form.get("quoted_value") or ""),
+                awarded_value=str(form.get("awarded_value") or ""),
+                awarded_currency=str(form.get("awarded_currency") or ""),
+                work_title=str(form.get("work_title") or ""),
+            )
+    except ValueError as exc:
+        return Response(str(exc), status_code=400, media_type="text/plain")
+    except LookupError as exc:
+        return Response(str(exc), status_code=404, media_type="text/plain")
+    target = "/award?" + urlencode({"tender_id": tender_id, "bid": bid, "back": back})
+    return RedirectResponse(target, status_code=303)
 
 
 @router.post("/vendor/{vendor_id}/contact")
@@ -154,8 +193,8 @@ async def selection_lookup(request: Request, path: Path = Depends(database_path)
     try:
         job_id = start_job(path, "enrich", params, work)
     except Busy as exc:
-        return RedirectResponse(f"/jobs/{exc.job_id}?refused=1", status_code=303)
-    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+        return RedirectResponse(job_page("enrich", exc.job_id, refused=True), status_code=303)
+    return RedirectResponse(job_page("enrich", job_id), status_code=303)
 
 
 async def _save_tender(request: Request, *, attach: bool):
@@ -188,14 +227,36 @@ async def _save_tender(request: Request, *, attach: bool):
                 "winners": winners,
             },
         )
+    except TenderExists as exc:
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="tender_exists.html",
+            status_code=409,
+            context={
+                "snapshot": snapshot,
+                "tender_id": exc.tender_id,
+                "bid": exc.bid,
+            },
+        )
     except ValueError as exc:
         return TEMPLATES.TemplateResponse(
             request=request,
             name="tender_new.html",
             status_code=400,
-            context={"snapshot": snapshot, "error": str(exc)},
+            context={
+                "snapshot": snapshot,
+                "error": str(exc),
+                "fields": fields,
+                "winner_name": winners[0].name if winners else "",
+                "bid_number": winners[0].bid_number if winners else "1",
+                "rank": winners[0].rank if winners else "",
+                "quoted_value": winners[0].quoted_value if winners else "",
+                "awarded_value": winners[0].awarded_value if winners else "",
+                "awarded_currency": winners[0].awarded_currency if winners else "",
+                "work_title": winners[0].work_title if winners else "",
+            },
         )
-    return RedirectResponse(f"/scrape?q={tender_id}", status_code=303)
+    return RedirectResponse(f"/?q={tender_id}", status_code=303)
 
 
 def _ids(values) -> list[int]:

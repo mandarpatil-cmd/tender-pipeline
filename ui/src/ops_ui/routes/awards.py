@@ -24,6 +24,7 @@ from ops_ui.deps import database_path
 from ops_ui.evidence import fill_evidence, read_documents
 from ops_ui.export import csv_bytes, xlsx_bytes
 from ops_ui.jobs import active_jobs
+from ops_ui.jobs import captcha_image, get_job, pdf_zip_path
 from ops_ui.present import (
     DATE_PRESETS,
     STAGE_COLUMNS,
@@ -35,7 +36,7 @@ from ops_ui.present import (
     groups,
     headers,
     href,
-    query_from,
+    job_query,
     shown_day,
     stage_form_fields,
     stage_query,
@@ -67,9 +68,17 @@ def load_view(path: Path, query, *, page_size: int | None):
     return snapshot, view, picked
 
 
-def stage_context(request: Request, path: Path, stage: str) -> dict:
+def stage_context(
+    request: Request,
+    path: Path,
+    stage: str,
+    *,
+    query_override=None,
+    job=None,
+) -> dict:
     """Everything a stage table renders. Mail uses the same dict."""
-    query = stage_query(stage, request.query_params)
+    watching = job is not None
+    query = query_override if query_override is not None else stage_query(stage, request.query_params)
     stage_path = STAGE_PATHS[stage]
     snapshot, view, picked = load_view(path, query, page_size=PAGE_SIZE)
     if stage == "mail" and view is not None:
@@ -92,7 +101,9 @@ def stage_context(request: Request, path: Path, stage: str) -> dict:
     if view is not None and view.page < view.pages:
         following = href(query, path=stage_path, page=str(view.page + 1))
     status = query.enrichment_status[0] if stage == "enrich" and query.enrichment_status else ""
-    can_enrich = stage == "enrich" and status != "done"
+    can_enrich = (stage == "enrich" and status != "done" and not watching) or (
+        stage == "scrape" and watching
+    )
     labels = {key: label for key, label, _group, _evidence in COLUMNS}
     return {
         "snapshot": snapshot,
@@ -106,8 +117,12 @@ def stage_context(request: Request, path: Path, stage: str) -> dict:
         "groups": groups(column_headers),
         "previous": previous,
         "following": following,
-        "excel_href": export_href(query, "xlsx", path=stage_path),
-        "csv_href": export_href(query, "csv", path=stage_path),
+        "excel_href": _job_export(stage_path, job, "xlsx")
+        if watching
+        else export_href(query, "xlsx", path=stage_path),
+        "csv_href": _job_export(stage_path, job, "csv")
+        if watching
+        else export_href(query, "csv", path=stage_path),
         "form_fields": stage_form_fields(stage, query),
         "selectable": stage == "mail" or can_enrich,
         "can_enrich": can_enrich,
@@ -123,7 +138,63 @@ def stage_context(request: Request, path: Path, stage: str) -> dict:
         "enrich_cost_text": "",
         "organisations": organisation_choices() if stage == "scrape" else [],
         "letters": _letters(path, query) if stage == "mail" else 0,
+        "advanced_open": _advanced_open(query),
+        "job": job,
+        "watching": watching,
+        "refused": request.query_params.get("refused") == "1",
+        "captcha_error": request.query_params.get("captcha") == "1",
+        "empty_note": _empty_note(stage, job, view) if watching else "",
+        "zip_ready": pdf_zip_path(job.job_id).is_file() if watching else False,
+        "captcha_version": _captcha_version(job) if watching else 0,
     }
+
+
+def _captcha_version(job) -> int:
+    image = captcha_image(job.job_id)
+    return int(image.stat().st_mtime_ns) if image is not None else 0
+
+
+def _job_export(stage_path: str, job, suffix: str) -> str:
+    base = "/export" if stage_path in {"", "/"} else f"{stage_path}/export"
+    return f"{base}.{suffix}?job={job.job_id}"
+
+
+def _empty_note(stage: str, job, view) -> str:
+    if view is None or view.total:
+        return ""
+    if stage == "enrich":
+        return "Nothing was looked up."
+    if stage == "scrape":
+        return "This run has not saved a tender."
+    return "No awards match."
+
+
+def watched_job(request: Request, path: Path, stage: str):
+    """The run named by ``?job=``, and the rows that belong to it."""
+    raw = (request.query_params.get("job") or "").strip()
+    if not raw.isdigit():
+        return None, None
+    job = get_job(path, int(raw))
+    if job is None:
+        return None, None
+    return job, job_query(stage, job.job_id, job.params_json)
+
+
+def _advanced_open(query) -> bool:
+    """Open the extra filters when one of them is already narrowing the rows."""
+    return any(
+        (
+            query.organisation,
+            query.value_min,
+            query.value_max,
+            query.pdf_contact,
+            query.source,
+            query.scraped_from,
+            query.scraped_to,
+            query.date_from,
+            query.date_to,
+        )
+    )
 
 
 def _letters(path: Path, query) -> int:
@@ -153,21 +224,23 @@ def remember(response: Response, stage: str, query) -> None:
 
 @router.get("/")
 def home(request: Request, path: Path = Depends(database_path)):
-    snapshot = load_home(path)
-    running = active_jobs(path) if snapshot.ready else []
-    return TEMPLATES.TemplateResponse(
+    context = stage_context(request, path, "home")
+    ready = context["snapshot"].ready
+    context["running"] = active_jobs(path) if ready else []
+    context["status_cost"] = status_cost() if ready else ""
+    response = TEMPLATES.TemplateResponse(
         request=request,
         name="home.html",
-        context={
-            "snapshot": snapshot,
-            "running": running,
-            "status_cost": status_cost() if snapshot.ready else "",
-        },
+        context=context,
     )
+    if ready:
+        remember(response, "home", context["query"])
+    return response
 
 
 def _stage_page(request: Request, path: Path, stage: str):
-    context = stage_context(request, path, stage)
+    job, override = watched_job(request, path, stage)
+    context = stage_context(request, path, stage, query_override=override, job=job)
     if stage == "enrich" and context["snapshot"].ready:
         context["enrich_cost_text"] = enrich_cost(path, limit=1, source="scrape", dry_run=True)
     response = TEMPLATES.TemplateResponse(
@@ -175,14 +248,38 @@ def _stage_page(request: Request, path: Path, stage: str):
         name="stage.html",
         context=context,
     )
-    if context["snapshot"].ready:
+    if context["snapshot"].ready and job is None:
         remember(response, stage, context["query"])
     return response
 
 
 @router.get("/scrape")
 def scrape_page(request: Request, path: Path = Depends(database_path)):
-    return _stage_page(request, path, "scrape")
+    job, override = watched_job(request, path, "scrape")
+    if job is None:
+        snapshot = load_home(path)
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="stage.html",
+            context={
+                "snapshot": snapshot,
+                "stage": "scrape",
+                "today": date.today().isoformat(),
+                "date_presets": DATE_PRESETS,
+                "organisations": organisation_choices() if snapshot.ready else [],
+                "job": None,
+                "watching": False,
+                "error": "",
+                "refused": False,
+                "captcha_error": False,
+            },
+        )
+    context = stage_context(request, path, "scrape", query_override=override, job=job)
+    context["organisations"] = (
+        organisation_choices() if context["snapshot"].ready else []
+    )
+    context["error"] = ""
+    return TEMPLATES.TemplateResponse(request=request, name="stage.html", context=context)
 
 
 @router.get("/enrich")
@@ -262,6 +359,7 @@ def award(
             "portal_search_url": SEARCH_PAGE_URL,
             "search_labels": _SEARCH_LABELS,
             "status_labels": TENDER_STATUS_LABELS,
+            "save_error": "",
         },
     )
 
@@ -287,17 +385,18 @@ def stage_export_csv(stage: str, request: Request, path: Path = Depends(database
 
 
 def _export(path: Path, request: Request, kind: str) -> Response:
-    query = query_from(request.query_params)
+    query = stage_query("home", request.query_params)
     snapshot, view, _picked = load_view(path, query, page_size=None)
     if not snapshot.ready or view is None:
         return Response(snapshot.message, status_code=404, media_type="text/plain")
-    return _file(view.rows, kind, "awards", None)
+    return _file(view.rows, kind, "awards", STAGE_COLUMNS["home"])
 
 
 def _stage_export(stage: str, path: Path, request: Request, kind: str) -> Response:
-    if stage not in STAGE_PATHS:
+    if stage not in STAGE_PATHS or stage == "home":
         return Response("No such export.", status_code=404, media_type="text/plain")
-    query = stage_query(stage, request.query_params)
+    job, override = watched_job(request, path, stage)
+    query = override if override is not None else stage_query(stage, request.query_params)
     snapshot, view, _picked = load_view(path, query, page_size=None)
     if not snapshot.ready or view is None:
         return Response(snapshot.message, status_code=404, media_type="text/plain")

@@ -448,6 +448,8 @@ input[type="checkbox"] {
   padding: 0;
 }
 
+tr.open-row { cursor: pointer; }
+
 button {
   cursor: pointer;
   background: var(--primary);
@@ -756,3 +758,19 @@ input.captcha-code {
 .companies form { margin: 0; }
 details { margin: 1rem 0; }
 details summary { cursor: pointer; }
+
+dialog.notice {
+  position: fixed;
+  top: 18vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: 32rem;
+  padding: 1.25rem 1.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: inherit;
+  box-shadow: var(--shadow-sm);
+}
+dialog.notice::backdrop { background: transparent; }

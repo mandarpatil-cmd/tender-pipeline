@@ -99,7 +99,6 @@ _require(
     ("bs4", "beautifulsoup4"),
     ("lxml", "lxml"),
     ("requests", "requests"),
-    ("pypdf", "pypdf"),
     ("dotenv", "python-dotenv"),
     ("pandas", "pandas"),
     ("openpyxl", "openpyxl"),

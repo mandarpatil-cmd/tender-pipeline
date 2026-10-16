@@ -32,7 +32,7 @@
     </thead>
     <tbody>
       {% for row in view.rows %}
-      <tr>
+      <tr class="open-row" data-href="/award?tender_id={{ row.tender_id|urlencode }}&bid={{ row.bid_number|urlencode }}&back={{ (request.url.path ~ ('?' ~ request.url.query if request.url.query else ''))|urlencode }}">
         {% if selectable %}
         <td class="tick"><input type="checkbox" name="vendor_id" value="{{ row.vendor_id }}:{{ row.tender_id }}"></td>
         {% endif %}
@@ -41,7 +41,7 @@
         {% endfor %}
       </tr>
       {% else %}
-      <tr><td class="none" colspan="{{ columns|length + (1 if selectable else 0) }}">No awards match.</td></tr>
+      <tr><td class="none" colspan="{{ columns|length + (1 if selectable else 0) }}">{{ empty_note or "No awards match." }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -86,6 +86,14 @@
 </script>
 {% endif %}
 
+<script>
+document.addEventListener("click", function (event) {
+  var row = event.target.closest && event.target.closest("tr.open-row");
+  if (!row) return;
+  if (event.target.closest("a, button, input, label, select")) return;
+  window.location = row.getAttribute("data-href");
+});
+</script>
 {% if previous or following %}
 <p class="pager">
   {% if previous %}<a href="{{ previous }}">Previous</a>{% endif %}

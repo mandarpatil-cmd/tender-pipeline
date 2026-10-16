@@ -5,9 +5,10 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import ORIGIN_MANUAL, SOURCE_MANUAL, Tender
+from .models import ORIGIN_MANUAL, SOURCE_MANUAL, Award, Tender
 from .queries import upsert_tender, upsert_vendor, utcnow, vendor_by_name, replace_awards
 
 
@@ -17,6 +18,15 @@ class NeedsAttach(Exception):
     def __init__(self, matches: list[NameMatch]) -> None:
         self.matches = matches
         super().__init__("company already stored")
+
+
+class TenderExists(Exception):
+    """The typed tender id is already stored. Nothing is written."""
+
+    def __init__(self, tender_id: str, bid: str) -> None:
+        self.tender_id = tender_id
+        self.bid = bid
+        super().__init__("tender already stored")
 
 
 @dataclass(frozen=True)
@@ -78,6 +88,10 @@ def save_manual_tender(
         raise NeedsAttach(matches)
 
     chosen = (tender_id or "").strip() or _fresh_id(session)
+    stored = session.get(Tender, chosen)
+    if stored is not None:
+        award = session.scalar(select(Award).where(Award.tender_id == chosen).limit(1))
+        raise TenderExists(chosen, award.bid_number if award is not None else "")
     upsert_tender(
         session,
         tender_id=chosen,

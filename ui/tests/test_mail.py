@@ -10,6 +10,7 @@ from pipeline_core.models import MailLetter, Outreach, Tender
 from pipeline_core.queries import mark_enriched, replace_awards, upsert_tender, upsert_vendor, utcnow
 
 from ops_ui.app import create_app
+from ops_ui.present import job_id_from
 from ops_ui.jobs import get_job
 from ops_ui.runs import load_campaign
 
@@ -87,7 +88,7 @@ def test_preview_writes_a_file_and_sends_nothing(tmp_path, monkeypatch):
     )
 
     assert started.status_code == 303
-    job_id = int(started.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(started.headers["location"])
     text = ""
     state = ""
     for _ in range(50):
@@ -278,7 +279,7 @@ def _wait(path, job_id) -> tuple[str, str]:
 def _start(client, data) -> tuple[int, str]:
     started = client.post("/mail", data=data, follow_redirects=False)
     assert started.status_code == 303, started.text
-    return int(started.headers["location"].rsplit("/", 1)[-1]), started.text
+    return job_id_from(started.headers["location"]), started.text
 
 
 def _other_vendor(path) -> int:

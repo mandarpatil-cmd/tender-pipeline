@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Tender already stored{% endblock %}
+{% block body %}
+<dialog class="notice" open>
+  <h1>This tender is already stored</h1>
+  <p>{{ tender_id }} is already in the library. Nothing was written.</p>
+  <p><a href="/award?tender_id={{ tender_id|urlencode }}&bid={{ bid|urlencode }}">Open this tender</a></p>
+  <p><a href="/scrape">Back to Collect</a></p>
+</dialog>
+{% endblock %}

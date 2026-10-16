@@ -111,6 +111,9 @@ class TenderDocument(Base):
     emails: Mapped[str | None] = mapped_column(Text)
     phones: Mapped[str | None] = mapped_column(Text)
     gstins: Mapped[str | None] = mapped_column(Text)
+    #: Body kept for the document model. ``embedded`` or ``ocr``.
+    text: Mapped[str | None] = mapped_column(Text)
+    text_source: Mapped[str | None] = mapped_column(Text)
 
     def __repr__(self) -> str:
         return f"<TenderDocument {self.tender_id}/{self.filename}>"
@@ -138,9 +141,8 @@ class Vendor(Base):
     source: Mapped[str | None] = mapped_column(Text)
 
     # --- evidence block: written only by stage 1 ---
-    # Read out of the tender's work-order PDF. LiteParse OCRs the scan first;
-    # the embedded text layer is the backup. Characters can already be wrong --
-    # e.g. "acmctechworks0l@" for "acmetechworks01@". This is
+    # Read out of the tender's work-order PDF by LiteParse, then a document
+    # model. Digital pages use their own text; scans are OCR'd. This is
     # *evidence*, not truth. The full list lives in vendor_contacts. These two
     # columns mirror the first PDF address so the grid can show one line.
     pdf_email: Mapped[str | None] = mapped_column(Text)

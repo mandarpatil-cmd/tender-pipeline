@@ -40,10 +40,10 @@ def test_stage_export_matches_the_query_including_later_pages(tmp_path, monkeypa
             )
     monkeypatch.setattr("ops_ui.routes.awards.PAGE_SIZE", 1)
     client = TestClient(create_app(path))
-    page = client.get("/scrape")
+    page = client.get("/")
     assert page.text.count('class="open"') == 1
 
-    workbook = load_workbook(BytesIO(client.get("/scrape/export.xlsx?page=2").content))
+    workbook = load_workbook(BytesIO(client.get("/export.xlsx?page=2").content))
     sheet = workbook.active
     headers = [cell.value for cell in sheet[1]]
     assert headers == [
@@ -119,7 +119,7 @@ def test_a_later_tender_reuses_the_stored_contact(tmp_path):
             status="sent",
         )
     client = TestClient(create_app(path))
-    scrape = client.get("/scrape").text
+    scrape = client.get("/").text
     assert ">T-2</a>" in scrape
     assert "known@example.com" in scrape
     enrich = client.get("/enrich").text
@@ -179,7 +179,7 @@ def test_pdf_contact_keeps_only_companies_with_both_clues(tmp_path):
             )
     client = TestClient(create_app(path))
 
-    scrape = client.get("/scrape?pdf_contact=yes")
+    scrape = client.get("/?pdf_contact=yes")
     assert "Both Clues Ltd" in scrape.text
     assert "Email Clue Ltd" not in scrape.text
     assert "No Clue Ltd" not in scrape.text
@@ -216,7 +216,7 @@ def test_scrape_table_shows_where_each_tender_came_from(tmp_path):
             "T-PORTAL",
             [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "Portal Roads Ltd"}],
         )
-    html = TestClient(create_app(path)).get("/scrape").text
+    html = TestClient(create_app(path)).get("/").text
 
     for label in ("Origin", "Portal search", "Page", "S.No", "Run"):
         assert f">{label}</a>" in html

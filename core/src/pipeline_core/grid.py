@@ -184,6 +184,12 @@ class AwardQuery:
     pdf_contact: str = ""
     #: Empty means search every text column. Otherwise name, vendor_id, and/or city.
     search_in: tuple[str, ...] = ()
+    #: Set on a Collect run. None means the library is not limited to one scrape.
+    scrape_job_id: int | None = None
+    #: Set on a Contacts run. None means every company, not one lookup.
+    enrich_job_id: int | None = None
+    #: None means every award. An empty tuple means a mail run that named nobody.
+    job_awards: tuple[tuple[int, str], ...] | None = None
     sort: str = "tender_id"
     direction: str = "asc"
     page: int = 1
@@ -603,6 +609,23 @@ def _filtered(statement, query: AwardQuery, specific, legacy):
         statement = statement.where(scraped_day >= query.scraped_from)
     if query.scraped_to:
         statement = statement.where(scraped_day <= query.scraped_to)
+    if query.scrape_job_id is not None:
+        statement = statement.where(Tender.scrape_job_id == query.scrape_job_id)
+    if query.enrich_job_id is not None:
+        looked_up = select(LlmRun.vendor_id).where(LlmRun.job_id == query.enrich_job_id)
+        statement = statement.where(Vendor.vendor_id.in_(looked_up))
+    if query.job_awards is not None:
+        if not query.job_awards:
+            statement = statement.where(false())
+        else:
+            statement = statement.where(
+                or_(
+                    *[
+                        and_(Vendor.vendor_id == vendor_id, Award.tender_id == tender_id)
+                        for vendor_id, tender_id in query.job_awards
+                    ]
+                )
+            )
     return statement
 
 

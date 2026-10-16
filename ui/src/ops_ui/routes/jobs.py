@@ -23,6 +23,7 @@ from ops_ui.jobs import (
     start_job,
     submit_captcha,
 )
+from ops_ui.present import job_page as run_page
 from ops_ui.present import resolve_preset
 from ops_ui.queries import load_home
 from ops_ui.runs import (
@@ -272,12 +273,12 @@ def captcha_png(job_id: int):
 
 
 @router.post("/jobs/{job_id}/captcha")
-async def post_captcha(request: Request, job_id: int):
+async def post_captcha(request: Request, job_id: int, path: Path = Depends(database_path)):
     form = await request.form()
     code = "".join(str(form.get("code") or "").split())
     if not submit_captcha(job_id, code):
-        return RedirectResponse(f"/jobs/{job_id}?captcha=1", status_code=303)
-    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+        return RedirectResponse(_job_target(path, job_id, captcha=True), status_code=303)
+    return RedirectResponse(_job_target(path, job_id), status_code=303)
 
 
 @router.post("/jobs/{job_id}/stop")
@@ -285,7 +286,7 @@ def post_stop(job_id: int, path: Path = Depends(database_path)):
     if get_job(path, job_id) is None:
         return Response("No run with that id.", status_code=404)
     request_stop(path, job_id)
-    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+    return RedirectResponse(_job_target(path, job_id), status_code=303)
 
 
 def _start(path, stage: str, params: dict, work) -> Response:
@@ -295,8 +296,14 @@ def _start(path, stage: str, params: dict, work) -> Response:
     try:
         job_id = start_job(path, stage, params, work)
     except Busy as exc:
-        return RedirectResponse(f"/jobs/{exc.job_id}?refused=1", status_code=303)
-    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+        return RedirectResponse(_job_target(path, exc.job_id, refused=True), status_code=303)
+    return RedirectResponse(run_page(stage, job_id), status_code=303)
+
+
+def _job_target(path, job_id: int, *, refused: bool = False, captcha: bool = False) -> str:
+    job = get_job(path, job_id)
+    stage = job.stage if job is not None else ""
+    return run_page(stage, job_id, refused=refused, captcha=captcha)
 
 
 def _job_view(job, **extra) -> dict:

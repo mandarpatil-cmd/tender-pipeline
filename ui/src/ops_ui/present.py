@@ -12,14 +12,43 @@ from pipeline_core.loose import loose_date
 from starlette.datastructures import QueryParams
 
 _BACK = re.compile(r"[A-Za-z0-9_%=&.+\-]*")
-_STAGE_BACK = re.compile(r"^/(scrape|enrich|mail)(\?[A-Za-z0-9_%=&.+\-]*)?$")
+_STAGE_BACK = re.compile(r"^/(?:scrape|enrich|mail)?(?:\?[A-Za-z0-9_%=&.+\-]*)?$")
 DATE_PRESETS = ("7", "30", "60", "90")
 
-STAGE_PATHS = {"scrape": "/scrape", "enrich": "/enrich", "mail": "/mail"}
+STAGE_PATHS = {"home": "/", "scrape": "/scrape", "enrich": "/enrich", "mail": "/mail"}
 
 #: Columns each stage table shows, in that order. Email and phone stay on Scrape
 #: so a later tender for a known company shows the contact already stored.
 STAGE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "home": (
+        "tender_id",
+        "title",
+        "organisation",
+        "status",
+        "contract_date",
+        "contract_value",
+        "contract_currency",
+        "bid_number",
+        "rank",
+        "quoted_value",
+        "awarded_value",
+        "awarded_currency",
+        "work_title",
+        "name_raw",
+        "city",
+        "state",
+        "email",
+        "phone",
+        "pdf_email",
+        "pdf_phone",
+        "source",
+        "scraped_at",
+        "origin",
+        "search_mode",
+        "listing_page",
+        "listing_serial",
+        "scrape_job_id",
+    ),
     "scrape": (
         "tender_id",
         "title",
@@ -82,6 +111,23 @@ STAGE_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 
 _STAGE_KEYS = {
+    "home": frozenset(
+        {
+            "q",
+            "tender_status",
+            "scraped_from",
+            "scraped_to",
+            "scraped_from_preset",
+            "scraped_to_mode",
+            "organisation",
+            "value_min",
+            "value_max",
+            "pdf_contact",
+            "sort",
+            "dir",
+            "page",
+        }
+    ),
     "scrape": frozenset(
         {
             "q",
@@ -158,11 +204,11 @@ _FIELDS = (
 
 
 def back_href(raw: str) -> str:
-    """A link back to the stage table. Anything else opens Scrape."""
+    """A link back to a stage table. Anything else opens Home."""
     text = unquote(raw or "").strip()
     if _STAGE_BACK.fullmatch(text):
-        return text
-    return "/scrape"
+        return text or "/"
+    return "/"
 
 
 def resolve_preset(
@@ -284,6 +330,55 @@ def stage_query(stage: str, params) -> AwardQuery:
     return query.normalized()
 
 
+def job_id_from(location: str) -> int:
+    """A run id from ``/jobs/12`` or from ``/scrape?job=12``."""
+    if "job=" in location:
+        return int(location.split("job=", 1)[1].split("&", 1)[0])
+    return int(location.rstrip("/").rsplit("/", 1)[-1])
+
+
+def job_page(stage: str, job_id: int, *, refused: bool = False, captcha: bool = False) -> str:
+    """Where the operator watches a run. Status stays on Activity."""
+    paths = {"scrape": "/scrape", "enrich": "/enrich", "outreach": "/mail"}
+    path = paths.get(stage)
+    if path is None:
+        target = f"/jobs/{job_id}"
+        return f"{target}?refused=1" if refused else target
+    parts = [f"job={job_id}"]
+    if refused:
+        parts.append("refused=1")
+    if captcha:
+        parts.append("captcha=1")
+    return f"{path}?{'&'.join(parts)}"
+
+
+def mail_job_awards(params_json: str | None) -> tuple[tuple[int, str], ...]:
+    """Award pairs stored on a send job. ``vendor:tender`` becomes ``(vendor, tender)``."""
+    import json
+
+    try:
+        params = json.loads(params_json or "{}")
+    except json.JSONDecodeError:
+        return ()
+    pairs: list[tuple[int, str]] = []
+    for item in params.get("awards") or []:
+        vendor, separator, tender = str(item).partition(":")
+        if separator and vendor.isdigit() and tender:
+            pairs.append((int(vendor), tender))
+    return tuple(pairs)
+
+
+def job_query(stage: str, job_id: int, params_json: str | None = None) -> AwardQuery:
+    """Rows that belong to one run, without the library's default status."""
+    if stage == "scrape":
+        return AwardQuery(scrape_job_id=job_id)
+    if stage == "enrich":
+        return AwardQuery(enrich_job_id=job_id)
+    if stage == "mail":
+        return AwardQuery(job_awards=mail_job_awards(params_json))
+    return AwardQuery()
+
+
 def stage_href(stage: str, raw: str) -> str:
     """The nav link for a stage. A cookie that is not our query string is dropped."""
     path = STAGE_PATHS[stage]
@@ -375,7 +470,7 @@ def href(query: AwardQuery, path: str = "/", **overrides: str) -> str:
 def stage_form_fields(stage: str, query: AwardQuery) -> list[tuple[str, str]]:
     """Hidden fields for a stage table action. Other stages' filters are left out."""
     fields = [("stage", stage), ("q", query.text)]
-    if stage == "scrape":
+    if stage in {"home", "scrape"}:
         fields.extend(
             [
                 ("tender_status", query.tender_status),

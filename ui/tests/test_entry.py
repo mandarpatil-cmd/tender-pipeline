@@ -17,6 +17,7 @@ from pipeline_core.queries import (
 )
 
 from ops_ui.app import create_app
+from ops_ui.present import job_id_from
 from ops_ui.jobs import get_job
 
 
@@ -120,7 +121,7 @@ def test_ticked_company_dry_run_lists_it_and_spends_nothing(tmp_path):
         data={"vendor_id": str(vendor_id), "dry_run": "on"},
         follow_redirects=False,
     )
-    job_id = int(started.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(started.headers["location"])
     text = ""
     for _ in range(50):
         job = get_job(path, job_id)
@@ -159,7 +160,7 @@ def test_select_all_uses_the_filter_and_ignores_the_page(tmp_path):
     assert page.status_code == 200
     assert "Bihar Roads Ltd" in page.text
     assert "Assam Electricals" not in page.text
-    assert "<h1>Enrich</h1>" in page.text
+    assert "<h1>Contacts</h1>" in page.text
 
 
 def _award(current, tender_id, vendor_id, name, *, state="Goa"):
@@ -310,7 +311,7 @@ def test_enrich_confirm_names_who_will_be_looked_up(tmp_path):
         data={"vendor_id": [str(waiting), str(failed), str(empty)], "dry_run": "on"},
         follow_redirects=False,
     )
-    job_id = int(started.headers["location"].rsplit("/", 1)[-1])
+    job_id = job_id_from(started.headers["location"])
     text = ""
     for _ in range(50):
         job = get_job(path, job_id)

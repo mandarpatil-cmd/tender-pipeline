@@ -88,7 +88,7 @@ def _count(html: str, key: str) -> str:
 def test_filter_narrows_the_table_and_the_counts(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path)
-    response = TestClient(create_app(path)).get("/scrape?q=electrical")
+    response = TestClient(create_app(path)).get("/?q=electrical")
 
     assert response.status_code == 200
     html = response.text
@@ -117,14 +117,14 @@ def test_each_stage_offers_only_its_own_filters(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path)
     client = TestClient(create_app(path))
-    scrape = client.get("/scrape").text
+    scrape = client.get("/").text
     enrich = client.get("/enrich").text
     mail = client.get("/mail").text
 
     assert 'name="scraped_from"' in scrape
     assert 'name="scraped_to"' in scrape
     assert "Stored status" in scrape
-    assert "Add a tender" in scrape
+    assert "Advanced filters" in scrape
     assert "60 days before to" in scrape
     assert 'name="mailable"' not in scrape
     assert "Contract value min" in scrape
@@ -164,7 +164,7 @@ def test_scraped_range_is_kept_on_the_export_link(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _seed(path)
     html = TestClient(create_app(path)).get(
-        "/scrape?scraped_from=1999-01-01&scraped_to=1999-01-02"
+        "/?scraped_from=1999-01-01&scraped_to=1999-01-02"
     ).text
 
     assert "No awards match." in html
@@ -180,15 +180,14 @@ def test_export_matches_the_filter_and_writes_na_for_blanks(tmp_path):
     master = load_workbook(BytesIO(client.get("/export.xlsx").content))
     sheet = master.active
     assert sheet.max_row == 4
-    assert sheet.max_column == 41
+    assert sheet.max_column == 27
     headers = [cell.value for cell in sheet[1]]
     assert headers[0] == "Tender"
-    assert "Found at" in headers
-    assert "Lookups" in headers
     assert "PDF email" in headers
-    assert "GSTIN" in headers
+    assert "Found at" not in headers
+    assert "GSTIN" not in headers
 
-    workbook = load_workbook(BytesIO(client.get("/scrape/export.xlsx?q=electrical").content))
+    workbook = load_workbook(BytesIO(client.get("/export.xlsx?q=electrical").content))
     sheet = workbook.active
     assert sheet.max_row == 2
     assert sheet.max_column == 27
@@ -201,7 +200,7 @@ def test_export_matches_the_filter_and_writes_na_for_blanks(tmp_path):
     assert values["Tender"] == "LARGE"
     assert values["Email"] == "NA"
 
-    csv_text = client.get("/scrape/export.csv?q=electrical").content.decode("utf-8-sig")
+    csv_text = client.get("/export.csv?q=electrical").content.decode("utf-8-sig")
     assert csv_text.splitlines()[1].startswith("LARGE,")
     assert "NA" in csv_text
 
@@ -271,11 +270,11 @@ def _shown(html: str) -> set[str]:
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
-        ("/scrape?q=electrical", {"LARGE"}),
-        ("/scrape?q=%25", set()),
-        ("/scrape?tender_status=Retender", {"ODD"}),
-        ("/scrape?scraped_from=2026-09-21&scraped_to=2026-09-21", {"LARGE"}),
-        ("/scrape?enrichment_status=failed", {"SMALL", "LARGE", "ODD", "FAIL"}),
+        ("/?q=electrical", {"LARGE"}),
+        ("/?q=%25", set()),
+        ("/?tender_status=Retender", {"ODD"}),
+        ("/?scraped_from=2026-09-21&scraped_to=2026-09-21", {"LARGE"}),
+        ("/?enrichment_status=failed", {"SMALL", "LARGE", "ODD", "FAIL"}),
         ("/enrich", {"SMALL"}),
         ("/enrich?enrichment_status=pending", {"SMALL"}),
         ("/enrich?enrichment_status=done", {"LARGE"}),
@@ -404,13 +403,11 @@ def test_home_holds_the_master_export_and_scrape_can_clear(tmp_path):
     home = client.get("/")
     assert 'href="/export.xlsx"' in home.text
     assert 'href="/export.csv"' in home.text
-    assert _shown(home.text) == set()
-    scrape = client.get("/scrape")
-    assert "Clear" in scrape.text
-    assert _shown(scrape.text) == {"SMALL", "LARGE", "ODD", "FAIL"}
-    narrowed = client.get("/scrape?tender_status=Retender")
+    assert "Clear" in home.text
+    assert _shown(home.text) == {"SMALL", "LARGE", "ODD", "FAIL"}
+    narrowed = client.get("/?tender_status=Retender")
     assert _shown(narrowed.text) == {"ODD"}
-    cleared = client.get("/scrape")
+    cleared = client.get("/")
     assert _shown(cleared.text) == {"SMALL", "LARGE", "ODD", "FAIL"}
 
 
@@ -452,8 +449,8 @@ def test_company_name_search_skips_a_title_mention(tmp_path):
             [{"bid_number": "1", "vendor_id": other, "bidder_name": "ANZEN PROJECTS PRIVATE LIMITED"}],
         )
     client = TestClient(create_app(path))
-    broad = client.get("/scrape?q=APSARA").text
-    ignored = client.get("/scrape?q=APSARA&search_in=name").text
+    broad = client.get("/?q=APSARA").text
+    ignored = client.get("/?q=APSARA&search_in=name").text
     assert ">NAME</a>" in broad and ">TITLE</a>" in broad
     assert ">NAME</a>" in ignored and ">TITLE</a>" in ignored
 
@@ -467,7 +464,7 @@ def test_combination_urls_show_the_same_tenders_as_the_query(tmp_path):
     from ops_ui.present import stage_query
 
     cases = (
-        ("scrape", "/scrape?q=road&tender_status=AOC"),
+        ("scrape", "/?q=road&tender_status=AOC"),
         ("enrich", "/enrich?enrichment_status=failed&source=bideasy&outreach_status=sent"),
         ("mail", "/mail?outreach_status=sent&enrichment_status=pending"),
     )
@@ -490,8 +487,8 @@ def test_scrape_organisation_and_contract_value_match_the_query(tmp_path):
     from ops_ui.present import stage_query
 
     cases = (
-        ("scrape", "/scrape?organisation=Durgapur", {"LARGE"}),
-        ("scrape", "/scrape?value_min=100000", {"LARGE"}),
+        ("scrape", "/?organisation=Durgapur", {"LARGE"}),
+        ("scrape", "/?value_min=100000", {"LARGE"}),
         ("enrich", "/enrich?organisation=Durgapur&value_min=100000", set()),
         ("mail", "/mail?organisation=Durgapur&value_min=1", set()),
     )
@@ -539,7 +536,7 @@ def test_failed_chip_matches_the_award_rows_including_tender_status(tmp_path):
     assert _count(failed, "failed") == _count(failed, "awards") == "3"
     ignored = client.get("/enrich?enrichment_status=failed&tender_status=AOC").text
     assert _count(ignored, "failed") == _count(ignored, "awards") == "3"
-    aoc = client.get("/scrape?tender_status=AOC").text
+    aoc = client.get("/?tender_status=AOC").text
     assert _count(aoc, "awards") == "2"
     assert ">B</a>" not in aoc
 
@@ -554,15 +551,15 @@ def test_organisation_heading_sorts_the_grid(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _rich(path)
     client = TestClient(create_app(path))
-    page = client.get("/scrape").text
-    assert 'href="/scrape?sort=organisation"' in page
+    page = client.get("/").text
+    assert 'href="/?sort=organisation"' in page
     assert 'aria-label="ascending"' in page
 
-    ordered = client.get("/scrape?sort=organisation").text
+    ordered = client.get("/?sort=organisation").text
     assert _first_tender(ordered) == "FAIL"
-    assert 'href="/scrape?sort=organisation&amp;dir=desc"' in ordered
+    assert 'href="/?sort=organisation&amp;dir=desc"' in ordered
 
-    flipped = client.get("/scrape?sort=organisation&dir=desc").text
+    flipped = client.get("/?sort=organisation&dir=desc").text
     assert _first_tender(flipped) == "ODD"
     assert 'aria-label="descending"' in flipped
 
@@ -571,8 +568,8 @@ def test_sort_direction_changes_the_first_tender(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _rich(path)
     client = TestClient(create_app(path))
-    assert _first_tender(client.get("/scrape").text) == "FAIL"
-    assert _first_tender(client.get("/scrape?dir=desc").text) == "SMALL"
+    assert _first_tender(client.get("/").text) == "FAIL"
+    assert _first_tender(client.get("/?dir=desc").text) == "SMALL"
 
 
 def test_next_page_keeps_the_scrape_filter(tmp_path):
@@ -595,14 +592,14 @@ def test_next_page_keeps_the_scrape_filter(tmp_path):
                 [{"bid_number": "1", "vendor_id": vendor, "bidder_name": f"Batch {index:02d}"}],
             )
     client = TestClient(create_app(path))
-    first = client.get("/scrape?q=batch").text
+    first = client.get("/?q=batch").text
     assert "Page 1 of 2" in first
     assert "q=batch" in first
     assert "page=2" in first
     assert ">T00</a>" in first
     assert ">T50</a>" not in first
 
-    second = client.get("/scrape?q=batch&page=2").text
+    second = client.get("/?q=batch&page=2").text
     assert "Page 2 of 2" in second
     assert ">T50</a>" in second
     assert ">T00</a>" not in second
@@ -613,10 +610,10 @@ def test_clear_returns_the_unfiltered_scrape_list(tmp_path):
     path = tmp_path / "pipeline.sqlite3"
     _rich(path)
     client = TestClient(create_app(path))
-    filtered = client.get("/scrape?q=electrical").text
+    filtered = client.get("/?q=electrical").text
     assert _shown(filtered) == {"LARGE"}
-    assert 'class="quiet" href="/scrape"' in filtered
-    assert _shown(client.get("/scrape").text) == set(_TENDERS)
+    assert 'class="quiet" href="/"' in filtered
+    assert _shown(client.get("/").text) == set(_TENDERS)
 
 
 def test_scrape_pdf_contact_shows_only_both_clues(tmp_path):
@@ -638,7 +635,7 @@ def test_scrape_pdf_contact_shows_only_both_clues(tmp_path):
                 tender_id,
                 [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
             )
-    html = TestClient(create_app(path)).get("/scrape?pdf_contact=yes").text
+    html = TestClient(create_app(path)).get("/?pdf_contact=yes").text
     assert ">BOTH</a>" in html
     assert ">ONE</a>" not in html
 
