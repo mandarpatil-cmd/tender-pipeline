@@ -1,86 +1,49 @@
 {% extends "base.html" %}
-{% block title %}Send{% endblock %}
+{% block title %}Send email{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block body %}
-<p class="kicker">Send</p>
-<h1>Send</h1>
-<p class="lede">Companies with an email that have not been sent yet. A selected tender is mailed to every valid address for that company: PDF, enrichment, and typed. A phone alone is not mailed. Sending does not change the saved default letter.</p>
-{% if not snapshot.ready %}
-<div class="empty"><p>{{ snapshot.message }}</p></div>
-{% else %}
 {% if job %}
+<p class="back"><a href="/mail">← Send email</a></p>
+<p class="kicker">Send email</p>
+<h1>Send email</h1>
 {% include "job_panel.html" %}
 <div id="job-grid"{% if job.state == 'running' or job.state == 'waiting' %} hx-get="{{ request.url }}" hx-trigger="every 2s" hx-select="#job-grid" hx-swap="outerHTML"{% endif %}>
 {% include "results.html" %}
 </div>
-{% else %}
-{% include "stage_filters.html" %}
-{% if view %}{% include "results.html" %}{% endif %}
-{% endif %}
-{% if error %}<p class="warn">{{ error }}</p>{% endif %}
+{% elif not snapshot.ready %}
+<p class="kicker">Send email</p>
+<h1>Send email</h1>
+<div class="empty"><p>{{ snapshot.message }}</p></div>
+{% elif selected %}
+<p class="back"><a href="/mail">← Change the list</a></p>
+<p class="kicker">Send email</p>
+<h1>Send email</h1>
+{% if error %}<p class="warn">{{ error }}</p>{% elif send_block %}<p class="warn">{{ send_block }}</p>{% endif %}
 {% if saved and not error %}<p class="cost">Saved. Nothing was sent.</p>{% endif %}
-{% if not selected %}
-<p class="meta">Tick rows in the table, then Mail these.</p>
-{% else %}
-<h2>These companies</h2>
-<p class="cost">{{ message_count }} message(s) will be mailed, one to each valid address.{% if already %} {{ already }} already sent are left out unless Send again is ticked.{% endif %}</p>
-{% if mailable|length > 10 %}
-<details>
-  <summary>{{ mailable|length }} companies in this list</summary>
-  {% include "mail_companies.html" %}
-</details>
-{% else %}
-{% include "mail_companies.html" %}
-{% endif %}
-<p class="meta"><a href="{{ stage_path }}">Change the list</a></p>
-<h2>The letter</h2>
+<p class="lede">{{ message_count }} message(s) will be mailed, one to every valid address.{% if already %} {{ already }} already sent are left out unless Send again is ticked.{% endif %}</p>
 {% if mailable %}
-<p class="meta">Filled in for {{ sample_company }}. Send the default uses the saved letter. Change some phrases applies to this send only. The closing line at the end is added to every email and cannot be removed.</p>
-<p class="cost">Subject: {{ sample_subject }}</p>
-<p class="cost">Attachments: {% if files %}{{ files | map(attribute='name') | join(', ') }}{% else %}none{% endif %}</p>
-<pre>{{ sample_body }}</pre>
+{% include "mail_companies.html" %}
+{% if addresses %}
+<ul class="companies">
+  {% for item in addresses %}
+  <li>{{ item.company }} — {{ item.value }} ({{ item.source }}{% if not item.valid %}, not valid{% endif %})</li>
+  {% endfor %}
+</ul>
+{% endif %}
 {% else %}
 <p class="meta">Nobody in this list has an address waiting.</p>
 {% endif %}
-<p class="meta">Signed by {{ form.sender_name or "—" }}{% if form.sender_designation %}, {{ form.sender_designation }}{% endif %}{% if form.sender_org %}, {{ form.sender_org }}{% endif %}.</p>
 <form class="panel" method="post" action="/mail">
   {% for vendor_id, tender_id in selected %}
   <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
   {% endfor %}
-  {% if addresses %}
-  <p class="note">Every valid address below receives the letter. PDF, then enrichment, then typed. A repeated address is sent once.</p>
-  <ul class="companies">
-    {% for item in addresses %}
-    <li>{{ item.company }} — {{ item.value }} ({{ item.source }}{% if not item.valid %}, not valid{% endif %})</li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-  <label class="check"><input type="radio" name="letter" value="default" {% if letter_mode != 'custom' %}checked{% endif %}> Send the default</label>
-  <label class="check"><input type="radio" name="letter" value="custom" {% if letter_mode == 'custom' %}checked{% endif %}> Change some phrases</label>
-  <div id="phrases" {% if letter_mode != 'custom' %}hidden{% endif %}>
-    <label>Subject
-      <input name="subject" value="{{ phrases.subject }}">
-    </label>
-    <label>Letter
-      <textarea id="letter-body" name="body">{{ phrases.body }}</textarea>
-    </label>
-    <p class="meta">
-      <button type="button" class="quiet insert-token" data-token="{{ '{{company}}' }}">Company</button>
-      <button type="button" class="quiet insert-token" data-token="{{ '{{title}}' }}">Tender title</button>
-      <button type="button" class="quiet insert-token" data-token="{{ '{{contract_date}}' }}">Contract date</button>
-    </p>
-    <details>
-      <summary>Signed by, for this send</summary>
-      <div class="grid">
-        <label>Your name <input name="sender_name" value="{{ phrases.sender_name }}"></label>
-        <label>Job title <input name="sender_designation" value="{{ phrases.sender_designation }}"></label>
-        <label>Organisation <input name="sender_org" value="{{ phrases.sender_org }}"></label>
-        <label>Mobile <input name="sender_mobile" value="{{ phrases.sender_mobile }}"></label>
-        <label>Email <input name="sender_email" value="{{ phrases.sender_email }}"></label>
-      </div>
-      <p class="meta">These fill the signature tokens for this send. They do not change the saved default. The email here is not the address the message is sent from.</p>
-    </details>
-  </div>
+  <input type="hidden" name="letter" value="default">
+  <p class="meta">
+    <button type="submit" name="mode" value="send">Send for real</button>
+    <button class="quiet" type="submit" name="mode" value="preview">Preview</button>
+    <button class="quiet" type="submit" name="mode" value="preflight">Send a test to me</button>
+  </p>
+  <p class="note">Send a test to me mails only your own account, not the companies. Preview writes files and sends nothing.</p>
   <div class="grid">
     <label>Transport
       <select name="transport">
@@ -88,26 +51,37 @@
         <option value="graph" {% if transport == 'graph' %}selected{% endif %}>Microsoft Graph</option>
       </select>
     </label>
-    <label>Delay seconds
-      <input name="delay" type="number" min="5" step="0.1" value="{{ delay }}">
-    </label>
-    <label>Send every message to
-      <input name="redirect_to" value="{{ redirect_to }}" placeholder="leave blank to use each address">
+    <label>Instead, send every message to
+      <input name="redirect_to" value="{{ redirect_to }}" placeholder="leave blank to mail each company">
     </label>
   </div>
-  <p class="warn">If that address is filled in, every message goes there. The company stays on the list to send.</p>
+  <p class="note">Filled in, every message goes to that address. The companies stay on the list to send.</p>
   <label class="check"><input type="checkbox" name="send_again" value="1" {% if include_sent %}checked{% endif %}> Send again to awards that were already sent</label>
-  <label class="check"><input type="checkbox" name="send" value="1"> Send for real</label>
-  <p class="meta">
-    <button class="quiet" type="submit" name="mode" value="preview">Preview</button>
-    <button class="quiet" type="submit" name="mode" value="preflight">Send preflight to me</button>
-    <button type="submit" name="mode" value="send">Send</button>
-  </p>
 </form>
+{% if mailable %}
+<h2>The letter</h2>
+<p class="cost">Subject: {{ sample_subject }}</p>
+<p class="cost">Attachments: {% if files %}{{ files | map(attribute='name') | join(', ') }}{% else %}none{% endif %}</p>
+<pre>{{ sample_body }}</pre>
+<p class="meta">Signed by {{ form.sender_name or "—" }}{% if form.sender_designation %}, {{ form.sender_designation }}{% endif %}{% if form.sender_org %}, {{ form.sender_org }}{% endif %}.</p>
 {% endif %}
+{% else %}
+{% if remembered_job %}
+<p class="back"><a href="/mail?job={{ remembered_job }}">→ Run {{ remembered_job }}</a></p>
+{% endif %}
+<p class="kicker">Send email</p>
+<h1>Send email</h1>
+<p class="lede">Companies with an email that have not been sent yet. A selected tender is mailed to every valid address for that company: PDF, enrichment, and typed. A phone alone is not mailed. Sending does not change the saved default letter.</p>
+{% if error %}<p class="warn">{{ error }}</p>{% endif %}
+{% if saved and not error %}<p class="cost">Saved. Nothing was sent.</p>{% endif %}
+{% include "stage_filters.html" %}
+{% if view %}{% include "results.html" %}{% endif %}
+<p class="meta">Tick rows in the table, then Mail these.</p>
+{% endif %}
+{% if not job and snapshot.ready %}
 <details {% if editing %}open{% endif %}>
   <summary>Edit the default</summary>
-  <p class="meta">This saves the letter and mails nobody. A send does not change it.</p>
+  <p class="meta">This saves the letter and mails nobody. A send does not change it. PDF files only. Each under 2 MB. All of them together under 2.5 MB.</p>
   <form class="panel" method="post" action="/mail/letter">
     {% if selected %}
     {% for vendor_id, tender_id in selected %}
@@ -137,49 +111,40 @@
       <button class="quiet" type="submit" name="restore" value="1">Restore the original letter</button>
     </p>
   </form>
-</details>
-<h2>PDFs</h2>
-<p class="meta">PDF files only. Each under 2 MB. All of them together under 2.5 MB. Both choices attach these files.</p>
-{% if files %}
-<ul>
-  {% for file in files %}
-  <li>
-    {{ file.name }} ({{ file.size }}){% if file.missing %} — file missing{% endif %}
-    <form method="post" action="/mail/attachment/remove">
-      {% if selected %}
-      {% for vendor_id, tender_id in selected %}
-      <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
-      {% endfor %}
-      {% endif %}
-      <input type="hidden" name="filename" value="{{ file.name }}">
-      <button class="quiet" type="submit">Remove</button>
-    </form>
-  </li>
-  {% endfor %}
-</ul>
-{% else %}
-<p class="meta">No PDF yet. Add at least one before a real send.</p>
-{% endif %}
-<form class="panel" method="post" action="/mail/attachment" enctype="multipart/form-data">
-  {% if selected %}
-  {% for vendor_id, tender_id in selected %}
-  <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
-  {% endfor %}
+  {% if files %}
+  <ul>
+    {% for file in files %}
+    <li>
+      {{ file.name }} ({{ file.size }}){% if file.missing %} — file missing{% endif %}
+      <form method="post" action="/mail/attachment/remove">
+        {% if selected %}
+        {% for vendor_id, tender_id in selected %}
+        <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
+        {% endfor %}
+        {% endif %}
+        <input type="hidden" name="filename" value="{{ file.name }}">
+        <button class="quiet" type="submit">Remove</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="meta">No PDF yet. Add at least one before a real send.</p>
   {% endif %}
-  <label>Add a PDF <input name="pdf" type="file" accept="application/pdf,.pdf"></label>
-  <p class="meta"><button type="submit">Add a PDF</button></p>
-</form>
+  <form class="panel" method="post" action="/mail/attachment" enctype="multipart/form-data">
+    {% if selected %}
+    {% for vendor_id, tender_id in selected %}
+    <input type="hidden" name="award" value="{{ vendor_id }}:{{ tender_id }}">
+    {% endfor %}
+    {% endif %}
+    <label>Add a PDF <input name="pdf" type="file" accept="application/pdf,.pdf"></label>
+    <p class="meta"><button type="submit">Add a PDF</button></p>
+  </form>
+</details>
 <script>
-document.querySelectorAll('input[name="letter"]').forEach(function (radio) {
-  radio.addEventListener("change", function () {
-    var box = document.getElementById("phrases");
-    var custom = document.querySelector('input[name="letter"][value="custom"]');
-    if (box && custom) box.hidden = !custom.checked;
-  });
-});
 document.querySelectorAll(".insert-token").forEach(function (button) {
   button.addEventListener("click", function () {
-    var id = button.getAttribute("data-box") || "letter-body";
+    var id = button.getAttribute("data-box") || "default-body";
     var box = document.getElementById(id);
     var token = button.getAttribute("data-token");
     if (!box) return;

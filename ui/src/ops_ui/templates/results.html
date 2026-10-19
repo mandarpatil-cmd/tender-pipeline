@@ -48,7 +48,7 @@
 </div>
 {% if selectable %}
 <p class="meta">
-  <label class="choice"><input id="select-all" type="checkbox" name="select_all" value="1"> {% if stage == 'mail' %}All awards in this filter ({{ view.total }}), {{ letters }} letter{{ '' if letters == 1 else 's' }}{% else %}All companies in this filter ({{ view.counts.vendors }}){% endif %}</label>
+  <label class="choice"><input id="select-all" type="checkbox" name="select_all" value="1"> {% if stage == 'mail' %}Every page in this filter ({{ view.total }} award{{ '' if view.total == 1 else 's' }}), {{ letters }} letter{{ '' if letters == 1 else 's' }}{% else %}Every page in this filter ({{ view.counts.vendors }} compan{{ 'y' if view.counts.vendors == 1 else 'ies' }}){% endif %}</label>
   {% if can_enrich %}
   <button type="submit" name="action" value="lookup">Enrich</button>
   {% elif stage == 'mail' %}
@@ -62,6 +62,14 @@
   var page = document.getElementById("page-ticks");
   function rows() { return document.querySelectorAll("input[name=vendor_id]"); }
   function setRows(checked) { rows().forEach(function (box) { box.checked = checked; }); }
+  function pageComplete() {
+    var boxes = rows();
+    if (!boxes.length) return false;
+    for (var i = 0; i < boxes.length; i++) {
+      if (!boxes[i].checked) return false;
+    }
+    return true;
+  }
   if (all) {
     all.addEventListener("change", function () {
       setRows(all.checked);
@@ -69,17 +77,22 @@
     });
   }
   if (page) {
+    page.addEventListener("click", function (event) {
+      if (!all || !all.checked) return;
+      event.preventDefault();
+      all.checked = false;
+      page.checked = true;
+      setRows(true);
+    });
     page.addEventListener("change", function () {
       setRows(page.checked);
-      if (!page.checked && all) all.checked = false;
+      if (all) all.checked = false;
     });
   }
   rows().forEach(function (box) {
     box.addEventListener("change", function () {
-      if (!box.checked) {
-        if (all) all.checked = false;
-        if (page) page.checked = false;
-      }
+      if (all) all.checked = false;
+      if (page) page.checked = pageComplete();
     });
   });
 })();

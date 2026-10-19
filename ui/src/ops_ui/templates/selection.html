@@ -1,8 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Contacts{% endblock %}
+{% block title %}Get contacts{% endblock %}
 {% block body %}
-<p class="kicker">Contacts</p>
-<h1>Contacts</h1>
+<p class="back"><a href="/enrich">← Get contacts</a></p>
+<p class="kicker">Get contacts</p>
+<h1>Get contacts</h1>
 <p class="meta">
   <span class="status pending">pending <span data-count="pending">{{ queue.pending }}</span></span>
   <span class="status not_found">not_found <span data-count="not_found">{{ queue.not_found }}</span></span>

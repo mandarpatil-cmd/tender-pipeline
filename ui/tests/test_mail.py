@@ -205,10 +205,9 @@ def test_mail_these_opens_the_page_for_the_ticked_company(tmp_path):
     assert page.status_code == 200
     assert "Has Email Ltd" in page.text
     assert "1 message(s) will be mailed" in page.text
-    assert "Send the default" in page.text
-    assert "Change some phrases" in page.text
-    assert "cannot be removed" in page.text
-    assert 'value="graph" selected' in page.text
+    assert "Send for real" in page.text
+    assert 'name="send"' not in page.text
+    assert "Send state" not in page.text
     assert "Everyone waiting" not in page.text
     assert "every valid address" in page.text
     assert "First address" not in page.text
@@ -381,5 +380,23 @@ def test_a_one_off_send_does_not_replace_the_default(tmp_path, monkeypatch):
     with session(bind) as current:
         assert current.get(MailLetter, 1).body == "Saved default for {{company}}."
         assert current.query(Outreach).count() == 0
+
+
+def test_send_for_real_starts_without_a_second_checkbox(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    vendor_id = _seed(path)
+    monkeypatch.setattr("ops_ui.routes.mail.live_send_refusal", lambda *args, **kwargs: None)
+    monkeypatch.setattr("ops_ui.routes.mail.run_outreach", lambda log, stop, **params: 0)
+    client = TestClient(create_app(path))
+
+    started = client.post(
+        "/mail",
+        data={"mode": "send", "award": f"{vendor_id}:T-1"},
+        follow_redirects=False,
+    )
+
+    assert started.status_code == 303
+    job = get_job(path, job_id_from(started.headers["location"]))
+    assert '"send": true' in (job.params_json or "")
 
 

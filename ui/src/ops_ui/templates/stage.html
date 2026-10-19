@@ -1,14 +1,19 @@
 {% extends "base.html" %}
-{% block title %}{% if stage == 'scrape' %}Collect{% else %}Contacts{% endif %}{% endblock %}
+{% block title %}{% if stage == 'scrape' %}New tenders{% else %}Get contacts{% endif %}{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block body %}
+{% if job %}
+<p class="back"><a href="{{ stage_path }}">← {% if stage == 'scrape' %}New tenders{% else %}Get contacts{% endif %}</a></p>
+{% elif remembered_job %}
+<p class="back"><a href="{{ stage_path }}?job={{ remembered_job }}">→ Run {{ remembered_job }}</a></p>
+{% endif %}
 {% if stage == 'scrape' %}
-<p class="kicker">Collect</p>
-<h1>Collect</h1>
-<p class="lede">Scrape the portal, or add one tender by hand. Stored awards are on Home.</p>
+<p class="kicker">New tenders</p>
+<h1>New tenders</h1>
+<p class="lede">Scrape the portal, or add one tender by hand. Stored awards are on All tenders.</p>
 {% elif stage == 'enrich' %}
-<p class="kicker">Contacts</p>
-<h1>Contacts</h1>
+<p class="kicker">Get contacts</p>
+<h1>Get contacts</h1>
 <p class="lede">Find a public email or phone. This opens on companies still waiting. A company that already has either contact is not looked up again.</p>
 {% endif %}
 
@@ -21,19 +26,17 @@
 {% include "results.html" %}
 </div>
 {% endif %}
-{% if stage == 'scrape' %}
+{% if stage == 'scrape' and not job %}
 {% include "scrape_form.html" %}
 <h2>Add a tender</h2>
 <p class="lede">Leave the tender id blank and one starting with MANUAL- is created.</p>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 {% include "tender_form.html" %}
-{% if not job %}<p class="meta">Stored awards, with their filters, are on <a href="/">Home</a>.</p>{% endif %}
+<p class="meta">Stored awards, with their filters, are on <a href="/">All tenders</a>.</p>
 {% elif stage == 'enrich' and not job %}
 {% include "stage_filters.html" %}
 {% include "enrich_form.html" %}
 {% include "results.html" %}
-{% elif stage == 'enrich' and job %}
-{% include "enrich_form.html" %}
 {% endif %}
 {% endif %}
 {% endblock %}

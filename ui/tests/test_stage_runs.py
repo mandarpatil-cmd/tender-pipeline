@@ -67,7 +67,8 @@ def test_scrape_job_page_lists_only_that_run(tmp_path):
     assert ">OLDER</a>" not in html
     assert f'href="/scrape/export.xlsx?job={job_id}"' in html
     assert "Stored awards, with their filters, are on" not in html
-    assert "Add a tender" in html
+    assert "Add a tender" not in html
+    assert "Scrape portal" not in html
 
 
 def test_scrape_and_enrich_and_mail_stay_on_their_pages(tmp_path, monkeypatch):
@@ -119,3 +120,67 @@ def test_scrape_and_enrich_and_mail_stay_on_their_pages(tmp_path, monkeypatch):
     assert "Send state" not in mail_page
     job_id = job_id_from(sent.headers["location"])
     assert f'href="/mail/export.xlsx?job={job_id}"' in mail_page
+
+
+def test_the_start_page_points_at_the_last_run(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    monkeypatch.setattr("ops_ui.routes.jobs.run_scrape", lambda log, stop, **params: 0)
+    client = TestClient(create_app(path))
+
+    started = client.post("/jobs/scrape", data={"search": "awarded"}, follow_redirects=False)
+    assert started.status_code == 303
+    job_id = job_id_from(started.headers["location"])
+    assert started.cookies.get("scrape_job") == str(job_id)
+
+    again = client.get("/scrape", follow_redirects=False)
+    assert again.status_code == 200
+    assert f'href="/scrape?job={job_id}"' in again.text
+    assert "→ Run" in again.text
+    assert "Add a tender" in again.text
+
+    grid = client.get(f"/scrape?job={job_id}")
+    assert ">← New tenders</a>" in grid.text
+    assert str(path) not in grid.text
+
+
+def test_activity_run_shows_the_rows_that_run_wrote(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        scrape_id = _job(current, "scrape", log="saved the tender")
+        winner = upsert_vendor(current, name_raw="Fetched Ltd")
+        upsert_tender(
+            current,
+            tender_id="FETCHED",
+            title="Fetched tender",
+            scraped_at=utcnow(),
+            scrape_job_id=scrape_id,
+        )
+        replace_awards(
+            current,
+            "FETCHED",
+            [{"bid_number": "1", "vendor_id": winner, "bidder_name": "Fetched Ltd"}],
+        )
+        status_id = _job(current, "status", log="funnel")
+        mail_id = _job(
+            current,
+            "outreach",
+            params='{"awards": ["%d:FETCHED"]}' % winner,
+            log="sent the letter",
+        )
+    client = TestClient(create_app(path))
+
+    scraped = client.get(f"/jobs/{scrape_id}").text
+    assert ">← Activity</a>" in scraped
+    assert ">FETCHED</a>" in scraped
+    assert "saved the tender" in scraped
+
+    mailed = client.get(f"/jobs/{mail_id}").text
+    assert ">FETCHED</a>" in mailed
+    assert "sent the letter" in mailed
+
+    status = client.get(f"/jobs/{status_id}").text
+    assert "This run has no table." in status
+    assert ">FETCHED</a>" not in status

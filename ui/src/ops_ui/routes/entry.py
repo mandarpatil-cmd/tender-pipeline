@@ -20,6 +20,7 @@ from pipeline_core.queries import (
 from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
 from ops_ui.present import enrich_plan, job_page
+from ops_ui.routes.awards import remember_job_stage
 from ops_ui.queries import load_home
 from ops_ui.runs import enrich_cost_line, run_enrich
 from ops_ui.selection import selected_vendor_ids
@@ -193,8 +194,12 @@ async def selection_lookup(request: Request, path: Path = Depends(database_path)
     try:
         job_id = start_job(path, "enrich", params, work)
     except Busy as exc:
-        return RedirectResponse(job_page("enrich", exc.job_id, refused=True), status_code=303)
-    return RedirectResponse(job_page("enrich", job_id), status_code=303)
+        response = RedirectResponse(job_page("enrich", exc.job_id, refused=True), status_code=303)
+        remember_job_stage(response, "enrich", exc.job_id)
+        return response
+    response = RedirectResponse(job_page("enrich", job_id), status_code=303)
+    remember_job_stage(response, "enrich", job_id)
+    return response
 
 
 async def _save_tender(request: Request, *, attach: bool):

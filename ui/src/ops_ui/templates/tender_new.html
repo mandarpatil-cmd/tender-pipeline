@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Add a tender{% endblock %}
 {% block body %}
-<p class="kicker">Collect</p>
+<p class="back"><a href="/scrape">← New tenders</a></p>
+<p class="kicker">New tenders</p>
 <h1>Add a tender</h1>
 <p class="lede">Leave the tender id blank and one starting with MANUAL- is created. A company name already stored is not duplicated.</p>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}

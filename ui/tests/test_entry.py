@@ -160,7 +160,7 @@ def test_select_all_uses_the_filter_and_ignores_the_page(tmp_path):
     assert page.status_code == 200
     assert "Bihar Roads Ltd" in page.text
     assert "Assam Electricals" not in page.text
-    assert "<h1>Contacts</h1>" in page.text
+    assert "<h1>Get contacts</h1>" in page.text
 
 
 def _award(current, tender_id, vendor_id, name, *, state="Goa"):

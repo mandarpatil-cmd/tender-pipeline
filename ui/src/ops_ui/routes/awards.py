@@ -49,6 +49,8 @@ router = APIRouter()
 
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _COOKIE = 60 * 60 * 24 * 30
+_PAGE_STAGE = {"scrape": "scrape", "enrich": "enrich", "mail": "outreach"}
+_STAGE_PAGE = {"scrape": "scrape", "enrich": "enrich", "outreach": "mail"}
 _SEARCH_LABELS = {
     "awarded": "Awarded (AOC)",
     "organisation": "One organisation",
@@ -146,6 +148,8 @@ def stage_context(
         "empty_note": _empty_note(stage, job, view) if watching else "",
         "zip_ready": pdf_zip_path(job.job_id).is_file() if watching else False,
         "captcha_version": _captcha_version(job) if watching else 0,
+        "fresh": request.query_params.get("fresh") == "1",
+        "remembered_job": None,
     }
 
 
@@ -206,6 +210,35 @@ def _letters(path: Path, query) -> int:
         return len(mail_messages(current, awards=keys))
 
 
+def remember_run(response: Response, page: str, job_id: int) -> None:
+    """Keep the latest run for a stage so the nav can open it again."""
+    response.set_cookie(
+        f"{page}_job",
+        str(job_id),
+        max_age=_COOKIE,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def remember_job_stage(response: Response, stage: str, job_id: int) -> None:
+    """``stage`` is the job row (``outreach`` for mail), not the page path."""
+    page = _STAGE_PAGE.get(stage)
+    if page:
+        remember_run(response, page, job_id)
+
+
+def remembered_run(request: Request, path: Path, page: str) -> int | None:
+    raw = (request.cookies.get(f"{page}_job") or "").strip()
+    if not raw.isdigit():
+        return None
+    job = get_job(path, int(raw))
+    if job is None or job.stage != _PAGE_STAGE[page]:
+        return None
+    return job.job_id
+
+
 def remember(response: Response, stage: str, query) -> None:
     token = filter_token(query, path=STAGE_PATHS[stage])
     name = f"{stage}_query"
@@ -241,6 +274,8 @@ def home(request: Request, path: Path = Depends(database_path)):
 def _stage_page(request: Request, path: Path, stage: str):
     job, override = watched_job(request, path, stage)
     context = stage_context(request, path, stage, query_override=override, job=job)
+    if job is None:
+        context["remembered_job"] = remembered_run(request, path, stage)
     if stage == "enrich" and context["snapshot"].ready:
         context["enrich_cost_text"] = enrich_cost(path, limit=1, source="scrape", dry_run=True)
     response = TEMPLATES.TemplateResponse(
@@ -248,7 +283,9 @@ def _stage_page(request: Request, path: Path, stage: str):
         name="stage.html",
         context=context,
     )
-    if context["snapshot"].ready and job is None:
+    if job is not None:
+        remember_run(response, stage, job.job_id)
+    elif context["snapshot"].ready:
         remember(response, stage, context["query"])
     return response
 
@@ -264,6 +301,7 @@ def scrape_page(request: Request, path: Path = Depends(database_path)):
             context={
                 "snapshot": snapshot,
                 "stage": "scrape",
+                "stage_path": "/scrape",
                 "today": date.today().isoformat(),
                 "date_presets": DATE_PRESETS,
                 "organisations": organisation_choices() if snapshot.ready else [],
@@ -272,6 +310,8 @@ def scrape_page(request: Request, path: Path = Depends(database_path)):
                 "error": "",
                 "refused": False,
                 "captcha_error": False,
+                "fresh": request.query_params.get("fresh") == "1",
+                "remembered_job": remembered_run(request, path, "scrape"),
             },
         )
     context = stage_context(request, path, "scrape", query_override=override, job=job)
@@ -279,7 +319,9 @@ def scrape_page(request: Request, path: Path = Depends(database_path)):
         organisation_choices() if context["snapshot"].ready else []
     )
     context["error"] = ""
-    return TEMPLATES.TemplateResponse(request=request, name="stage.html", context=context)
+    response = TEMPLATES.TemplateResponse(request=request, name="stage.html", context=context)
+    remember_run(response, "scrape", job.job_id)
+    return response
 
 
 @router.get("/enrich")

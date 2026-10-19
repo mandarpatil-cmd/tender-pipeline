@@ -111,7 +111,6 @@ def test_enrich_page_names_the_limit_and_the_delay(tmp_path):
     assert 'name="search"' in scrape
     assert 'name="organ_name"' in scrape
     assert "One organisation" in scrape
-    assert "Pause between portal requests" in scrape
     assert "Award of Contract" in scrape
     assert "Add a tender" in scrape
     assert "fetch and store each one again" in scrape

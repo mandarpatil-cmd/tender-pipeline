@@ -24,7 +24,7 @@ from ops_ui.jobs import (
     submit_captcha,
 )
 from ops_ui.present import job_page as run_page
-from ops_ui.present import resolve_preset
+from ops_ui.present import job_query, resolve_preset
 from ops_ui.queries import load_home
 from ops_ui.runs import (
     organisation_choices,
@@ -37,9 +37,12 @@ from ops_ui.runs import (
     run_status,
     scrape_choice,
 )
+from ops_ui.routes.awards import remember_job_stage, stage_context
 from ops_ui.templating import TEMPLATES
 
 router = APIRouter()
+
+_GRID_STAGE = {"scrape": "scrape", "enrich": "enrich", "outreach": "mail"}
 
 
 @router.get("/jobs")
@@ -95,11 +98,9 @@ async def post_enrich(request: Request, path: Path = Depends(database_path)):
     form = await request.form()
     try:
         limit = _at_least(form.get("limit"), 1)
-        delay = float(form.get("delay") or 1)
     except ValueError:
         return Response("Limit must be a whole number of at least 1.", status_code=400)
-    if delay < 0:
-        delay = 0
+    delay = 1.0
     source_raw = str(form.get("source") or "scrape")
     source = None if source_raw == "all" else source_raw
     dry_run = form.get("dry_run") in {"on", "true", "1"}
@@ -156,20 +157,16 @@ async def post_scrape(request: Request, path: Path = Depends(database_path)):
             return Response(message, status_code=400, media_type="text/plain")
         max_tenders = None
         max_pages = None
-        try:
-            delay = float(form.get("delay") or 1.5)
-        except ValueError:
-            return Response("Delay must be a number.", status_code=400)
     else:
         try:
             max_tenders = _at_least(form.get("max_tenders"), 1)
             max_pages = _at_least(form.get("max_pages"), 1)
-            delay = float(form.get("delay") or 1.5)
         except ValueError:
             return Response(
                 "Tenders and pages must be whole numbers of at least 1.",
                 status_code=400,
             )
+    delay = 1.5
     probe = form.get("probe") in {"on", "true", "1"}
     params = {
         "max_tenders": max_tenders,
@@ -212,11 +209,16 @@ def job_page(
     job = get_job(path, job_id)
     if job is None:
         return Response("No run with that id.", status_code=404)
-    return TEMPLATES.TemplateResponse(
-        request=request,
-        name="job.html",
-        context=_job_view(job, refused=bool(refused), captcha_error=bool(captcha)),
-    )
+    context = _job_view(job, refused=bool(refused), captcha_error=bool(captcha))
+    context["grid"] = False
+    page = _GRID_STAGE.get(job.stage)
+    if page is not None:
+        override = job_query(page, job.job_id, job.params_json)
+        context.update(stage_context(request, path, page, query_override=override, job=job))
+        context["refused"] = bool(refused)
+        context["captcha_error"] = bool(captcha)
+        context["grid"] = context.get("view") is not None
+    return TEMPLATES.TemplateResponse(request=request, name="job.html", context=context)
 
 
 @router.get("/jobs/{job_id}/live")
@@ -296,8 +298,12 @@ def _start(path, stage: str, params: dict, work) -> Response:
     try:
         job_id = start_job(path, stage, params, work)
     except Busy as exc:
-        return RedirectResponse(_job_target(path, exc.job_id, refused=True), status_code=303)
-    return RedirectResponse(run_page(stage, job_id), status_code=303)
+        response = RedirectResponse(_job_target(path, exc.job_id, refused=True), status_code=303)
+        remember_job_stage(response, stage, exc.job_id)
+        return response
+    response = RedirectResponse(run_page(stage, job_id), status_code=303)
+    remember_job_stage(response, stage, job_id)
+    return response
 
 
 def _job_target(path, job_id: int, *, refused: bool = False, captcha: bool = False) -> str:

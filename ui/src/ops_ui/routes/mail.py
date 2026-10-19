@@ -13,7 +13,13 @@ from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
 from ops_ui.queries import load_home
 from ops_ui.present import job_page
-from ops_ui.routes.awards import remember, stage_context, watched_job
+from ops_ui.routes.awards import (
+    remember,
+    remember_job_stage,
+    remembered_run,
+    stage_context,
+    watched_job,
+)
 from ops_ui.runs import credential_gap, live_send_refusal, load_campaign, run_outreach
 from ops_ui.selection import selected_awards
 from ops_ui.templating import TEMPLATES
@@ -57,19 +63,15 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
     transport = str(form.get("transport") or "graph")
     if transport not in {"gmail", "graph"}:
         transport = "graph"
-    try:
-        delay = float(form.get("delay") or _DELAY_FLOOR)
-    except ValueError:
-        delay = _DELAY_FLOOR
-    delay = max(delay, _DELAY_FLOOR)
+    include_sent = str(form.get("send_again") or "") in _ON
+    preflight = mode == "preflight"
+    send = mode == "send"
+    delay = _DELAY_FLOOR
     redirect_to = str(form.get("redirect_to") or "").strip()
     picked = _awards(form.getlist("award"))
     letter_mode = str(form.get("letter") or "default")
     if letter_mode not in {"default", "custom"}:
         letter_mode = "default"
-    include_sent = str(form.get("send_again") or "") in _ON
-    preflight = mode == "preflight"
-    send = mode == "send" and str(form.get("send") or "") in _ON
     phrases = _phrases(form)
     if mode == "remove":
         return _render(
@@ -109,19 +111,6 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
             sender_mobile=phrases["sender_mobile"],
             sender_email=phrases["sender_email"],
             attachment_names=saved.attachment_names,
-        )
-    if mode == "send" and not send:
-        return _render(
-            request,
-            path,
-            awards=picked,
-            error="Tick Send for real to mail these awards. Preview writes files and sends nothing.",
-            transport=transport,
-            delay=delay,
-            redirect_to=redirect_to,
-            include_sent=include_sent,
-            letter_mode=letter_mode,
-            phrases=phrases if letter_mode == "custom" else None,
         )
     if preflight:
         problem = credential_gap(transport, preflight=True)
@@ -171,8 +160,12 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
     try:
         job_id = start_job(path, "outreach", params, work)
     except Busy as exc:
-        return RedirectResponse(job_page("outreach", exc.job_id, refused=True), status_code=303)
-    return RedirectResponse(job_page("outreach", job_id), status_code=303)
+        response = RedirectResponse(job_page("outreach", exc.job_id, refused=True), status_code=303)
+        remember_job_stage(response, "outreach", exc.job_id)
+        return response
+    response = RedirectResponse(job_page("outreach", job_id), status_code=303)
+    remember_job_stage(response, "outreach", job_id)
+    return response
 
 
 _LETTER_FIELDS = (
@@ -290,6 +283,7 @@ def _render(
     sample_subject = ""
     sample_body = ""
     files: list[dict[str, str]] = []
+    send_block = ""
     if letter_mode not in {"default", "custom"}:
         letter_mode = "default"
     if snapshot.ready:
@@ -381,6 +375,23 @@ def _render(
                     "missing": "" if file_path.is_file() else "missing",
                 }
             )
+        send_block = ""
+        if awards:
+            checked = None
+            if letter_mode == "custom":
+                checked = campaign.Letter(
+                    subject=(phrases or {}).get("subject", ""),
+                    body=(phrases or {}).get("body", ""),
+                    sender_name=(phrases or {}).get("sender_name", ""),
+                    sender_designation=(phrases or {}).get("sender_designation", ""),
+                    sender_org=(phrases or {}).get("sender_org", ""),
+                    sender_mobile=(phrases or {}).get("sender_mobile", ""),
+                    sender_email=(phrases or {}).get("sender_email", ""),
+                    attachment_names=letter.attachment_names,
+                )
+            send_block = (
+                live_send_refusal(transport, bind=bind, letter=checked) or ""
+            )
     context = {
         "snapshot": snapshot,
         "error": error,
@@ -403,6 +414,8 @@ def _render(
         "transport": transport,
         "delay": delay,
         "redirect_to": redirect_to,
+        "send_block": send_block,
+        "job": None,
         "view": None,
     }
     if snapshot.ready:
@@ -416,7 +429,11 @@ def _render(
         context["form"] = form
         if job is not None:
             remember_filter = False
+        else:
+            context["remembered_job"] = remembered_run(request, path, "mail")
     response = TEMPLATES.TemplateResponse(request=request, name="mail.html", context=context)
+    if snapshot.ready and context.get("job") is not None:
+        remember_job_stage(response, "outreach", context["job"].job_id)
     if remember_filter and snapshot.ready:
         remember(response, "mail", context["query"])
     return response

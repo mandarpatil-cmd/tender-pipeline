@@ -1,7 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Run {{ job.job_id }}{% endblock %}
+{% block main_class %}{% if grid %}wide{% endif %}{% endblock %}
 {% block body %}
+<p class="back"><a href="/jobs">← Activity</a></p>
 <p class="kicker">{{ job.stage }}</p>
 <h1>Run {{ job.job_id }}</h1>
 {% include "job_panel.html" %}
+{% if grid %}
+<div id="job-grid"{% if job.state == 'running' or job.state == 'waiting' %} hx-get="{{ request.url }}" hx-trigger="every 2s" hx-select="#job-grid" hx-swap="outerHTML"{% endif %}>
+{% include "results.html" %}
+</div>
+{% else %}
+<p class="meta">This run has no table.</p>
+{% endif %}
 {% endblock %}

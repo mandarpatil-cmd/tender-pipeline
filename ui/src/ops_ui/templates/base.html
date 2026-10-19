@@ -11,8 +11,8 @@
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=11">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v=12">
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
@@ -20,25 +20,24 @@
   <header class="top sticky">
     <a class="brand" href="/">Tender pipeline</a>
     <nav class="nav">
-      <a href="{{ stage_href('home', request.cookies.get('home_query', '')) }}" {% if here == '/' %}class="current" aria-current="page"{% endif %}>Home</a>
-      <a href="/scrape" {% if here.startswith('/scrape') or here.startswith('/tender') %}class="current" aria-current="page"{% endif %}>Collect</a>
-      <a href="{{ stage_href('enrich', request.cookies.get('enrich_query', '')) }}" {% if here.startswith('/enrich') or here == '/selection' %}class="current" aria-current="page"{% endif %}>Contacts</a>
-      <a href="{{ stage_href('mail', request.cookies.get('mail_query', '')) }}" {% if here.startswith('/mail') %}class="current" aria-current="page"{% endif %}>Send</a>
+      <a href="{{ nav_href('home', request.cookies.get('home_query', '')) }}" {% if here == '/' %}class="current" aria-current="page"{% endif %}>All tenders</a>
+      <a href="{{ nav_href('scrape', '') }}" {% if here.startswith('/scrape') or here.startswith('/tender') %}class="current" aria-current="page"{% endif %}>New tenders</a>
+      <a href="{{ nav_href('enrich', request.cookies.get('enrich_query', '')) }}" {% if here.startswith('/enrich') or here == '/selection' %}class="current" aria-current="page"{% endif %}>Get contacts</a>
+      <a href="{{ nav_href('mail', request.cookies.get('mail_query', '')) }}" {% if here.startswith('/mail') %}class="current" aria-current="page"{% endif %}>Send email</a>
       <a href="/jobs" {% if here.startswith('/jobs') %}class="current" aria-current="page"{% endif %}>Activity</a>
     </nav>
-    <button type="button" class="quiet theme" id="theme">Dark</button>
+    <button type="button" class="quiet theme" id="theme" aria-label="Switch to dark mode">🌙</button>
   </header>
   <main class="{% block main_class %}narrow{% endblock %}">
     {% block body %}{% endblock %}
-    {% if snapshot is defined %}
-    <footer>database {{ snapshot.path }}</footer>
-    {% endif %}
   </main>
   <script>
     (function () {
       var button = document.getElementById("theme");
       function label() {
-        button.textContent = document.documentElement.classList.contains("dark") ? "Light" : "Dark";
+        var dark = document.documentElement.classList.contains("dark");
+        button.textContent = dark ? "☀️" : "🌙";
+        button.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
       }
       label();
       button.addEventListener("click", function () {

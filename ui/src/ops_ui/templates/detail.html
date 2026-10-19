@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{% if detail %}{{ detail.tender.tender_id }}{% else %}Tender pipeline{% endif %}{% endblock %}
 {% block body %}
-<p class="back"><a href="{{ back }}">Return to this filter</a></p>
+<p class="back"><a href="{{ back }}">← Back</a></p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% elif detail is none %}

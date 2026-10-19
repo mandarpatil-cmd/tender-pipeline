@@ -388,6 +388,11 @@ def stage_href(stage: str, raw: str) -> str:
     return f"{path}?{text}"
 
 
+def nav_href(stage: str, raw: str) -> str:
+    """The nav link for a stage. A remembered run is the arrow on that page."""
+    return stage_href(stage, raw)
+
+
 def enrich_plan(pending: int, not_found: int, failed: int, ready: int) -> str:
     """The sentence the combined list and the Enrich confirm page both show."""
     return (
