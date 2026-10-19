@@ -1,22 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Send email{% endblock %}
+{% block back_fallback %}/mail{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block body %}
 {% if job %}
-<p class="back"><a href="/mail">← Send email</a></p>
-<p class="kicker">Send email</p>
 <h1>Send email</h1>
 {% include "job_panel.html" %}
 <div id="job-grid"{% if job.state == 'running' or job.state == 'waiting' %} hx-get="{{ request.url }}" hx-trigger="every 2s" hx-select="#job-grid" hx-swap="outerHTML"{% endif %}>
 {% include "results.html" %}
 </div>
 {% elif not snapshot.ready %}
-<p class="kicker">Send email</p>
 <h1>Send email</h1>
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% elif selected %}
-<p class="back"><a href="/mail">← Change the list</a></p>
-<p class="kicker">Send email</p>
 <h1>Send email</h1>
 {% if error %}<p class="warn">{{ error }}</p>{% elif send_block %}<p class="warn">{{ send_block }}</p>{% endif %}
 {% if saved and not error %}<p class="cost">Saved. Nothing was sent.</p>{% endif %}
@@ -69,14 +65,11 @@
 {% if remembered_job %}
 <p class="back"><a href="/mail?job={{ remembered_job }}">→ Run {{ remembered_job }}</a></p>
 {% endif %}
-<p class="kicker">Send email</p>
 <h1>Send email</h1>
-<p class="lede">Companies with an email that have not been sent yet. A selected tender is mailed to every valid address for that company: PDF, enrichment, and typed. A phone alone is not mailed. Sending does not change the saved default letter.</p>
 {% if error %}<p class="warn">{{ error }}</p>{% endif %}
 {% if saved and not error %}<p class="cost">Saved. Nothing was sent.</p>{% endif %}
 {% include "stage_filters.html" %}
 {% if view %}{% include "results.html" %}{% endif %}
-<p class="meta">Tick rows in the table, then Mail these.</p>
 {% endif %}
 {% if not job and snapshot.ready %}
 <details {% if editing %}open{% endif %}>

@@ -79,14 +79,18 @@ def upsert_tender(session: Session, **values: Any) -> None:
     """
     values = _stored_tender(values)
     statement = sqlite_insert(Tender).values(**values)
+    assigned = {}
+    for key in values:
+        if key == "tender_id":
+            continue
+        incoming = getattr(statement.excluded, key)
+        if key == "scrape_job_id":
+            incoming = func.coalesce(Tender.scrape_job_id, incoming)
+        assigned[key] = incoming
     session.execute(
         statement.on_conflict_do_update(
             index_elements=[Tender.tender_id],
-            set_={
-                key: getattr(statement.excluded, key)
-                for key in values
-                if key != "tender_id"
-            },
+            set_=assigned,
         )
     )
 

@@ -317,17 +317,22 @@ def test_a_save_without_a_search_keeps_the_recorded_source(tmp_path):
         assert tender.scrape_job_id == 9
 
 
-def test_the_last_run_that_saved_a_tender_is_the_one_recorded(tmp_path):
+def test_the_first_run_that_saved_a_tender_keeps_the_id(tmp_path):
     store = Store(tmp_path)
     store.save_tender(_sourced(), source=_AWARDED_SEARCH)
     terminal = ScrapeSource(search_mode="awarded", search_fields={"tenderStatus": "6"})
     store.save_tender(_sourced(page=1), source=terminal)
+    later = ScrapeSource(
+        search_mode="tender_id",
+        search_fields={"tenderId": "2026_MoRTH_7_1"},
+        job_id=40,
+    )
+    store.save_tender(_sourced(page=2), source=later)
 
     with session(store.engine) as current:
         tender = current.get(Tender, "2026_MoRTH_7_1")
-        assert tender.listing_page == 1
-        assert tender.scrape_job_id is None
-        assert json.loads(tender.search_fields) == {"tenderStatus": "6"}
+        assert tender.listing_page == 2
+        assert tender.scrape_job_id == 9
 
 
 def test_award_takes_its_quote_by_bid_number_and_falls_back_to_the_contract_value(tmp_path):

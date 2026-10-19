@@ -64,7 +64,6 @@ def test_mail_page_asks_for_companies_before_it_can_send(tmp_path):
     _seed(path)
     html = TestClient(create_app(path)).get("/mail").text
 
-    assert "Tick rows in the table, then Mail these." in html
     assert "Choose companies on Awards." not in html
     assert "Edit the default" in html
     assert "Save the default" in html

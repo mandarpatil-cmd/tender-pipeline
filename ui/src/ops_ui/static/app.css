@@ -144,6 +144,15 @@ a { color: var(--primary); }
   text-decoration: none;
 }
 
+a.back-app {
+  color: var(--foreground);
+  font-weight: 600;
+  text-decoration: none;
+  font-size: 1rem;
+  padding: 0.65rem 0.2rem;
+}
+a.back-app:hover { color: var(--primary); }
+
 .nav {
   display: flex;
   flex-wrap: wrap;

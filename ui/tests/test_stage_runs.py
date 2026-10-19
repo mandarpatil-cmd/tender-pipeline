@@ -140,7 +140,7 @@ def test_the_start_page_points_at_the_last_run(tmp_path, monkeypatch):
     assert "Add a tender" in again.text
 
     grid = client.get(f"/scrape?job={job_id}")
-    assert ">← New tenders</a>" in grid.text
+    assert 'id="back"' in grid.text
     assert str(path) not in grid.text
 
 
@@ -173,7 +173,7 @@ def test_activity_run_shows_the_rows_that_run_wrote(tmp_path):
     client = TestClient(create_app(path))
 
     scraped = client.get(f"/jobs/{scrape_id}").text
-    assert ">← Activity</a>" in scraped
+    assert ">← Back</a>" in scraped
     assert ">FETCHED</a>" in scraped
     assert "saved the tender" in scraped
 

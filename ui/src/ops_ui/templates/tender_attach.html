@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Attach award{% endblock %}
+{% block back_fallback %}/scrape{% endblock %}
 {% block body %}
 <dialog class="notice" open>
-<p class="kicker">New tenders</p>
 <h1>This company is already stored</h1>
 <ul>
   {% for match in matches %}
@@ -28,6 +28,5 @@
   {% endfor %}
   <button type="submit">Attach the award</button>
 </form>
-<p class="back"><a href="/scrape">← New tenders</a></p>
 </dialog>
 {% endblock %}

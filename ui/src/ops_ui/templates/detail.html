@@ -1,13 +1,12 @@
 {% extends "base.html" %}
 {% block title %}{% if detail %}{{ detail.tender.tender_id }}{% else %}Tender pipeline{% endif %}{% endblock %}
+{% block back_fallback %}{{ back }}{% endblock %}
 {% block body %}
-<p class="back"><a href="{{ back }}">← Back</a></p>
 {% if not snapshot.ready %}
 <div class="empty"><p>{{ snapshot.message }}</p></div>
 {% elif detail is none %}
 <div class="empty"><p>No award is stored for that tender and bid.</p></div>
 {% else %}
-<p class="kicker">Award</p>
 <h1>{{ detail.tender.tender_id }}</h1>
 <p class="intro">{{ detail.vendor.name_raw }} · bid {{ detail.focus_bid }}</p>
 

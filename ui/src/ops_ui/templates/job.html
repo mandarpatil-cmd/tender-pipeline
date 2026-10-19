@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Run {{ job.job_id }}{% endblock %}
+{% block back_fallback %}/jobs{% endblock %}
 {% block main_class %}{% if grid %}wide{% endif %}{% endblock %}
 {% block body %}
-<p class="back"><a href="/jobs">← Activity</a></p>
 <p class="kicker">{{ job.stage }}</p>
 <h1>Run {{ job.job_id }}</h1>
 {% include "job_panel.html" %}
