@@ -47,9 +47,9 @@
   <div class="pair"><dt>Fields sent</dt><dd>{% for key, value in tender.search_fields.items() %}{{ key }}={{ value }}{% if key == 'tenderStatus' and value in status_labels %} ({{ status_labels[value] }}){% endif %}{% if not loop.last %}, {% endif %}{% else %}Not recorded{% endfor %}</dd></div>
   <div class="pair"><dt>Listing page</dt><dd>{{ tender.listing_page if tender.listing_page is not none else "Not recorded" }}</dd></div>
   <div class="pair"><dt>S.No on the portal</dt><dd>{{ tender.listing_serial if tender.listing_serial is not none else "Not recorded" }}</dd></div>
-  <div class="pair"><dt>Run</dt><dd>{% if tender.scrape_job_id is not none %}<a href="/jobs/{{ tender.scrape_job_id }}">{{ tender.scrape_job_id }}</a>{% elif tender.search_mode %}Started from a terminal{% else %}Not recorded{% endif %}</dd></div>
+  <div class="pair"><dt>Run</dt><dd>{% if tender.scrape_job_id is not none %}<a href="/jobs/{{ tender.scrape_job_id }}?award={{ detail.vendor.vendor_id }}:{{ tender.tender_id|urlencode }}">{{ tender.scrape_job_id }}</a>{% elif tender.search_mode %}Started from a terminal{% else %}Not recorded{% endif %}</dd></div>
 </dl>
-<p class="muted">Each value is from the run that last saved this tender. Not recorded means it was saved before the source was kept.</p>
+<p class="muted">Run is the scrape that first saved this tender. Downloading PDFs, enriching and mailing never change it. Every later run is listed under Runs. Not recorded means it was saved before the source was kept.</p>
 {% else %}
 <p class="muted">Not recorded.</p>
 {% endif %}
@@ -73,19 +73,26 @@
   </tbody>
 </table>
 
-<h2 class="section">PDF evidence</h2>
-<p class="evidence">These are clues from a document. A mail run can use them, PDF address first.</p>
+<h2 class="section">PDF evidence for this tender</h2>
+<p class="evidence">Clues read from this tender's work-order PDFs. A mail run uses a valid PDF address first.</p>
 <form method="post" action="/jobs/pdfs">
   <input type="hidden" name="tender_id" value="{{ detail.tender.tender_id }}">
   <button type="submit">Download PDFs</button>
 </form>
 <p class="muted">Searches the portal by this tender id and downloads the files in that session. If the captcha reader fails, type it on the run page.</p>
-<dl>
-  <div class="pair"><dt>PDF email</dt><dd class="evidence">{{ detail.vendor.pdf_email or "" }}</dd></div>
-  <div class="pair"><dt>PDF phone</dt><dd class="evidence">{{ detail.vendor.pdf_phone or "" }}</dd></div>
+{% if clues %}
+<dl id="tender-clues">
+  {% for clue in clues %}
+  <div class="pair"><dt>PDF {{ clue.channel }}</dt><dd class="evidence">{{ clue.value }}{% if not clue.valid %} (not valid){% endif %} — found in {% if clue.filenames %}{{ clue.filenames|join(", ") }}{% else %}this tender's PDFs{% endif %}</dd></div>
+  {% endfor %}
 </dl>
+{% elif documents and detail.awards|length > 1 %}
+<p class="muted" id="tender-clues">This tender has several winners, so its PDF clues are not given to any one company.</p>
+{% else %}
+<p class="muted" id="tender-clues">No email or phone was read from this tender's PDFs.</p>
+{% endif %}
 {% if documents %}
-  <p class="muted">These clues were read from the PDFs. The files were not kept.</p>
+  <p class="muted">Each file and what it said. The files were not kept.</p>
   {% for doc in documents %}
   <div class="card">
     <p>{{ doc.filename or "Unnamed file" }}</p>
@@ -96,16 +103,42 @@
 <p class="muted">No saved PDF extract for this tender.</p>
 {% endif %}
 
-<h2 class="section">Addresses</h2>
-<p>{{ email_count }} email{{ '' if email_count == 1 else 's' }} for this tender.</p>
-{% if contacts %}
-<ul>
-  {% for item in contacts %}
-  <li>{{ item.channel }} {{ item.value }} ({{ item.source }}{% if not item.valid %}, not valid{% endif %}){% if item.source_url %} — found at {{ item.source_url }}{% endif %}{% if item.job_id is not none %} — <a href="/jobs/{{ item.job_id }}">run {{ item.job_id }}</a>{% endif %}</li>
+{% if other_documents %}
+<h2 class="section">Other PDFs for this company</h2>
+<p class="evidence">Read from {{ detail.vendor.name_raw }}'s other tenders, not from this one.</p>
+{% for other in other_documents %}
+<div class="card other-tender">
+  <p><a href="/award?tender_id={{ other.tender_id|urlencode }}&bid={{ other.bid_number|urlencode }}">{{ other.tender_id }}</a>{% if other.title %} · {{ other.title }}{% endif %}</p>
+  {% if not other.attributed %}<p class="muted">Several winners. These clues were not given to any one company.</p>{% endif %}
+  {% for doc in other.documents %}
+  <p class="muted">From tender {{ other.tender_id }}, file {{ doc.filename or "Unnamed file" }}: Email {{ doc.emails or "—" }} · Phone {{ doc.phones or "—" }} · GSTIN {{ doc.gstins or "—" }}</p>
+  {% else %}
+  <p class="muted">No saved PDF extract for that tender.</p>
   {% endfor %}
-</ul>
+</div>
+{% endfor %}
+{% endif %}
+
+<h2 class="section">Addresses</h2>
+<p>{{ email_count }} valid email address{{ '' if email_count == 1 else 'es' }} for this company. {{ mail_count }} will be mailed for this award.</p>
+{% if contacts %}
+<table id="addresses">
+  <thead>
+    <tr><th>Kind</th><th>Address</th><th>Source</th><th>Mail for this award</th></tr>
+  </thead>
+  <tbody>
+    {% for item in contacts %}
+    <tr>
+      <td>{{ item.channel }}</td>
+      <td>{{ item.value }}{% if not item.valid %} (not valid){% endif %}</td>
+      <td>{{ item.source }}{% if item.source == 'pdf' %}{% if item.filenames %} — {{ item.filenames|join(", ") }}{% endif %}{% if item.tender_id and item.this_tender %} on this tender{% elif item.tender_id %} on tender {{ item.tender_id }}{% else %}, tender not recorded{% endif %}{% endif %}{% if item.source_url %} — found at {{ item.source_url }}{% endif %}{% if item.job_id is not none %} — <a href="/jobs/{{ item.job_id }}?award={{ detail.vendor.vendor_id }}:{{ detail.tender.tender_id|urlencode }}">run {{ item.job_id }}</a>{% endif %}</td>
+      <td>{% if item.channel != 'email' %}—{% elif item.will_mail %}will be mailed{% else %}not mailed: {{ item.reason }}{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
 {% else %}
-<p class="muted">No stored addresses for this tender.</p>
+<p class="muted">No stored addresses for this company.</p>
 {% endif %}
 
 <h2 class="section">Contact on the company</h2>
@@ -139,7 +172,7 @@
 {% if detail.runs %}
   {% for run in detail.runs %}
   <div class="card">
-    <p>{{ run.created_at }} · {{ run.status }}{% if run.model %} · {{ run.model }}{% endif %}{% if run.job_id is not none %} · <a href="/jobs/{{ run.job_id }}">run {{ run.job_id }}</a>{% endif %}</p>
+    <p>{{ run.created_at }} · {{ run.status }}{% if run.model %} · {{ run.model }}{% endif %}{% if run.job_id is not none %} · <a href="/jobs/{{ run.job_id }}?award={{ detail.vendor.vendor_id }}:{{ detail.tender.tender_id|urlencode }}">run {{ run.job_id }}</a>{% endif %}</p>
     {% if run.not_kept %}<p>Not kept: {% for item in run.not_kept %}{{ item }}{% if not loop.last %}; {% endif %}{% endfor %}</p>{% endif %}
     {% if run.error %}<p>{{ run.error }}</p>{% endif %}
     {% if run.output_json %}<pre>{{ run.output_json }}</pre>{% endif %}
@@ -149,15 +182,38 @@
 <p class="muted">No model call for this company.</p>
 {% endif %}
 
+<h2 class="section">Runs</h2>
+{% if jobs %}
+<table id="runs">
+  <thead>
+    <tr><th>Run</th><th>Stage</th><th>Started</th><th>State</th><th>What it did for this record</th></tr>
+  </thead>
+  <tbody>
+    {% for job in jobs %}
+    <tr>
+      <td><a href="{{ job.href }}">{{ job.job_id }}</a></td>
+      <td>{{ job.stage }}</td>
+      <td>{{ job.started_at }}</td>
+      <td>{{ job.state }}</td>
+      <td>{{ job.did }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="muted">Each run opens on this record. Runs started from a terminal are not listed.</p>
+{% else %}
+<p class="muted">No run from this window has touched this record.</p>
+{% endif %}
+
 <h2 class="section">Mail attempts</h2>
 {% if detail.attempts %}
 <table>
   <thead>
-    <tr><th>When</th><th>Tender</th><th>Address used</th><th>Subject</th><th>Transport</th><th>Status</th><th>Error</th></tr>
+    <tr><th>When</th><th>Tender</th><th>Address used</th><th>Subject</th><th>Transport</th><th>Status</th><th>Error</th><th>Run</th></tr>
   </thead>
   <tbody>
     {% for attempt in detail.attempts %}
-    <tr>
+    <tr class="{{ 'focus' if attempt.tender_id == detail.tender.tender_id else '' }}">
       <td>{{ attempt.sent_at or "" }}</td>
       <td>{{ attempt.tender_id or "" }}</td>
       <td>{{ attempt.email or "" }}</td>
@@ -165,6 +221,7 @@
       <td>{{ attempt.transport or "" }}</td>
       <td>{{ attempt.status or "" }}</td>
       <td>{{ attempt.error or "" }}</td>
+      <td>{% if attempt.job_id is not none %}<a href="/jobs/{{ attempt.job_id }}?award={{ detail.vendor.vendor_id }}:{{ (attempt.tender_id or '')|urlencode }}">{{ attempt.job_id }}</a>{% endif %}</td>
     </tr>
     {% endfor %}
   </tbody>

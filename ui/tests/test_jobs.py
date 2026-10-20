@@ -100,9 +100,10 @@ def test_enrich_page_names_the_limit_and_the_delay(tmp_path):
     client = TestClient(create_app(path))
     html = client.get("/enrich").text
 
-    assert "<h2>Look up contacts</h2>" in html
+    assert "<h2>Look up contacts</h2>" not in html
     assert "Find contacts" not in html
-    assert "Limit is how many waiting companies" in html
+    assert "Limit is how many waiting companies" not in html
+    assert 'value="lookup">Enrich</button>' in html
     assert "Put failed companies back on the queue" not in html
     scrape = client.get("/scrape").text
     assert "60 days before to" in scrape

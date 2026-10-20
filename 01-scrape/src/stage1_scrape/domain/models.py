@@ -17,6 +17,13 @@ class ListingRow:
     page: int | None = None
 
 
+#: ``ScrapeSource.search_mode``: the portal search a run sent.
+SEARCH_AWARDED = "awarded"
+SEARCH_ORGANISATION = "organisation"
+#: A PDF download. It finds one tender to reach its files; it is not a scrape.
+SEARCH_TENDER_ID = "tender_id"
+
+
 @dataclass(frozen=True)
 class ScrapeSource:
     """The portal search a run sent, written onto every tender it saves."""

@@ -8,7 +8,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from pipeline_core.db import engine, session
-from pipeline_core.detail import award_detail
+from pipeline_core.detail import (
+    award_addresses,
+    award_detail,
+    record_jobs,
+    tender_clues,
+    vendor_documents,
+)
 from pipeline_core.grid import (
     COLUMNS,
     FILE_COLUMNS,
@@ -42,7 +48,7 @@ from ops_ui.present import (
     stage_query,
 )
 from ops_ui.queries import load_home
-from ops_ui.runs import enrich_cost, organisation_choices, status_cost
+from ops_ui.runs import organisation_choices, status_cost
 from ops_ui.templating import TEMPLATES
 
 router = APIRouter()
@@ -276,8 +282,6 @@ def _stage_page(request: Request, path: Path, stage: str):
     context = stage_context(request, path, stage, query_override=override, job=job)
     if job is None:
         context["remembered_job"] = remembered_run(request, path, stage)
-    if stage == "enrich" and context["snapshot"].ready:
-        context["enrich_cost_text"] = enrich_cost(path, limit=1, source="scrape", dry_run=True)
     response = TEMPLATES.TemplateResponse(
         request=request,
         name="stage.html",
@@ -340,52 +344,20 @@ def award(
     snapshot = load_home(path)
     detail = None
     documents: list[dict[str, str]] = []
+    clues: list[dict] = []
+    others: list[dict] = []
     contacts: list[dict] = []
+    jobs: tuple = ()
     if snapshot.ready:
         with session(engine(path)) as current:
             detail = award_detail(current, tender_id, bid)
             if detail is not None:
+                vendor_id = detail.vendor["vendor_id"]
                 documents = read_documents(current, tender_id)
-                from pipeline_core.models import LlmRun
-                from pipeline_core.queries import ordered_contacts
-                from sqlalchemy import select
-
-                stored = [
-                    *ordered_contacts(
-                        current,
-                        detail.vendor["vendor_id"],
-                        tender_id,
-                        channel="email",
-                    ),
-                    *ordered_contacts(
-                        current,
-                        detail.vendor["vendor_id"],
-                        tender_id,
-                        channel="phone",
-                    ),
-                ]
-                run_ids = [row.llm_run_id for row in stored if row.llm_run_id]
-                jobs = {}
-                if run_ids:
-                    jobs = {
-                        int(run_id): job_id
-                        for run_id, job_id in current.execute(
-                            select(LlmRun.run_id, LlmRun.job_id).where(
-                                LlmRun.run_id.in_(run_ids)
-                            )
-                        )
-                    }
-                contacts = [
-                    {
-                        "channel": row.channel,
-                        "value": row.value,
-                        "source": row.source,
-                        "valid": bool(row.valid),
-                        "source_url": row.source_url or "",
-                        "job_id": jobs.get(row.llm_run_id),
-                    }
-                    for row in stored
-                ]
+                clues = tender_clues(current, vendor_id, tender_id)
+                others = vendor_documents(current, vendor_id, except_tender=tender_id)
+                contacts = award_addresses(current, vendor_id, tender_id)
+                jobs = record_jobs(current, vendor_id, tender_id)
     status = 200 if detail is not None or not snapshot.ready else 404
     return TEMPLATES.TemplateResponse(
         request=request,
@@ -395,8 +367,18 @@ def award(
             "snapshot": snapshot,
             "detail": detail,
             "documents": documents,
+            "clues": clues,
+            "other_documents": others,
             "contacts": contacts,
-            "email_count": sum(1 for item in contacts if item["channel"] == "email"),
+            "jobs": jobs,
+            "email_count": len(
+                {
+                    item["value"].casefold()
+                    for item in contacts
+                    if item["channel"] == "email" and item["valid"]
+                }
+            ),
+            "mail_count": sum(1 for item in contacts if item["will_mail"]),
             "back": back_href(back),
             "portal_search_url": SEARCH_PAGE_URL,
             "search_labels": _SEARCH_LABELS,

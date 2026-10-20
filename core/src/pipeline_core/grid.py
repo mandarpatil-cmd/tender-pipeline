@@ -18,7 +18,10 @@ from sqlalchemy.orm import Session
 from .loose import loose_date
 from .money import format_amount, parse_money
 from .models import (
+    CHANNEL_EMAIL,
+    CHANNEL_PHONE,
     CONTACT_MODEL,
+    CONTACT_PDF,
     ENRICHMENT_STATUSES,
     OUTREACH_FAILED,
     OUTREACH_SENT,
@@ -28,6 +31,7 @@ from .models import (
     STATUS_NOT_FOUND,
     STATUS_PENDING,
     Award,
+    JobTender,
     LlmRun,
     Outreach,
     Tender,
@@ -184,7 +188,7 @@ class AwardQuery:
     pdf_contact: str = ""
     #: Empty means search every text column. Otherwise name, vendor_id, and/or city.
     search_in: tuple[str, ...] = ()
-    #: Set on a Collect run. None means the library is not limited to one scrape.
+    #: Set on a scrape or PDF run: every tender that run saved. None means all.
     scrape_job_id: int | None = None
     #: Set on a Contacts run. None means every company, not one lookup.
     enrich_job_id: int | None = None
@@ -476,6 +480,29 @@ def _found_at():
     )
 
 
+def _pdf_rows(channel: str):
+    """This award's PDF rows: read from this tender's files, for this company."""
+    return and_(
+        VendorContact.vendor_id == Vendor.vendor_id,
+        VendorContact.tender_id == Award.tender_id,
+        VendorContact.source == CONTACT_PDF,
+        VendorContact.channel == channel,
+    )
+
+
+def _pdf_clue(channel: str):
+    """Every PDF address of this tender for this company, ``; ``-joined.
+
+    Never the company-wide ``vendors.pdf_email``: an address read on another
+    tender's work order is not evidence for this one.
+    """
+    return (
+        select(func.group_concat(VendorContact.value, "; "))
+        .where(_pdf_rows(channel))
+        .scalar_subquery()
+    )
+
+
 def _lookups():
     """Model calls made for this company, paid or failed. Repeat spend shows here."""
     return (
@@ -514,8 +541,8 @@ def _row_columns(specific, legacy) -> dict[str, Any]:
         "state": Vendor.state,
         "buyer_hint": Vendor.buyer_hint,
         "source": Vendor.source,
-        "pdf_email": Vendor.pdf_email,
-        "pdf_phone": Vendor.pdf_phone,
+        "pdf_email": _pdf_clue(CHANNEL_EMAIL),
+        "pdf_phone": _pdf_clue(CHANNEL_PHONE),
         "email": Vendor.email,
         "phone": Vendor.phone,
         "enrichment_status": Vendor.enrichment_status,
@@ -586,8 +613,8 @@ def _filtered(statement, query: AwardQuery, specific, legacy):
     elif query.mailable == "no":
         statement = statement.where(~has_email)
     if query.pdf_contact == "yes":
-        has_pdf_email = Vendor.pdf_email.is_not(None) & (Vendor.pdf_email != "")
-        has_pdf_phone = Vendor.pdf_phone.is_not(None) & (Vendor.pdf_phone != "")
+        has_pdf_email = select(VendorContact.contact_id).where(_pdf_rows(CHANNEL_EMAIL)).exists()
+        has_pdf_phone = select(VendorContact.contact_id).where(_pdf_rows(CHANNEL_PHONE)).exists()
         statement = statement.where(has_pdf_email & has_pdf_phone)
     if query.organisation:
         statement = statement.where(_contains(Tender.organisation, _like(query.organisation)))
@@ -610,7 +637,10 @@ def _filtered(statement, query: AwardQuery, specific, legacy):
     if query.scraped_to:
         statement = statement.where(scraped_day <= query.scraped_to)
     if query.scrape_job_id is not None:
-        statement = statement.where(Tender.scrape_job_id == query.scrape_job_id)
+        saved = select(JobTender.tender_id).where(JobTender.job_id == query.scrape_job_id)
+        statement = statement.where(
+            or_(Tender.scrape_job_id == query.scrape_job_id, Tender.tender_id.in_(saved))
+        )
     if query.enrich_job_id is not None:
         looked_up = select(LlmRun.vendor_id).where(LlmRun.job_id == query.enrich_job_id)
         statement = statement.where(Vendor.vendor_id.in_(looked_up))
@@ -683,21 +713,9 @@ def _sendable_with_status(status: str):
 
 
 def _has_mail_address():
-    """``vendors.email``, or a valid email row for this tender."""
-    contact = (
-        select(VendorContact.contact_id)
-        .where(
-            VendorContact.vendor_id == Vendor.vendor_id,
-            VendorContact.channel == "email",
-            VendorContact.valid == 1,
-            or_(
-                VendorContact.tender_id.is_(None),
-                VendorContact.tender_id == Award.tender_id,
-            ),
-        )
-        .exists()
-    )
-    return or_(and_(Vendor.email.is_not(None), Vendor.email != ""), contact)
+    from .queries import _has_mail_address as company_has_email
+
+    return company_has_email()
 
 
 def _totals(session: Session, query: AwardQuery, specific, legacy) -> tuple[int, ViewCounts]:

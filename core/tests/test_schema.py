@@ -302,3 +302,59 @@ def test_adding_a_not_null_column_is_refused(tmp_path, monkeypatch):
             ensure_schema(bind)
     finally:
         table._columns.remove(extra)
+
+
+def test_adopting_job_tenders_and_outreach_runs_backfills_them_once(tmp_path):
+    """A database from before run history: PDF downloads stamped as scrape runs."""
+    import json
+
+    from pipeline_core.models import JobTender, Outreach, UiJob
+    from pipeline_core.queries import record_outreach, replace_awards, upsert_vendor
+
+    bind = engine(tmp_path / "pipeline.sqlite3")
+    ensure_schema(bind)
+    with session(bind) as current:
+        for job_id, stage, params, started, finished in (
+            (9, "scrape", {}, "2026-10-01T00:00:00", "2026-10-01T01:00:00"),
+            (14, "pdfs", {"tender_id": "T-SCRAPED"}, "2026-10-02T00:00:00", "2026-10-02T00:10:00"),
+            (29, "pdfs", {"tender_id": "T-TERMINAL"}, "2026-10-03T00:00:00", "2026-10-03T00:10:00"),
+            (43, "outreach", {"awards": ["1:T-SCRAPED"], "send": True},
+             "2026-10-04T00:00:00", "2026-10-04T00:10:00"),
+            (44, "outreach", {"awards": ["1:T-SCRAPED"], "send": False},
+             "2026-10-05T00:00:00", "2026-10-05T00:10:00"),
+        ):
+            current.add(UiJob(job_id=job_id, stage=stage, state="done", params_json=json.dumps(params),
+                              log="", started_at=started, finished_at=finished))
+        vendor_id = upsert_vendor(current, name_raw="Roads Ltd")
+        for tender_id, job_id in (("T-SCRAPED", 9), ("T-TERMINAL", 29)):
+            current.add(Tender(tender_id=tender_id, scraped_at="2026-10-01", scrape_job_id=job_id))
+            current.flush()
+            replace_awards(current, tender_id, [{"bid_number": "1", "vendor_id": vendor_id,
+                                                  "bidder_name": "Roads Ltd"}])
+        inside = record_outreach(current, vendor_id=vendor_id, tender_id="T-SCRAPED",
+                                 email="a@roads.example", subject="s", transport="gmail", status="sent")
+        outside = record_outreach(current, vendor_id=vendor_id, tender_id="T-SCRAPED",
+                                  email="b@roads.example", subject="s", transport="gmail", status="sent")
+        current.get(Outreach, inside).sent_at = "2026-10-04T00:05:00"
+        current.get(Outreach, outside).sent_at = "2026-10-06T00:00:00"
+    with bind.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE job_tenders")
+        conn.exec_driver_sql("DROP INDEX idx_outreach_job")
+        conn.exec_driver_sql("ALTER TABLE outreach DROP COLUMN job_id")
+
+    report = ensure_schema(bind)
+    assert "job_tenders" in report.created_tables
+    assert "outreach.job_id" in report.added_columns
+    with session(bind) as current:
+        runs = {(row.job_id, row.tender_id) for row in current.query(JobTender)}
+        assert runs == {(9, "T-SCRAPED"), (14, "T-SCRAPED"), (29, "T-TERMINAL")}
+        assert current.get(Tender, "T-SCRAPED").scrape_job_id == 9
+        # Job 29 was a PDF download, not the scrape that saved the tender.
+        assert current.get(Tender, "T-TERMINAL").scrape_job_id is None
+        assert current.get(Outreach, inside).job_id == 43
+        assert current.get(Outreach, outside).job_id is None
+
+    again = ensure_schema(bind)
+    assert not again.changed
+    with session(bind) as current:
+        assert current.query(JobTender).count() == 3

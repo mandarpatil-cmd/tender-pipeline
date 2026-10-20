@@ -17,7 +17,7 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from .emailcheck import BUYER_EMAIL_MARKERS
+from .emailcheck import clean_email
 from .money import iso_day, parse_money
 from .models import (
     CHANNEL_EMAIL,
@@ -37,10 +37,12 @@ from .models import (
     STATUS_NOT_FOUND,
     STATUS_PENDING,
     Award,
+    JobTender,
     LlmRun,
     Outreach,
     Tender,
     TenderDocument,
+    UiJob,
     Vendor,
     VendorContact,
 )
@@ -71,21 +73,28 @@ def last_scraped_at(session: Session) -> str | None:
     return session.scalar(select(func.max(Tender.scraped_at)))
 
 
-def upsert_tender(session: Session, **values: Any) -> None:
+def upsert_tender(
+    session: Session, *, keep: Iterable[str] = (), **values: Any
+) -> None:
     """Insert or replace one tender. `tender_id` and `scraped_at` are required.
 
     A portal date and an amount string are parsed here. The row stores an ISO
     day and integer hundredths, never ``21-Sep-2026`` or ``INR 179,853.24``.
+
+    A column named in ``keep`` keeps its stored value when it has one. The
+    stored ``scrape_job_id`` is always kept: the first scrape run is the one
+    that brought the tender in.
     """
     values = _stored_tender(values)
     statement = sqlite_insert(Tender).values(**values)
+    kept = {*keep, "scrape_job_id"}
     assigned = {}
     for key in values:
         if key == "tender_id":
             continue
         incoming = getattr(statement.excluded, key)
-        if key == "scrape_job_id":
-            incoming = func.coalesce(Tender.scrape_job_id, incoming)
+        if key in kept:
+            incoming = func.coalesce(getattr(Tender, key), incoming)
         assigned[key] = incoming
     session.execute(
         statement.on_conflict_do_update(
@@ -93,6 +102,91 @@ def upsert_tender(session: Session, **values: Any) -> None:
             set_=assigned,
         )
     )
+
+
+def record_job_tender(session: Session, job_id: int | None, tender_id: str) -> None:
+    """Note that this window run saved this tender. A repeat changes nothing."""
+    if job_id is None or not (tender_id or "").strip():
+        return
+    session.execute(
+        sqlite_insert(JobTender)
+        .values(job_id=int(job_id), tender_id=tender_id)
+        .on_conflict_do_nothing()
+    )
+
+
+def _job_params(raw: str | None) -> dict[str, Any]:
+    try:
+        value = json.loads(raw or "{}")
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def backfill_job_tenders(session: Session) -> int:
+    """Fill ``job_tenders`` from what earlier runs left. Returns rows written.
+
+    A scrape run is known from ``tenders.scrape_job_id``, a PDF download from
+    the tender id in its parameters. A PDF download that stamped itself as a
+    tender's scrape run is moved here, and that run is cleared: what scrape run
+    first saved the tender was not recorded.
+    """
+    stages = {int(job_id): stage for job_id, stage in session.execute(select(UiJob.job_id, UiJob.stage))}
+    written = 0
+    for tender_id, job_id in session.execute(
+        select(Tender.tender_id, Tender.scrape_job_id).where(Tender.scrape_job_id.is_not(None))
+    ).all():
+        record_job_tender(session, job_id, tender_id)
+        written += 1
+        if stages.get(int(job_id), "scrape") != "scrape":
+            session.query(Tender).filter(Tender.tender_id == tender_id).update(
+                {Tender.scrape_job_id: None}, synchronize_session=False
+            )
+    known = known_tender_ids(session)
+    for job_id, raw in session.execute(
+        select(UiJob.job_id, UiJob.params_json).where(UiJob.stage == "pdfs")
+    ).all():
+        tender_id = str(_job_params(raw).get("tender_id") or "").strip()
+        if tender_id in known:
+            record_job_tender(session, job_id, tender_id)
+            written += 1
+    return written
+
+
+def backfill_outreach_jobs(session: Session) -> int:
+    """Stamp attempts made before ``outreach.job_id`` with the send that made them.
+
+    An attempt belongs to a send when its company and tender were in that run's
+    awards and it was written while the run was open. Returns rows stamped.
+    """
+    stamped = 0
+    for job_id, raw, started, finished in session.execute(
+        select(UiJob.job_id, UiJob.params_json, UiJob.started_at, UiJob.finished_at)
+        .where(UiJob.stage == "outreach")
+        .order_by(UiJob.job_id)
+    ).all():
+        params = _job_params(raw)
+        if not params.get("send"):
+            continue
+        for item in params.get("awards") or []:
+            vendor, separator, tender_id = str(item).partition(":")
+            if not separator or not vendor.isdigit() or not tender_id:
+                continue
+            statement = (
+                session.query(Outreach)
+                .filter(
+                    Outreach.job_id.is_(None),
+                    Outreach.vendor_id == int(vendor),
+                    Outreach.tender_id == tender_id,
+                    Outreach.sent_at >= started,
+                )
+            )
+            if finished:
+                statement = statement.filter(Outreach.sent_at <= finished)
+            stamped += int(
+                statement.update({Outreach.job_id: int(job_id)}, synchronize_session=False)
+            )
+    return stamped
 
 
 def backfill_tender_origin(session: Session) -> int:
@@ -239,7 +333,9 @@ def replace_tender_documents(
         )
         for key in ("emails", "phones", "gstins"):
             for value in _clue_list(item.get(key)):
-                if value not in bucket[key]:
+                if key == "emails":
+                    value = clean_email(value)
+                if value and value not in bucket[key]:
                     bucket[key].append(value)
         if not bucket["text"] and item.get("text"):
             bucket["text"] = str(item.get("text") or "")
@@ -350,11 +446,11 @@ def set_pdf_contacts(
     email: str | None,
     phone: str | None,
 ) -> bool:
-    """Record what stage 1 read out of a work-order PDF. Fills blanks only.
+    """Fill the company's evidence columns. Fills blanks only.
 
-    Returns True if anything was written. Never overwrites a value already
-    there: a re-scrape of the same tender must not churn the evidence, and a
-    second tender's PDF should not clobber the first one's.
+    Returns True if anything was written. The scraper calls
+    ``refresh_vendor_pdf_columns`` instead, which reads them from the PDF rows.
+    These two columns are company-wide stage-2 evidence, never a tender's.
     """
     clean_email = (email or "").strip() or None
     clean_phone = (phone or "").strip() or None
@@ -413,6 +509,10 @@ def add_contact(
         return False
     if source not in {CONTACT_PDF, CONTACT_MODEL, CONTACT_TYPED}:
         return False
+    if channel == CHANNEL_EMAIL:
+        text = clean_email(text)
+        if not text:
+            return False
     tender = (tender_id or "").strip() or None
     if source != CONTACT_PDF:
         tender = None
@@ -528,25 +628,90 @@ def record_pdf_contacts(
     return written
 
 
+def replace_pdf_contacts(
+    session: Session,
+    vendor_id: int,
+    tender_id: str,
+    emails: Iterable[str],
+    phones: Iterable[str],
+) -> int:
+    """This tender's PDF addresses for this company are exactly these now.
+
+    Re-reading a tender's PDFs replaces what they said, so a clue the files no
+    longer hold is not kept or mailed. Other tenders' PDF rows stay.
+    """
+    session.query(VendorContact).filter(
+        VendorContact.vendor_id == vendor_id,
+        VendorContact.source == CONTACT_PDF,
+        VendorContact.tender_id == tender_id,
+    ).delete(synchronize_session=False)
+    return record_pdf_contacts(session, vendor_id, tender_id, emails, phones)
+
+
+def clear_pdf_contacts(session: Session, tender_id: str) -> int:
+    """Drop every company's PDF rows for one tender. Several winners share one file."""
+    return int(
+        session.query(VendorContact)
+        .filter(
+            VendorContact.source == CONTACT_PDF,
+            VendorContact.tender_id == tender_id,
+        )
+        .delete(synchronize_session=False)
+    )
+
+
+def refresh_vendor_pdf_columns(session: Session, vendor_id: int) -> None:
+    """``vendors.pdf_email`` and ``pdf_phone`` from the company's PDF rows.
+
+    The first valid one across all its tenders. This is company-wide evidence
+    for stage 2; the award page and the grid read the tender's own rows.
+    """
+    vendor = session.get(Vendor, vendor_id)
+    if vendor is None:
+        return
+    session.flush()
+    for channel, attribute in ((CHANNEL_EMAIL, "pdf_email"), (CHANNEL_PHONE, "pdf_phone")):
+        first = session.scalar(
+            select(VendorContact.value)
+            .where(
+                VendorContact.vendor_id == vendor_id,
+                VendorContact.channel == channel,
+                VendorContact.source == CONTACT_PDF,
+                VendorContact.valid == 1,
+            )
+            .order_by(VendorContact.contact_id)
+            .limit(1)
+        )
+        setattr(vendor, attribute, first)
+
+
 def ordered_contacts(
     session: Session,
     vendor_id: int,
     tender_id: str,
     channel: str = CHANNEL_EMAIL,
 ) -> list[VendorContact]:
-    """PDF addresses for this tender, then enrichment, then typed."""
+    """Every address the company has, in the order a letter uses them.
+
+    PDF addresses read for this tender, then PDF addresses read for the
+    company's other tenders, then a PDF address with no tender, then
+    enrichment, then typed.
+    """
     rows = session.scalars(
         select(VendorContact).where(
             VendorContact.vendor_id == vendor_id,
             VendorContact.channel == channel,
-            or_(
-                and_(VendorContact.source == CONTACT_PDF, VendorContact.tender_id == tender_id),
-                and_(VendorContact.source == CONTACT_PDF, VendorContact.tender_id.is_(None)),
-                VendorContact.source.in_((CONTACT_MODEL, CONTACT_TYPED)),
-            ),
         )
     ).all()
-    rows.sort(key=lambda row: (_SOURCE_ORDER.get(row.source, 9), row.contact_id))
+
+    def rank(row: VendorContact) -> tuple[int, int, int]:
+        if row.source != CONTACT_PDF:
+            return (_SOURCE_ORDER.get(row.source, 9), 0, row.contact_id)
+        if row.tender_id == tender_id:
+            return (0, 0, row.contact_id)
+        return (0, 1 if row.tender_id else 2, row.contact_id)
+
+    rows.sort(key=rank)
     return rows
 
 
@@ -554,7 +719,7 @@ def _deduped(rows: list[VendorContact]) -> list[VendorContact]:
     seen: set[str] = set()
     kept: list[VendorContact] = []
     for row in rows:
-        key = row.value.casefold()
+        key = _mail_key(row.value)
         if key in seen:
             continue
         seen.add(key)
@@ -585,9 +750,60 @@ def choose_addresses(
         return [row.value for row in picked]
     if mode == ADDRESS_CHOSEN or not (fallback or "").strip():
         return []
-    if not contact_is_valid(CHANNEL_EMAIL, fallback):
+    if not contact_is_valid(CHANNEL_EMAIL, clean_email(fallback)):
         return []
-    return [fallback.strip()]
+    return [clean_email(fallback)]
+
+
+def _mail_key(value: str | None) -> str:
+    """Two spellings of one mailbox, such as ``-a@x.com`` and ``A@x.com``, match."""
+    return clean_email(value).casefold()
+
+
+def clean_stored_contacts(session: Session) -> int:
+    """Clean every stored email and re-judge every stored address. Safe to repeat.
+
+    Removes what a scan or a model left at the edges (``-name@x.com``), merges a
+    row that cleaning made a twin of another, and recomputes ``valid`` with the
+    current rule. Returns how many rows changed.
+    """
+    changed = 0
+    kept: set[tuple[Any, ...]] = set()
+    for row in session.scalars(select(VendorContact).order_by(VendorContact.contact_id)).all():
+        if row.channel == CHANNEL_EMAIL:
+            value = clean_email(row.value)
+        else:
+            value = (row.value or "").strip()
+        key = (row.vendor_id, row.tender_id, row.channel, row.source, value.casefold())
+        if not value or key in kept:
+            session.delete(row)
+            changed += 1
+            continue
+        kept.add(key)
+        valid = 1 if contact_is_valid(row.channel, value) else 0
+        if value != row.value or valid != row.valid:
+            row.value = value
+            row.valid = valid
+            changed += 1
+    for vendor in session.scalars(
+        select(Vendor).where(or_(Vendor.pdf_email.is_not(None), Vendor.email.is_not(None)))
+    ).all():
+        for attribute in ("pdf_email", "email"):
+            raw = getattr(vendor, attribute)
+            if raw and clean_email(raw) != raw:
+                setattr(vendor, attribute, clean_email(raw) or None)
+                changed += 1
+    for doc in session.scalars(
+        select(TenderDocument).where(
+            TenderDocument.emails.is_not(None), TenderDocument.emails != ""
+        )
+    ).all():
+        cleaned = join_clues(clean_email(value) for value in split_clues(doc.emails))
+        if cleaned != doc.emails:
+            doc.emails = cleaned
+            changed += 1
+    session.flush()
+    return changed
 
 
 def backfill_vendor_contacts(session: Session) -> int:
@@ -619,22 +835,16 @@ def backfill_vendor_contacts(session: Session) -> int:
             split_clues(doc.phones),
         )
     for vendor in session.scalars(select(Vendor)).all():
-        if vendor.pdf_email and not _pdf_value_known(session, vendor.vendor_id, CHANNEL_EMAIL, vendor.pdf_email):
+        for channel, raw in ((CHANNEL_EMAIL, vendor.pdf_email), (CHANNEL_PHONE, vendor.pdf_phone)):
+            if not raw or _pdf_value_known(session, vendor.vendor_id, channel, raw):
+                continue
             if add_contact(
                 session,
                 vendor.vendor_id,
-                channel=CHANNEL_EMAIL,
-                value=vendor.pdf_email,
+                channel=channel,
+                value=raw,
                 source=CONTACT_PDF,
-            ):
-                written += 1
-        if vendor.pdf_phone and not _pdf_value_known(session, vendor.vendor_id, CHANNEL_PHONE, vendor.pdf_phone):
-            if add_contact(
-                session,
-                vendor.vendor_id,
-                channel=CHANNEL_PHONE,
-                value=vendor.pdf_phone,
-                source=CONTACT_PDF,
+                tender_id=_tender_holding(session, vendor.vendor_id, channel, raw),
             ):
                 written += 1
         source = vendor.contact_origin if vendor.contact_origin in {CONTACT_MODEL, CONTACT_TYPED} else CONTACT_MODEL
@@ -692,8 +902,27 @@ def backfill_model_contact_sources(session: Session) -> int:
     return linked
 
 
+def _tender_holding(
+    session: Session, vendor_id: int, channel: str, value: str
+) -> str | None:
+    """The company's tender whose stored PDF clues hold this value, if one does."""
+    wanted = _mail_key(value) if channel == CHANNEL_EMAIL else value.strip().casefold()
+    column = TenderDocument.emails if channel == CHANNEL_EMAIL else TenderDocument.phones
+    tenders = select(Award.tender_id).where(Award.vendor_id == vendor_id)
+    for tender_id, clues in session.execute(
+        select(TenderDocument.tender_id, column)
+        .where(TenderDocument.tender_id.in_(tenders))
+        .order_by(TenderDocument.tender_id, TenderDocument.filename)
+    ):
+        for clue in split_clues(clues):
+            found = _mail_key(clue) if channel == CHANNEL_EMAIL else clue.casefold()
+            if found == wanted:
+                return tender_id
+    return None
+
+
 def _pdf_value_known(session: Session, vendor_id: int, channel: str, value: str) -> bool:
-    folded = value.strip().casefold()
+    folded = (clean_email(value) if channel == CHANNEL_EMAIL else value.strip()).casefold()
     rows = session.scalars(
         select(VendorContact).where(
             VendorContact.vendor_id == vendor_id,
@@ -876,7 +1105,7 @@ def set_typed_contact(
     vendor = session.get(Vendor, vendor_id)
     if vendor is None:
         raise ContactError(f"No company with id {vendor_id}.")
-    typed_email = (email or "").strip()
+    typed_email = clean_email(email)
     typed_phone = (phone or "").strip()
     if typed_email and not is_email(typed_email):
         raise ContactError("That email is not a valid address.")
@@ -1399,21 +1628,12 @@ class OutreachTarget:
 
 
 def _has_mail_address():
-    """A company email, or any valid email stored for this tender."""
-    contact = (
-        select(VendorContact.contact_id)
-        .where(
-            VendorContact.vendor_id == Vendor.vendor_id,
-            VendorContact.channel == CHANNEL_EMAIL,
-            VendorContact.valid == 1,
-            or_(
-                VendorContact.tender_id.is_(None),
-                VendorContact.tender_id == Award.tender_id,
-            ),
-        )
-        .exists()
-    )
-    return or_(and_(Vendor.email.is_not(None), Vendor.email != ""), contact)
+    """A company email, or any valid email stored for the company.
+
+    Every valid address of the company is used for each of its awards, so a
+    PDF address read on another tender counts here too.
+    """
+    return _vendor_has_email()
 
 
 #: Mail filter for a company taken off the list. Not an ``outreach.status`` value.
@@ -1425,42 +1645,21 @@ def _trimmed(column):
 
 
 def _is_email_sql(column):
-    """The same shape as ``is_email``: local@domain.tld, no spaces."""
-    text = _trimmed(column)
-    at_pos = func.instr(text, "@")
-    domain = func.substr(text, at_pos + 1)
-    dot_pos = func.instr(domain, ".")
-    return and_(
-        at_pos > 1,
-        func.instr(domain, "@") == 0,
-        dot_pos > 1,
-        func.length(domain) > dot_pos,
-        func.instr(text, " ") == 0,
-        func.instr(text, "\t") == 0,
-        func.instr(text, "\n") == 0,
-        func.instr(text, "\r") == 0,
-    )
+    """``is_email``, registered on every connection by ``db.engine``."""
+    return func.coalesce(func.pc_is_email(column), 0) == 1
 
 
 def _is_buyer_sql(column):
-    lowered = func.lower(_trimmed(column))
-    return or_(*[lowered.contains(marker) for marker in BUYER_EMAIL_MARKERS])
+    """``is_buyer_email``, registered on every connection by ``db.engine``."""
+    return func.coalesce(func.pc_is_buyer_email(column), 0) == 1
 
 
 def _mail_contact_for_award():
-    """A valid email contact ``choose_addresses`` would consider for this tender."""
+    """A valid email row ``address_report`` would consider for this award."""
     return and_(
         VendorContact.vendor_id == Vendor.vendor_id,
         VendorContact.channel == CHANNEL_EMAIL,
         VendorContact.valid == 1,
-        or_(
-            and_(
-                VendorContact.source == CONTACT_PDF,
-                VendorContact.tender_id == Award.tender_id,
-            ),
-            and_(VendorContact.source == CONTACT_PDF, VendorContact.tender_id.is_(None)),
-            VendorContact.source.in_((CONTACT_MODEL, CONTACT_TYPED)),
-        ),
     )
 
 
@@ -1724,7 +1923,7 @@ def _blocked_addresses(
             if status == OUTREACH_SENT:
                 legacy.append((int(vendor_id), sent_at or ""))
             continue
-        key = (int(vendor_id), str(tender_id), (email or "").strip().casefold())
+        key = (int(vendor_id), str(tender_id), _mail_key(email))
         if not key[2]:
             continue
         if status == OUTREACH_SENDING:
@@ -1743,6 +1942,146 @@ def _covered_by_old_send(
     )
 
 
+#: Why an address is not mailed for an award. The award page and the run log
+#: print these next to the address.
+SKIP_INVALID = "not a valid address"
+SKIP_DUPLICATE = "same mailbox as an address above"
+SKIP_BUYER = "government or buyer address"
+SKIP_STOPPED = "the company is marked do not mail"
+SKIP_OLD_SEND = "an older company-level send covers this tender"
+SKIP_SENDING = "a send to this address is in progress"
+SKIP_SENT = "already sent for this tender"
+
+
+@dataclass(frozen=True)
+class AddressLine:
+    """One email of the company, judged for one award."""
+
+    value: str
+    #: ``pdf``, ``model`` or ``typed``.
+    source: str
+    #: For a PDF address: the tender whose files it was read from.
+    tender_id: str | None
+    #: For a PDF address: that tender's files that hold it.
+    filenames: tuple[str, ...]
+    #: For a model address: the page the model named, and its ``llm_runs`` row.
+    source_url: str | None
+    llm_run_id: int | None
+    valid: bool
+    will_mail: bool
+    #: Empty when the address is mailed. Otherwise one of the ``SKIP_`` texts.
+    reason: str = ""
+
+
+def clue_files(
+    session: Session, tender_ids: Iterable[str], channel: str = CHANNEL_EMAIL
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    """``(tender_id, value)`` to the files of that tender whose clues hold the value."""
+    ids = [tender_id for tender_id in dict.fromkeys(tender_ids) if tender_id]
+    if not ids:
+        return {}
+    column = TenderDocument.emails if channel == CHANNEL_EMAIL else TenderDocument.phones
+    found: dict[tuple[str, str], list[str]] = {}
+    for tender_id, filename, clues in session.execute(
+        select(TenderDocument.tender_id, TenderDocument.filename, column)
+        .where(TenderDocument.tender_id.in_(ids))
+        .order_by(TenderDocument.tender_id, TenderDocument.filename)
+    ):
+        for clue in split_clues(clues):
+            key = _mail_key(clue) if channel == CHANNEL_EMAIL else clue.casefold()
+            bucket = found.setdefault((tender_id, key), [])
+            if filename not in bucket:
+                bucket.append(filename)
+    return {key: tuple(names) for key, names in found.items()}
+
+
+def address_report(
+    session: Session,
+    vendor_id: int,
+    tender_id: str,
+    *,
+    include_sent: bool = False,
+    blocked=None,
+) -> list[AddressLine]:
+    """Every email of the company for one award, and whether a send mails it.
+
+    Order is the PDF address read for this tender, PDF addresses read for the
+    company's other tenders, then model, then typed. ``vendors.email`` is used
+    only when no valid row exists. ``mail_messages`` sends exactly the lines
+    with ``will_mail``; the award page and the run log show the rest with why.
+    """
+    from .emailcheck import is_buyer_email
+
+    vendor = session.get(Vendor, vendor_id)
+    if vendor is None:
+        return []
+    tender = session.get(Tender, tender_id)
+    sent, sending, legacy = blocked if blocked is not None else _blocked_addresses(session)
+    rows = ordered_contacts(session, vendor_id, tender_id)
+    files = clue_files(
+        session, (row.tender_id for row in rows if row.source == CONTACT_PDF)
+    )
+    candidates = [
+        (row.value, row.source, row.tender_id, row.source_url, row.llm_run_id, bool(row.valid))
+        for row in rows
+    ]
+    if not any(valid for *_rest, valid in candidates) and (vendor.email or "").strip():
+        fallback = clean_email(vendor.email)
+        candidates.append(
+            (
+                fallback,
+                vendor.contact_origin or CONTACT_MODEL,
+                None,
+                None,
+                None,
+                contact_is_valid(CHANNEL_EMAIL, fallback),
+            )
+        )
+    stopped = bool((vendor.do_not_mail or "").strip())
+    old_send = (
+        not include_sent
+        and tender is not None
+        and _covered_by_old_send(int(vendor_id), tender.scraped_at or "", legacy)
+    )
+    seen: set[str] = set()
+    lines: list[AddressLine] = []
+    for value, source, found_on, source_url, run_id, valid in candidates:
+        key = _mail_key(value)
+        blocked_key = (int(vendor_id), str(tender_id), key)
+        if not valid:
+            reason = SKIP_INVALID
+        elif key in seen:
+            reason = SKIP_DUPLICATE
+        else:
+            seen.add(key)
+            if is_buyer_email(value):
+                reason = SKIP_BUYER
+            elif stopped:
+                reason = SKIP_STOPPED
+            elif old_send:
+                reason = SKIP_OLD_SEND
+            elif blocked_key in sending:
+                reason = SKIP_SENDING
+            elif blocked_key in sent and not include_sent:
+                reason = SKIP_SENT
+            else:
+                reason = ""
+        lines.append(
+            AddressLine(
+                value=value,
+                source=source,
+                tender_id=found_on,
+                filenames=files.get((found_on, key), ()) if found_on else (),
+                source_url=source_url,
+                llm_run_id=run_id,
+                valid=valid,
+                will_mail=not reason,
+                reason=reason,
+            )
+        )
+    return lines
+
+
 def mail_messages(
     session: Session,
     limit: int | None = None,
@@ -1753,26 +2092,22 @@ def mail_messages(
 ) -> list[OutreachTarget]:
     """One message per valid company address that a live send would deliver.
 
-    The Mail page, the terminal, and the export all call this. Order is the
-    PDF clue for that tender, then the model address, then a typed address.
-    A buyer address, a company marked do-not-mail, and an address that already
-    has ``sent`` or ``sending`` for that company and tender are left out.
-    ``include_sent`` brings ``sent`` addresses back and still skips ``sending``.
-    Do-not-mail is never overridden.
+    The Mail page, the terminal, and the export all call this. Each award gets
+    every valid address of its company, as ``address_report`` orders and judges
+    them. A buyer address, a company marked do-not-mail, and an address that
+    already has ``sent`` or ``sending`` for that company and tender are left
+    out. ``include_sent`` brings ``sent`` addresses back and still skips
+    ``sending``. Do-not-mail is never overridden.
     """
-    from .emailcheck import is_buyer_email, is_email
-
     wanted = {(int(vendor_id), str(tender_id)) for vendor_id, tender_id in awards} if awards is not None else None
     wanted_vendors = {int(vendor_id) for vendor_id in vendor_ids} if vendor_ids is not None else None
     statement = (
         select(
             Vendor.vendor_id,
             Vendor.name_raw,
-            Vendor.email,
             Award.tender_id,
             Tender.title,
             Tender.contract_date,
-            Tender.scraped_at,
         )
         .join(Award, Award.vendor_id == Vendor.vendor_id)
         .join(Tender, Tender.tender_id == Award.tender_id)
@@ -1781,9 +2116,9 @@ def mail_messages(
         .distinct()
         .order_by(Vendor.vendor_id, Award.tender_id)
     )
-    sent, sending, legacy = _blocked_addresses(session)
+    blocked = _blocked_addresses(session)
     messages: list[OutreachTarget] = []
-    for vendor_id, company, email, tender_id, title, contract_date, scraped_at in session.execute(
+    for vendor_id, company, tender_id, title, contract_date in session.execute(
         statement
     ).all():
         pair = (int(vendor_id), str(tender_id))
@@ -1791,40 +2126,19 @@ def mail_messages(
             continue
         if wanted_vendors is not None and pair[0] not in wanted_vendors:
             continue
-        if not include_sent and _covered_by_old_send(pair[0], scraped_at or "", legacy):
-            continue
-        person = OutreachTarget(
-            vendor_id=pair[0],
-            company=company,
-            email=email or "",
-            tender_id=pair[1],
-            title=title or "",
-            contract_date=contract_date or "",
-        )
-        for address in choose_addresses(
-            session,
-            person.vendor_id,
-            person.tender_id,
-            mode=ADDRESS_ALL,
-            chosen_ids=set(),
-            fallback=person.email,
+        for line in address_report(
+            session, pair[0], pair[1], include_sent=include_sent, blocked=blocked
         ):
-            cleaned = address.strip()
-            if not is_email(cleaned) or is_buyer_email(cleaned):
-                continue
-            key = (person.vendor_id, person.tender_id, cleaned.casefold())
-            if key in sending:
-                continue
-            if key in sent and not include_sent:
+            if not line.will_mail:
                 continue
             messages.append(
                 OutreachTarget(
-                    vendor_id=person.vendor_id,
-                    company=person.company,
-                    email=cleaned,
-                    tender_id=person.tender_id,
-                    title=person.title,
-                    contract_date=person.contract_date,
+                    vendor_id=pair[0],
+                    company=company,
+                    email=line.value,
+                    tender_id=pair[1],
+                    title=title or "",
+                    contract_date=contract_date or "",
                 )
             )
             if limit is not None and len(messages) >= limit:
@@ -1850,6 +2164,7 @@ def record_outreach(
     status: str,
     error: str | None = None,
     tender_id: str | None = None,
+    job_id: int | None = None,
 ) -> int:
     row = Outreach(
         vendor_id=vendor_id,
@@ -1860,6 +2175,7 @@ def record_outreach(
         status=status,
         error=error,
         sent_at=utcnow(),
+        job_id=job_id,
     )
     session.add(row)
     session.flush()

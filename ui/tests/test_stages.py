@@ -13,7 +13,7 @@ from pipeline_core.queries import (
     mark_enriched,
     record_outreach,
     replace_awards,
-    set_pdf_contacts,
+    record_pdf_contacts,
     upsert_tender,
     upsert_vendor,
     utcnow,
@@ -164,8 +164,6 @@ def test_pdf_contact_keeps_only_companies_with_both_clues(tmp_path):
         both = upsert_vendor(current, name_raw="Both Clues Ltd")
         email_only = upsert_vendor(current, name_raw="Email Clue Ltd")
         neither = upsert_vendor(current, name_raw="No Clue Ltd")
-        set_pdf_contacts(current, both, email="both@example.com", phone="9123456780")
-        set_pdf_contacts(current, email_only, email="one@example.com", phone=None)
         for tender_id, vendor_id, name in (
             ("BOTH", both, "Both Clues Ltd"),
             ("ONE", email_only, "Email Clue Ltd"),
@@ -177,6 +175,9 @@ def test_pdf_contact_keeps_only_companies_with_both_clues(tmp_path):
                 tender_id,
                 [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
             )
+        # PDF clues belong to the tender whose files they were read from.
+        record_pdf_contacts(current, both, "BOTH", ["both@example.com"], ["9123456780"])
+        record_pdf_contacts(current, email_only, "ONE", ["one@example.com"], [])
     client = TestClient(create_app(path))
 
     scrape = client.get("/?pdf_contact=yes")

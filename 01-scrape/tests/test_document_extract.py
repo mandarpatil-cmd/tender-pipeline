@@ -26,6 +26,13 @@ def test_clues_drop_a_buyer_email_and_a_short_gstin():
     assert found["gstins"] == []
 
 
+def test_clues_drop_what_the_scan_left_around_an_email():
+    found = clues_from_extract(DocumentExtract(email="E-mail:-sksalescompany@gmail.com"))
+    assert found["emails"] == ["sksalescompany@gmail.com"]
+    found = clues_from_extract(DocumentExtract(email="info@thsti.res.in"))
+    assert found["emails"] == []
+
+
 def test_a_fake_model_fills_clues_and_the_winner_pdf_contact(tmp_path: Path):
     extracts = [
         {

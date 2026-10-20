@@ -24,7 +24,7 @@ from ops_ui.jobs import (
     submit_captcha,
 )
 from ops_ui.present import job_page as run_page
-from ops_ui.present import job_query, resolve_preset
+from ops_ui.present import award_focus, focused_query, job_query, resolve_preset
 from ops_ui.queries import load_home
 from ops_ui.runs import (
     organisation_choices,
@@ -42,7 +42,7 @@ from ops_ui.templating import TEMPLATES
 
 router = APIRouter()
 
-_GRID_STAGE = {"scrape": "scrape", "enrich": "enrich", "outreach": "mail"}
+_GRID_STAGE = {"scrape": "scrape", "pdfs": "scrape", "enrich": "enrich", "outreach": "mail"}
 
 
 @router.get("/jobs")
@@ -211,13 +211,17 @@ def job_page(
         return Response("No run with that id.", status_code=404)
     context = _job_view(job, refused=bool(refused), captcha_error=bool(captcha))
     context["grid"] = False
+    focus = award_focus(request.query_params.get("award"))
     page = _GRID_STAGE.get(job.stage)
     if page is not None:
         override = job_query(page, job.job_id, job.params_json)
+        if focus is not None:
+            override = focused_query(override, focus)
         context.update(stage_context(request, path, page, query_override=override, job=job))
         context["refused"] = bool(refused)
         context["captcha_error"] = bool(captcha)
         context["grid"] = context.get("view") is not None
+    context["focus"] = focus
     return TEMPLATES.TemplateResponse(request=request, name="job.html", context=context)
 
 

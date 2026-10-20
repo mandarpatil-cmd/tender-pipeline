@@ -5,7 +5,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+#: local@domain.tld. The local part starts with a letter or digit and does not
+#: end with a dot, the domain is dotted labels, the last label two letters or more.
+EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._%+'-]*(?<!\.)"
+    r"@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*"
+    r"\.[A-Za-z]{2,}$"
+)
+
+#: What OCR and a model leave around an address: ``-name@x.com``, ``(name@x.com).``
+_EDGE_JUNK = "-\u2013\u2014_.,;:()<>[]{}'\"*\u2022|/\\ \t\r\n"
 
 #: A model sometimes returns two addresses in the one field, joined by a slash,
 #: a comma, or "and". Spaces and hyphens stay inside a phone: "+91 7020008149".
@@ -32,11 +42,35 @@ BUYER_EMAIL_MARKERS = (
     "storesoffic",
     "sioresoffic",
     "storesoffice",
+    # Research institutes and academic domains buy; they do not win tenders.
+    "res.in",
+    "ac.in",
+    "ernet.in",
 )
 
 
+def clean_email(value: str | None) -> str:
+    """The address without the punctuation a scan or a model left at its edges.
+
+    ``-name@x.com``, ``mailto:name@x.com``, ``E-mail:-name@x.com`` and
+    ``(name@x.com).`` all become ``name@x.com``. Anything inside the address is
+    left as it is.
+    """
+    text = (value or "").strip()
+    at = text.find("@")
+    label = text.rfind(":", 0, at) if at > 0 else -1
+    if label >= 0:
+        text = text[label + 1 :]
+    while True:
+        before = text
+        text = text.strip(_EDGE_JUNK)
+        if text == before:
+            return text
+
+
 def is_email(value: str | None) -> bool:
-    return bool(EMAIL_RE.match((value or "").strip()))
+    text = (value or "").strip()
+    return bool(EMAIL_RE.match(text)) and ".." not in text
 
 
 def is_buyer_email(value: str | None) -> bool:
@@ -90,13 +124,14 @@ def _email_values(raw: str | None) -> tuple[list[str], list[str]]:
     text = (raw or "").strip()
     if not text:
         return [], []
-    if is_email(text):
-        if is_buyer_email(text):
-            return [], [f"{text} (government or buyer address)"]
-        return [text], []
+    whole = clean_email(text)
+    if is_email(whole):
+        if is_buyer_email(whole):
+            return [], [f"{whole} (government or buyer address)"]
+        return [whole], []
     pieces: list[str] = []
     for part in _pieces(text):
-        pieces.extend(bit for bit in part.split() if bit)
+        pieces.extend(clean_email(bit) for bit in part.split() if clean_email(bit))
     if not pieces:
         return [], [f"{text} (not an email address)"]
     kept: list[str] = []

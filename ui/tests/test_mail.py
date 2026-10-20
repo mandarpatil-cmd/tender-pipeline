@@ -399,3 +399,65 @@ def test_send_for_real_starts_without_a_second_checkbox(tmp_path, monkeypatch):
     assert '"send": true' in (job.params_json or "")
 
 
+
+
+def test_a_send_run_logs_each_address_and_stamps_its_run(tmp_path, monkeypatch):
+    """The log says which addresses get the letter and why the others do not."""
+    from pipeline_core.queries import record_pdf_contacts, replace_tender_documents
+
+    from ops_ui import runs
+
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    with session(engine(path)) as current:
+        vendor_id = upsert_vendor(current, name_raw="Logged Ltd")
+        for tender_id in ("T-A", "T-B"):
+            upsert_tender(current, tender_id=tender_id, title=tender_id, scraped_at=utcnow())
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "Logged Ltd"}],
+            )
+        replace_tender_documents(current, "T-B", [{"filename": "LOA.pdf", "emails": ["loa@logged.example"]}])
+        record_pdf_contacts(current, vendor_id, "T-B", ["loa@logged.example"], [])
+        mark_enriched(current, vendor_id, email="info@thsti.res.in / sales@logged.example", phone=None)
+
+    class Lines:
+        job_id = 77
+
+        def __init__(self):
+            self.lines: list[str] = []
+
+        def write(self, message: str) -> None:
+            self.lines.append(message)
+
+    captured = {}
+    campaign = load_campaign()
+    monkeypatch.setattr(runs, "live_send_refusal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        campaign, "send_all", lambda people, *args, **kwargs: captured.update(people=people, **kwargs)
+    )
+    log = Lines()
+    code = runs.run_outreach(
+        log,
+        threading.Event(),
+        database=path,
+        awards=[(vendor_id, "T-A")],
+        send=True,
+        preflight=False,
+        transport="gmail",
+        delay=0,
+        redirect_to="",
+    )
+
+    assert code == 0
+    assert captured["job_id"] == 77
+    assert [person.email for person in captured["people"]] == [
+        "loa@logged.example",
+        "sales@logged.example",
+    ]
+    text = "\n".join(log.lines)
+    assert f"Award {vendor_id}:T-A" in text
+    assert "  mail  loa@logged.example (pdf LOA.pdf on T-B)" in text
+    assert "  mail  sales@logged.example (model)" in text
+    assert "2 message(s) can be mailed." in text

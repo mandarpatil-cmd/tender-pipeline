@@ -880,3 +880,144 @@ def test_failed_chip_counts_each_award_of_the_same_company(bind):
     assert {row["tender_id"] for row in failed.rows} == {"A", "B", "C"}
     assert narrowed.counts.failed == narrowed.total == 2
     assert {row["tender_id"] for row in narrowed.rows} == {"A", "C"}
+
+
+# --------------------------------------------------------------------------
+# PDF evidence is per tender, runs list every tender they saved
+# --------------------------------------------------------------------------
+
+
+def _company_with_two_tenders(current) -> int:
+    vendor_id = upsert_vendor(current, name_raw="S.K Sales Company")
+    for tender_id in ("T-A", "T-B"):
+        upsert_tender(current, tender_id=tender_id, title=tender_id, scraped_at=utcnow())
+        replace_awards(
+            current,
+            tender_id,
+            [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "S.K Sales Company"}],
+        )
+    return vendor_id
+
+
+def test_a_pdf_email_shows_only_on_the_tender_whose_files_held_it(bind):
+    from pipeline_core.queries import record_pdf_contacts, set_pdf_contacts
+
+    with session(bind) as current:
+        vendor_id = _company_with_two_tenders(current)
+        record_pdf_contacts(current, vendor_id, "T-A", [], ["6877812012"])
+        record_pdf_contacts(
+            current, vendor_id, "T-B", ["loa@sk.example", "second@sk.example"], []
+        )
+        # The company-wide column must never be shown as a tender's evidence.
+        set_pdf_contacts(current, vendor_id, email="loa@sk.example", phone=None)
+        rows = {row["tender_id"]: row for row in award_view(current, AwardQuery()).rows}
+        both = award_view(current, AwardQuery(pdf_contact="yes")).rows
+
+    assert rows["T-A"]["pdf_email"] is None
+    assert rows["T-A"]["pdf_phone"] == "6877812012"
+    assert rows["T-B"]["pdf_email"] == "loa@sk.example; second@sk.example"
+    assert rows["T-B"]["pdf_phone"] is None
+    assert both == []
+
+
+def test_pdf_contact_filter_needs_both_clues_on_the_same_tender(bind):
+    from pipeline_core.queries import record_pdf_contacts
+
+    with session(bind) as current:
+        vendor_id = _company_with_two_tenders(current)
+        record_pdf_contacts(current, vendor_id, "T-A", ["wo@sk.example"], ["6877812012"])
+        record_pdf_contacts(current, vendor_id, "T-B", ["loa@sk.example"], [])
+        shown = [row["tender_id"] for row in award_view(current, AwardQuery(pdf_contact="yes")).rows]
+
+    assert shown == ["T-A"]
+
+
+def test_a_run_lists_every_tender_it_saved_not_only_the_first_scrape(bind):
+    from pipeline_core.queries import record_job_tender
+
+    with session(bind) as current:
+        _company_with_two_tenders(current)
+        upsert_tender(current, tender_id="T-A", scraped_at=utcnow(), scrape_job_id=9)
+        upsert_tender(current, tender_id="T-B", scraped_at=utcnow(), scrape_job_id=9)
+        # Job 12 refreshed T-B, job 40 downloaded T-A's PDFs.
+        upsert_tender(current, tender_id="T-B", scraped_at=utcnow(), scrape_job_id=12)
+        record_job_tender(current, 12, "T-B")
+        record_job_tender(current, 40, "T-A")
+
+        def shown(job_id):
+            return [row["tender_id"] for row in award_view(current, AwardQuery(scrape_job_id=job_id)).rows]
+
+        assert shown(9) == ["T-A", "T-B"]
+        assert shown(12) == ["T-B"]
+        assert shown(40) == ["T-A"]
+        assert current.get(Tender, "T-B").scrape_job_id == 9
+
+
+def test_to_send_and_mail_messages_agree_on_edge_addresses(bind):
+    """The SQL filter and the Python mail list must name the same awards."""
+    from pipeline_core.grid import filtered_award_keys
+    from pipeline_core.models import OUTREACH_SENDING, OUTREACH_SENT, VendorContact
+    from pipeline_core.queries import mail_messages, record_pdf_contacts, set_do_not_mail
+
+    cases = {
+        "Pdf Elsewhere Ltd": [("pdf", "OTHER", "loa@elsewhere.example", 1)],
+        "Buyer Only Ltd": [("model", None, "info@thsti.res.in", 1)],
+        "Invalid Only Ltd": [("pdf", "SELF", "not-an-email", 0)],
+        "Sent Already Ltd": [("model", None, "done@sent.example", 1)],
+        "Sending Ltd": [("model", None, "busy@sending.example", 1)],
+        "Twin Ltd": [("model", None, "twin@twin.example", 1), ("typed", None, "TWIN@twin.example", 1)],
+        "Stopped Ltd": [("model", None, "stop@stopped.example", 1)],
+        "Column Only Ltd": [],
+        "Nothing Ltd": [],
+    }
+    with session(bind) as current:
+        ids = {}
+        for name, rows in cases.items():
+            vendor_id = upsert_vendor(current, name_raw=name)
+            ids[name] = vendor_id
+            for tender_id in (f"{vendor_id}-SELF", f"{vendor_id}-OTHER"):
+                upsert_tender(current, tender_id=tender_id, title=name, scraped_at=utcnow())
+                replace_awards(
+                    current,
+                    tender_id,
+                    [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
+                )
+            for source, tender, value, valid in rows:
+                current.add(
+                    VendorContact(
+                        vendor_id=vendor_id,
+                        tender_id=f"{vendor_id}-{tender}" if tender else None,
+                        channel="email",
+                        value=value,
+                        source=source,
+                        valid=valid,
+                    )
+                )
+        current.get(Vendor, ids["Column Only Ltd"]).email = "column@only.example"
+        set_do_not_mail(current, ids["Stopped Ltd"], stopped=True)
+        for name, status, email in (
+            ("Sent Already Ltd", OUTREACH_SENT, "done@sent.example"),
+            ("Sending Ltd", OUTREACH_SENDING, "busy@sending.example"),
+        ):
+            record_outreach(
+                current,
+                vendor_id=ids[name],
+                tender_id=f"{ids[name]}-SELF",
+                email=email,
+                subject="s",
+                transport="gmail",
+                status=status,
+            )
+
+        to_send = set(filtered_award_keys(current, AwardQuery(outreach_status="none")))
+        mailed = {(m.vendor_id, m.tender_id) for m in mail_messages(current)}
+
+    assert to_send == mailed
+    assert (ids["Pdf Elsewhere Ltd"], f"{ids['Pdf Elsewhere Ltd']}-SELF") in mailed
+    assert (ids["Sent Already Ltd"], f"{ids['Sent Already Ltd']}-OTHER") in mailed
+    assert (ids["Sent Already Ltd"], f"{ids['Sent Already Ltd']}-SELF") not in mailed
+    assert (ids["Column Only Ltd"], f"{ids['Column Only Ltd']}-SELF") in mailed
+    assert not any(vendor_id == ids["Buyer Only Ltd"] for vendor_id, _ in mailed)
+    assert not any(vendor_id == ids["Invalid Only Ltd"] for vendor_id, _ in mailed)
+    assert not any(vendor_id == ids["Stopped Ltd"] for vendor_id, _ in mailed)
+    assert not any(vendor_id == ids["Nothing Ltd"] for vendor_id, _ in mailed)

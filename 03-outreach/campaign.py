@@ -581,8 +581,12 @@ def open_attempt(
     subject: str,
     transport_name: str,
     bind=None,
+    job_id: int | None = None,
 ) -> int:
-    """Write ``sending`` and commit it before the mailbox is asked."""
+    """Write ``sending`` and commit it before the mailbox is asked.
+
+    ``job_id`` is the window run, so the award page can link the attempt to its log.
+    """
     with session(bind) as current:
         return record_outreach(
             current,
@@ -592,6 +596,7 @@ def open_attempt(
             subject=subject,
             transport=transport_name,
             status=OUTREACH_SENDING,
+            job_id=job_id,
         )
 
 
@@ -614,6 +619,7 @@ def log_result(
     status: str,
     error: str = "",
     bind=None,
+    job_id: int | None = None,
 ) -> None:
     """Record one finished attempt. Prefer open_attempt before a live delivery."""
     with session(bind) as current:
@@ -626,6 +632,7 @@ def log_result(
             transport=transport_name,
             status=status,
             error=error[:500] or None,
+            job_id=job_id,
         )
 
 
@@ -727,6 +734,7 @@ def send_all(
     bind=None,
     source: str = LETTER_PAGE,
     letter: Letter | None = None,
+    job_id: int | None = None,
 ) -> None:
     problem = redirect_problem(override_to)
     if problem:
@@ -750,13 +758,18 @@ def send_all(
             deliver_to = inbox or company_email
             subject, body = render_for(letter, person)
             subject = header_text(subject)
-            attempt_id = open_attempt(person, company_email, subject, transport_name, bind=bind)
+            attempt_id = open_attempt(
+                person, company_email, subject, transport_name, bind=bind, job_id=job_id
+            )
             try:
                 transport.send(deliver_to, subject, body, attachments=files)
             except (TransportError, ValueError) as err:
                 failed += 1
                 close_attempt(attempt_id, OUTREACH_FAILED, str(err), bind=bind)
-                print(f"  [{i}/{len(people)}] FAILED {company_email}: {err}")
+                print(
+                    f"  [{i}/{len(people)}] FAILED {person.company} <{company_email}> "
+                    f"tender {person.tender_id}: {err}"
+                )
                 continue
 
             sent += 1
@@ -767,10 +780,16 @@ def send_all(
                     f"redirected to {inbox}",
                     bind=bind,
                 )
-                print(f"  [{i}/{len(people)}] test to {inbox} for {person.company} <{company_email}>")
+                print(
+                    f"  [{i}/{len(people)}] test to {inbox} for {person.company} "
+                    f"<{company_email}> tender {person.tender_id}"
+                )
             else:
                 close_attempt(attempt_id, OUTREACH_SENT, bind=bind)
-                print(f"  [{i}/{len(people)}] sent to {person.company} <{deliver_to}>")
+                print(
+                    f"  [{i}/{len(people)}] sent to {person.company} <{deliver_to}> "
+                    f"tender {person.tender_id}"
+                )
             if i < len(people) and _pause(delay, should_stop):
                 stopped = True
                 break

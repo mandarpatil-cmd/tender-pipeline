@@ -368,6 +368,21 @@ def mail_job_awards(params_json: str | None) -> tuple[tuple[int, str], ...]:
     return tuple(pairs)
 
 
+def award_focus(raw: str | None) -> tuple[int, str] | None:
+    """``vendor:tender`` from a run link on the award page. Anything else is None."""
+    vendor, separator, tender = str(raw or "").strip().partition(":")
+    if not separator or not vendor.isdigit() or not tender:
+        return None
+    return int(vendor), tender
+
+
+def focused_query(query: AwardQuery, focus: tuple[int, str]) -> AwardQuery:
+    """The run's rows narrowed to one award. A run that did not touch it shows none."""
+    if query.job_awards is None:
+        return replace(query, job_awards=(focus,))
+    return replace(query, job_awards=(focus,) if focus in query.job_awards else ())
+
+
 def job_query(stage: str, job_id: int, params_json: str | None = None) -> AwardQuery:
     """Rows that belong to one run, without the library's default status."""
     if stage == "scrape":

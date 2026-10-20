@@ -17,7 +17,7 @@ from pipeline_core.queries import (
     mark_failed,
     record_outreach,
     replace_awards,
-    set_pdf_contacts,
+    record_pdf_contacts,
     replace_tender_documents,
     upsert_tender,
     upsert_vendor,
@@ -146,7 +146,7 @@ def test_each_stage_offers_only_its_own_filters(tmp_path):
     assert 'name="source"' in enrich
     assert ">Enrich</button>" in enrich
     assert "Mail these" not in enrich
-    assert "Look up contacts" in enrich
+    assert "Look up contacts" not in enrich
     assert "To send" in mail
     assert "Do not mail" in mail
     assert "letter" in mail
@@ -623,8 +623,6 @@ def test_scrape_pdf_contact_shows_only_both_clues(tmp_path):
     with session(bind) as current:
         both = upsert_vendor(current, name_raw="Both Clues Ltd")
         email_only = upsert_vendor(current, name_raw="Email Clue Ltd")
-        set_pdf_contacts(current, both, email="both@example.com", phone="9123456780")
-        set_pdf_contacts(current, email_only, email="one@example.com", phone=None)
         for tender_id, vendor_id, name in (
             ("BOTH", both, "Both Clues Ltd"),
             ("ONE", email_only, "Email Clue Ltd"),
@@ -635,6 +633,9 @@ def test_scrape_pdf_contact_shows_only_both_clues(tmp_path):
                 tender_id,
                 [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": name}],
             )
+        # PDF clues belong to the tender whose files they were read from.
+        record_pdf_contacts(current, both, "BOTH", ["both@example.com"], ["9123456780"])
+        record_pdf_contacts(current, email_only, "ONE", ["one@example.com"], [])
     html = TestClient(create_app(path)).get("/?pdf_contact=yes").text
     assert ">BOTH</a>" in html
     assert ">ONE</a>" not in html

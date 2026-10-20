@@ -6,6 +6,9 @@
 <p class="kicker">{{ job.stage }}</p>
 <h1>Run {{ job.job_id }}</h1>
 {% include "job_panel.html" %}
+{% if focus %}
+<p class="meta" id="focus-note">Showing tender {{ focus[1] }} for company {{ focus[0] }} in this run. <a href="/jobs/{{ job.job_id }}">Show every row of this run</a></p>
+{% endif %}
 {% if grid %}
 <div id="job-grid"{% if job.state == 'running' or job.state == 'waiting' %} hx-get="{{ request.url }}" hx-trigger="every 2s" hx-select="#job-grid" hx-swap="outerHTML"{% endif %}>
 {% include "results.html" %}

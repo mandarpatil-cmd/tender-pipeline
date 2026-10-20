@@ -31,9 +31,11 @@ from pipeline_core.queries import (
     backfill_tender_documents,
     known_tender_ids,
     replace_awards,
+    clear_pdf_contacts,
+    record_job_tender,
+    refresh_vendor_pdf_columns,
+    replace_pdf_contacts,
     replace_tender_documents,
-    record_pdf_contacts,
-    set_pdf_contacts,
     split_clues,
     upsert_tender,
 )
@@ -43,7 +45,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from stage1_scrape.domain.enrichment import winner_rows
-from stage1_scrape.domain.models import ListingRow, ScrapeSource, TenderRecord
+from stage1_scrape.domain.models import (
+    SEARCH_TENDER_ID,
+    ListingRow,
+    ScrapeSource,
+    TenderRecord,
+)
 from stage1_scrape.persist.pdf_text import merge_pdf_contacts
 
 VENDOR_SEED_COLUMNS = (
@@ -112,15 +119,20 @@ class Store:
         empty, so a tender whose files yielded nothing does not keep old clues.
 
         `source` is the portal search of the run. Without it, as in a reindex,
-        the stored search, page and run are left as they are.
+        the stored search, page and run are left as they are. A PDF download
+        (a tender-id search) never changes them, nor ``scraped_at``: the scrape
+        that brought the tender in stays its source. Every run that saves the
+        tender is kept in ``job_tenders``.
         """
         scraped = scraped_at or datetime.now(timezone.utc).isoformat()
         if replace_documents is None:
             replace_documents = bool(record.pdf_extracts)
         listing = record.listing
+        download = source is not None and source.search_mode == SEARCH_TENDER_ID
         with session(self.engine) as current:
             upsert_tender(
                 current,
+                keep=("scraped_at",) if download else (),
                 tender_id=listing.tender_id,
                 title=listing.title_and_ref,
                 organisation=listing.organisation_chain,
@@ -131,11 +143,13 @@ class Store:
                 scraped_at=scraped,
                 **_where_from(listing, source),
             )
-            self._save_awards(current, record)
+            if source is not None:
+                record_job_tender(current, source.job_id, listing.tender_id)
             if replace_documents:
                 replace_tender_documents(
                     current, listing.tender_id, record.pdf_extracts
                 )
+            self._save_awards(current, record, replace_clues=replace_documents)
 
     def known_ids(self) -> set[str]:
         with session(self.engine) as current:
@@ -181,7 +195,9 @@ class Store:
 
     # --------------------------------------------------------------- private
 
-    def _save_awards(self, current: Session, record: TenderRecord) -> None:
+    def _save_awards(
+        self, current: Session, record: TenderRecord, *, replace_clues: bool
+    ) -> None:
         listing = record.listing
         quotes = {row.bid_number: row for row in record.financial_bids if row.bid_number}
         city, state = infer_city_state(listing.organisation_chain)
@@ -211,7 +227,8 @@ class Store:
                 }
             )
         replace_awards(current, listing.tender_id, rows)
-        self._save_pdf_contacts(current, listing.tender_id, rows, record.pdf_extracts)
+        if replace_clues:
+            self._save_pdf_contacts(current, listing.tender_id, rows, record.pdf_extracts)
 
     def _save_pdf_contacts(
         self,
@@ -220,31 +237,29 @@ class Store:
         rows: list[dict[str, Any]],
         extracts: list[dict[str, Any]],
     ) -> None:
-        """Hand the winner whatever contact details the work order carried.
+        """Hand the winner whatever contact details this tender's work order carried.
 
         These come from LiteParse text of the work order, then the document model.
         Stage 2 treats them as evidence to confirm rather than as an answer.
 
-        Only attributed when the tender had exactly one winner. A work order names
-        one firm; with several winners on one document there is no way to tell
-        whose address it is, and a wrong address is worse than none.
+        The tender's PDF rows are replaced, so a clue the files no longer hold
+        goes. Only attributed when the tender had exactly one winner. A work order
+        names one firm; with several winners on one document there is no way to
+        tell whose address it is, and a wrong address is worse than none.
         """
         if len(rows) != 1:
+            clear_pdf_contacts(current, tender_id)
             return
         contacts = merge_pdf_contacts(extracts)
-        record_pdf_contacts(
+        vendor_id = rows[0]["vendor_id"]
+        replace_pdf_contacts(
             current,
-            rows[0]["vendor_id"],
+            vendor_id,
             tender_id,
             contacts["emails"],
             contacts["phones"],
         )
-        set_pdf_contacts(
-            current,
-            rows[0]["vendor_id"],
-            email=next(iter(contacts["emails"]), None),
-            phone=next(iter(contacts["phones"]), None),
-        )
+        refresh_vendor_pdf_columns(current, vendor_id)
 
 
 def _extracts_by_tender(current: Session, tender_ids: set[str]) -> dict[str, list[dict]]:
@@ -275,8 +290,14 @@ def _shown_award(row) -> dict:
 
 
 def _where_from(listing: ListingRow, source: ScrapeSource | None) -> dict[str, Any]:
-    """The source columns this save can vouch for. The rest keep what is stored."""
+    """The source columns this save can vouch for. The rest keep what is stored.
+
+    A PDF download searched by tender id only to reach the files. It is not
+    where the tender came from, so it vouches for nothing but the website.
+    """
     values: dict[str, Any] = {"origin": ORIGIN_PORTAL}
+    if source is not None and source.search_mode == SEARCH_TENDER_ID:
+        return values
     if listing.page is not None:
         values["listing_page"] = listing.page
         values["listing_serial"] = serial_number(listing.serial)

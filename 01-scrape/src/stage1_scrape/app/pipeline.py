@@ -10,7 +10,13 @@ from pathlib import Path
 
 from stage1_scrape.config import APP_URL, DEFAULT_DELAY_SECONDS, TENDER_STATUS_AOC
 from stage1_scrape.domain.errors import CaptchaError, ParseError, ScraperError, StopRequested
-from stage1_scrape.domain.models import ScrapeSource, TenderRecord
+from stage1_scrape.domain.models import (
+    SEARCH_AWARDED,
+    SEARCH_ORGANISATION,
+    SEARCH_TENDER_ID,
+    ScrapeSource,
+    TenderRecord,
+)
 from stage1_scrape.parse import (
     find_next_page,
     find_stage_summary_url,
@@ -39,9 +45,6 @@ def _read_documents(extracts: list[dict]) -> None:
 
     apply_document_extracts(extracts)
 
-SEARCH_AWARDED = "awarded"
-SEARCH_ORGANISATION = "organisation"
-SEARCH_TENDER_ID = "tender_id"
 
 
 def search_fields(extra: dict[str, str] | None) -> dict[str, str]:

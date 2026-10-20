@@ -483,6 +483,9 @@ def run_outreach(
             awards=awards,
             vendor_ids=vendor_ids,
         )
+        plan = address_plan(current, awards or [], include_sent=include_sent)
+    for line in plan:
+        log.write(line)
     if include_sent:
         log.write("Send again is on. Awards already sent are included.")
     if letter is None:
@@ -521,12 +524,44 @@ def run_outreach(
             should_stop=stop.is_set,
             bind=bind,
             letter=letter,
+            job_id=log.job_id,
         )
 
     code = _captured(log, deliver)
     if stop.is_set():
         log.write("Stopped. Messages already sent are saved.")
     return code
+
+
+def address_plan(current, awards, *, include_sent: bool = False) -> list[str]:
+    """One block per award: each address that will be mailed, and each one skipped, with why."""
+    from pipeline_core.queries import address_report
+
+    lines: list[str] = []
+    for vendor_id, tender_id in awards:
+        report = address_report(current, vendor_id, tender_id, include_sent=include_sent)
+        lines.append(f"Award {vendor_id}:{tender_id}")
+        if not report:
+            lines.append("  no email address stored for this company")
+        for item in report:
+            verdict = "mail" if item.will_mail else "skip"
+            why = "" if item.will_mail else f": {item.reason}"
+            lines.append(f"  {verdict}  {item.value} ({address_origin(item)}){why}")
+    return lines
+
+
+def address_origin(item) -> str:
+    """Where an address came from, in a few words: ``pdf LOA.pdf on 2026_X_1``."""
+    if item.source == "pdf":
+        parts = ["pdf"]
+        if item.filenames:
+            parts.append(", ".join(item.filenames))
+        if item.tender_id:
+            parts.append(f"on {item.tender_id}")
+        return " ".join(parts)
+    if item.source == "model" and item.source_url:
+        return f"model, found at {item.source_url}"
+    return item.source
 
 
 def live_send_refusal(transport: str, bind=None, source: str = "page", letter=None) -> str | None:

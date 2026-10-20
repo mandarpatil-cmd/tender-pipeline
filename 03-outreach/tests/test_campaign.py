@@ -400,3 +400,61 @@ def test_a_live_send_refuses_when_an_attachment_is_missing(monkeypatch, written_
         campaign.run(send=True, delay=0)
 
     assert built == []
+
+
+def test_every_valid_address_of_an_award_is_mailed_and_stamped_with_the_run(
+    monkeypatch, written_pitch, capsys
+):
+    """PDF, model and typed addresses each get the letter. Each attempt names its run."""
+    from pipeline_core.queries import record_pdf_contacts, set_typed_contact
+
+    vendor_id = _vendor("Three Address Ltd", "model@three.example")
+    with session() as current:
+        record_pdf_contacts(current, vendor_id, f"T-{vendor_id}", ["-pdf@three.example"], [])
+        set_typed_contact(current, vendor_id, email="typed@three.example")
+    transport = FakeTransport(reject={"typed@three.example"})
+    monkeypatch.setattr(campaign, "build_transport", lambda name: transport)
+
+    people = campaign.load_recipients()
+    assert [person.email for person in people] == [
+        "pdf@three.example",
+        "model@three.example",
+        "typed@three.example",
+    ]
+    campaign.send_all(people, 0, None, job_id=7)
+
+    assert [address for address, _subject in transport.sent] == [
+        "pdf@three.example",
+        "model@three.example",
+    ]
+    with session() as current:
+        rows = {row.email: row for row in current.query(Outreach)}
+    assert {email: (row.status, row.job_id) for email, row in rows.items()} == {
+        "pdf@three.example": (OUTREACH_SENT, 7),
+        "model@three.example": (OUTREACH_SENT, 7),
+        "typed@three.example": (OUTREACH_FAILED, 7),
+    }
+    printed = capsys.readouterr().out
+    assert printed.count(f"tender T-{vendor_id}") == 3
+    assert "FAILED Three Address Ltd <typed@three.example>" in printed
+    # Only the failed address is still waiting.
+    assert [person.email for person in campaign.load_recipients()] == ["typed@three.example"]
+
+
+def test_a_redirected_test_is_stamped_with_the_run_too(fake_transport):
+    _vendor("Kanta Enterprises", "hi@kanta.example")
+
+    campaign.send_all(campaign.load_recipients(), 0, "me@mine.example", job_id=11)
+
+    with session() as current:
+        row = current.query(Outreach).one()
+    assert (row.status, row.job_id) == (OUTREACH_TEST, 11)
+
+
+def test_a_terminal_send_leaves_the_run_empty(fake_transport):
+    _vendor("Kanta Enterprises", "hi@kanta.example")
+
+    campaign.run(send=True, delay=0)
+
+    with session() as current:
+        assert current.query(Outreach).one().job_id is None

@@ -40,6 +40,7 @@ def engine(path: Path | str | None = None, *, foreign_keys: bool = True) -> Engi
 
     @event.listens_for(eng, "connect")
     def _on_connect(dbapi_connection: sqlite3.Connection, _record) -> None:
+        from .emailcheck import is_buyer_email, is_email
         from .loose import loose_date, loose_number
 
         cursor = dbapi_connection.cursor()
@@ -50,6 +51,16 @@ def engine(path: Path | str | None = None, *, foreign_keys: bool = True) -> Engi
                 cursor.execute("PRAGMA foreign_keys=ON")
             dbapi_connection.create_function("loose_date", 1, loose_date)
             dbapi_connection.create_function("loose_number", 1, loose_number)
+            # The mail queue's SQL and its Python must judge an address the same way.
+            dbapi_connection.create_function(
+                "pc_is_email", 1, lambda value: int(is_email(value)), deterministic=True
+            )
+            dbapi_connection.create_function(
+                "pc_is_buyer_email",
+                1,
+                lambda value: int(is_buyer_email(value)),
+                deterministic=True,
+            )
         finally:
             cursor.close()
 
@@ -170,14 +181,22 @@ def ensure_schema(bind: Engine | None = None) -> SchemaReport:
             report.created_indexes.append(index.name or "<unnamed>")
 
     from .queries import (
+        backfill_job_tenders,
         backfill_model_contact_sources,
+        backfill_outreach_jobs,
         backfill_tender_origin,
         backfill_vendor_contacts,
+        clean_stored_contacts,
     )
 
     with session(eng) as current:
         if "tenders.origin" in report.added_columns:
             backfill_tender_origin(current)
+        if "job_tenders" in report.created_tables:
+            backfill_job_tenders(current)
+        if "outreach.job_id" in report.added_columns:
+            backfill_outreach_jobs(current)
+        clean_stored_contacts(current)
         backfill_vendor_contacts(current)
         if (
             "vendor_contacts.source_url" in report.added_columns

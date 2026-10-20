@@ -6,10 +6,21 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import Award, LlmRun, Outreach, Tender, Vendor
+from .models import (
+    CHANNEL_EMAIL,
+    CHANNEL_PHONE,
+    CONTACT_PDF,
+    Award,
+    JobTender,
+    LlmRun,
+    Outreach,
+    Tender,
+    UiJob,
+    Vendor,
+)
 from .money import format_amount, iso_day, parse_money
 
 
@@ -74,6 +85,7 @@ def award_detail(session: Session, tender_id: str, bid_number: str) -> AwardDeta
             Outreach.status,
             Outreach.error,
             Outreach.sent_at,
+            Outreach.job_id,
         )
         .where(Outreach.vendor_id == vendor.vendor_id)
         .order_by(Outreach.sent_at.desc(), Outreach.outreach_id.desc())
@@ -225,3 +237,225 @@ def _vendor_dict(vendor: Vendor) -> dict[str, Any]:
         "pdf_phone": vendor.pdf_phone,
         "do_not_mail": vendor.do_not_mail,
     }
+
+
+#: How the award page names a run's stage.
+JOB_STAGE_LABELS = {
+    "scrape": "Scrape",
+    "pdfs": "Download PDFs",
+    "enrich": "Enrich",
+    "outreach": "Mail",
+    "status": "Status",
+}
+
+
+def record_jobs(session: Session, vendor_id: int, tender_id: str) -> tuple[dict[str, Any], ...]:
+    """Every window run that touched this award, newest first.
+
+    A scrape or PDF download that saved the tender, an enrich run that looked
+    the company up, and a mail run (preview or send) that named this award.
+    Each links to the run opened on this one record.
+    """
+    did: dict[int, list[str]] = {}
+
+    def note(job_id: int | None, text: str) -> None:
+        if job_id is not None and text not in did.setdefault(int(job_id), []):
+            did[int(job_id)].append(text)
+
+    tender = session.get(Tender, tender_id)
+    saved = set(
+        session.scalars(select(JobTender.job_id).where(JobTender.tender_id == tender_id))
+    )
+    if tender is not None and tender.scrape_job_id is not None:
+        saved.add(int(tender.scrape_job_id))
+    stages = {
+        int(job_id): stage
+        for job_id, stage in session.execute(
+            select(UiJob.job_id, UiJob.stage).where(UiJob.job_id.in_(saved))
+        )
+    }
+    for job_id in saved:
+        if stages.get(job_id) == "pdfs":
+            note(job_id, "downloaded this tender's PDFs and read their clues")
+        elif tender is not None and tender.scrape_job_id == job_id:
+            note(job_id, "first saved this tender")
+        else:
+            note(job_id, "saved this tender again")
+
+    looked_up: dict[int, list[str]] = {}
+    for job_id, status in session.execute(
+        select(LlmRun.job_id, LlmRun.status)
+        .where(LlmRun.vendor_id == vendor_id, LlmRun.job_id.is_not(None))
+        .order_by(LlmRun.run_id)
+    ):
+        looked_up.setdefault(int(job_id), []).append(status)
+    for job_id, statuses in looked_up.items():
+        note(job_id, "looked up the company's contact (" + ", ".join(statuses) + ")")
+
+    pair = f"{vendor_id}:{tender_id}"
+    for job_id, raw in session.execute(
+        select(UiJob.job_id, UiJob.params_json).where(UiJob.stage == "outreach")
+    ):
+        params = _answer(raw)
+        if pair not in [str(item) for item in params.get("awards") or []]:
+            continue
+        if params.get("preflight"):
+            continue
+        note(job_id, "sent mail for this award" if params.get("send") else "previewed mail for this award")
+    for job_id, email, status in session.execute(
+        select(Outreach.job_id, Outreach.email, Outreach.status)
+        .where(
+            Outreach.vendor_id == vendor_id,
+            Outreach.tender_id == tender_id,
+            Outreach.job_id.is_not(None),
+        )
+        .order_by(Outreach.outreach_id)
+    ):
+        note(job_id, f"{status} {email}")
+
+    if not did:
+        return ()
+    jobs = {
+        int(job.job_id): job
+        for job in session.scalars(select(UiJob).where(UiJob.job_id.in_(list(did))))
+    }
+    shown = []
+    for job_id in sorted(did, reverse=True):
+        job = jobs.get(job_id)
+        stage = job.stage if job is not None else ""
+        shown.append(
+            {
+                "job_id": job_id,
+                "stage": JOB_STAGE_LABELS.get(stage, stage or "Run"),
+                "state": job.state if job is not None else "not recorded",
+                "started_at": job.started_at if job is not None else "",
+                "did": "; ".join(did[job_id]),
+                "href": f"/jobs/{job_id}?award={vendor_id}:{tender_id}",
+            }
+        )
+    return tuple(shown)
+
+
+def tender_clues(session: Session, vendor_id: int, tender_id: str) -> list[dict[str, Any]]:
+    """The PDF email and phone rows of this award, each with the files that hold it."""
+    from .queries import clue_files, ordered_contacts
+
+    shown: list[dict[str, Any]] = []
+    for channel in (CHANNEL_EMAIL, CHANNEL_PHONE):
+        files = clue_files(session, [tender_id], channel)
+        for row in ordered_contacts(session, vendor_id, tender_id, channel=channel):
+            if row.source != CONTACT_PDF or row.tender_id != tender_id:
+                continue
+            shown.append(
+                {
+                    "channel": channel,
+                    "value": row.value,
+                    "valid": bool(row.valid),
+                    "filenames": files.get((tender_id, row.value.casefold()), ()),
+                }
+            )
+    return shown
+
+
+def vendor_documents(
+    session: Session, vendor_id: int, *, except_tender: str | None = None
+) -> list[dict[str, Any]]:
+    """The company's other tenders and what their PDFs said. One entry per tender.
+
+    ``attributed`` is false when the tender had several winners: its clues were
+    then not given to any one company.
+    """
+    from .queries import documents_for_tenders
+
+    awards = session.execute(
+        select(Award.tender_id, Award.bid_number, Tender.title)
+        .join(Tender, Tender.tender_id == Award.tender_id)
+        .where(Award.vendor_id == vendor_id)
+        .order_by(Tender.scraped_at.desc(), Award.tender_id)
+    ).all()
+    ids = [tender_id for tender_id, _bid, _title in awards if tender_id != except_tender]
+    documents = documents_for_tenders(session, ids)
+    winners = {
+        tender_id: int(count)
+        for tender_id, count in session.execute(
+            select(Award.tender_id, func.count(func.distinct(Award.vendor_id)))
+            .where(Award.tender_id.in_(ids))
+            .group_by(Award.tender_id)
+        )
+    }
+    shown = []
+    for tender_id, bid_number, title in awards:
+        if tender_id == except_tender or tender_id in {item["tender_id"] for item in shown}:
+            continue
+        shown.append(
+            {
+                "tender_id": tender_id,
+                "bid_number": bid_number,
+                "title": title or "",
+                "documents": documents.get(tender_id, []),
+                "attributed": winners.get(tender_id, 1) == 1,
+            }
+        )
+    return shown
+
+
+def award_addresses(session: Session, vendor_id: int, tender_id: str) -> list[dict[str, Any]]:
+    """Every email and phone of the company for this award, with where it came from.
+
+    An email also says whether a send for this award mails it, and why not.
+    """
+    from .queries import address_report, clue_files, ordered_contacts
+
+    lines = address_report(session, vendor_id, tender_id)
+    phones = ordered_contacts(session, vendor_id, tender_id, channel=CHANNEL_PHONE)
+    phone_files = clue_files(
+        session,
+        (row.tender_id for row in phones if row.source == CONTACT_PDF),
+        CHANNEL_PHONE,
+    )
+    run_ids = [line.llm_run_id for line in lines if line.llm_run_id] + [
+        row.llm_run_id for row in phones if row.llm_run_id
+    ]
+    jobs = {}
+    if run_ids:
+        jobs = {
+            int(run_id): job_id
+            for run_id, job_id in session.execute(
+                select(LlmRun.run_id, LlmRun.job_id).where(LlmRun.run_id.in_(run_ids))
+            )
+        }
+    shown = [
+        {
+            "channel": CHANNEL_EMAIL,
+            "value": line.value,
+            "source": line.source,
+            "tender_id": line.tender_id,
+            "this_tender": line.tender_id == tender_id,
+            "filenames": line.filenames,
+            "source_url": line.source_url or "",
+            "job_id": jobs.get(line.llm_run_id) if line.llm_run_id else None,
+            "valid": line.valid,
+            "will_mail": line.will_mail,
+            "reason": line.reason,
+        }
+        for line in lines
+    ]
+    for row in phones:
+        shown.append(
+            {
+                "channel": CHANNEL_PHONE,
+                "value": row.value,
+                "source": row.source,
+                "tender_id": row.tender_id,
+                "this_tender": row.tender_id == tender_id,
+                "filenames": phone_files.get((row.tender_id, row.value.casefold()), ())
+                if row.tender_id
+                else (),
+                "source_url": row.source_url or "",
+                "job_id": jobs.get(row.llm_run_id) if row.llm_run_id else None,
+                "valid": bool(row.valid),
+                "will_mail": False,
+                "reason": "",
+            }
+        )
+    return shown

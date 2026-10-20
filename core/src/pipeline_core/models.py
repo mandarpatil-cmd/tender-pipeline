@@ -92,7 +92,8 @@ class Tender(Base):
     #: 1-based listing page in that walk, and the portal's S.No on it.
     listing_page: Mapped[int | None] = mapped_column(Integer)
     listing_serial: Mapped[int | None] = mapped_column(Integer)
-    #: ``ui_jobs.job_id`` of that run. Empty for a run started from a terminal.
+    #: ``ui_jobs.job_id`` of the first scrape run that saved it. Empty for a run
+    #: started from a terminal. A PDF download never sets it; see ``job_tenders``.
     scrape_job_id: Mapped[int | None] = mapped_column(Integer)
 
     def __repr__(self) -> str:
@@ -196,6 +197,25 @@ class VendorContact(Base):
         return f"<VendorContact {self.contact_id} {self.channel} {self.value!r}>"
 
 
+class JobTender(Base):
+    """A window run that saved this tender: every scrape and every PDF download.
+
+    ``tenders.scrape_job_id`` keeps the first scrape. This keeps all of them.
+    """
+
+    __tablename__ = "job_tenders"
+
+    job_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tender_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("tenders.tender_id"), primary_key=True
+    )
+
+    __table_args__ = (Index("idx_job_tenders_tender", "tender_id"),)
+
+    def __repr__(self) -> str:
+        return f"<JobTender {self.job_id} {self.tender_id}>"
+
+
 class Award(Base):
     """Links a vendor to a tender. A vendor may win many, a tender may have many."""
 
@@ -270,11 +290,14 @@ class Outreach(Base):
     status: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[str | None] = mapped_column(Text)
+    #: ``ui_jobs.job_id`` of the send that made this attempt. Empty for a terminal run.
+    job_id: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (
         Index("idx_outreach_vendor", "vendor_id"),
         Index("idx_outreach_status", "status"),
         Index("idx_outreach_tender", "tender_id"),
+        Index("idx_outreach_job", "job_id"),
     )
 
     def __repr__(self) -> str:
@@ -333,4 +356,5 @@ TABLES = (
     Outreach,
     MailLetter,
     UiJob,
+    JobTender,
 )

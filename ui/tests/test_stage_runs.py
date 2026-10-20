@@ -184,3 +184,71 @@ def test_activity_run_shows_the_rows_that_run_wrote(tmp_path):
     status = client.get(f"/jobs/{status_id}").text
     assert "This run has no table." in status
     assert ">FETCHED</a>" not in status
+
+
+def _two_tenders_by_one_run(path) -> tuple[int, int, int, int]:
+    from pipeline_core.queries import record_job_tender
+
+    bind = engine(path)
+    ensure_schema(bind)
+    with session(bind) as current:
+        scrape_id = _job(current, "scrape", log="saved two tenders")
+        winner = upsert_vendor(current, name_raw="Two Tender Ltd")
+        for tender_id in ("T-A", "T-B"):
+            upsert_tender(
+                current,
+                tender_id=tender_id,
+                title=f"Work {tender_id}",
+                scraped_at=utcnow(),
+                scrape_job_id=scrape_id,
+            )
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": winner, "bidder_name": "Two Tender Ltd"}],
+            )
+            record_job_tender(current, scrape_id, tender_id)
+        pdf_id = _job(current, "pdfs", params='{"tender_id": "T-B"}', log="read the PDFs")
+        record_job_tender(current, pdf_id, "T-B")
+        mail_id = _job(current, "outreach", params='{"awards": ["%d:T-A"]}' % winner)
+    return winner, scrape_id, pdf_id, mail_id
+
+
+def test_a_pdf_download_run_shows_the_tender_it_read(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    _winner, _scrape_id, pdf_id, _mail_id = _two_tenders_by_one_run(path)
+
+    html = TestClient(create_app(path)).get(f"/jobs/{pdf_id}").text
+    assert "read the PDFs" in html
+    assert ">T-B</a>" in html
+    assert ">T-A</a>" not in html
+    assert "This run has no table." not in html
+
+
+def test_a_run_opened_from_the_award_page_shows_that_record(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    winner, scrape_id, _pdf_id, _mail_id = _two_tenders_by_one_run(path)
+    client = TestClient(create_app(path))
+
+    whole = client.get(f"/jobs/{scrape_id}").text
+    assert ">T-A</a>" in whole and ">T-B</a>" in whole
+    assert 'id="focus-note"' not in whole
+
+    focused = client.get(f"/jobs/{scrape_id}?award={winner}:T-A").text
+    assert ">T-A</a>" in focused
+    assert ">T-B</a>" not in focused
+    assert f'<a href="/jobs/{scrape_id}">Show every row of this run</a>' in focused
+    assert "saved two tenders" in focused
+
+
+def test_a_focus_on_an_award_the_run_never_touched_shows_no_row(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    winner, _scrape_id, _pdf_id, mail_id = _two_tenders_by_one_run(path)
+    client = TestClient(create_app(path))
+
+    named = client.get(f"/jobs/{mail_id}?award={winner}:T-A").text
+    assert ">T-A</a>" in named
+    other = client.get(f"/jobs/{mail_id}?award={winner}:T-B").text
+    assert ">T-A</a>" not in other and ">T-B</a>" not in other
+    junk = client.get(f"/jobs/{mail_id}?award=not-a-pair").text
+    assert ">T-A</a>" in junk
