@@ -399,6 +399,37 @@ def test_send_for_real_starts_without_a_second_checkbox(tmp_path, monkeypatch):
     assert '"send": true' in (job.params_json or "")
 
 
+def test_outlook_is_the_default_transport(tmp_path, monkeypatch):
+    path = tmp_path / "pipeline.sqlite3"
+    vendor_id = _seed(path)
+    monkeypatch.setattr("ops_ui.routes.mail.live_send_refusal", lambda *args, **kwargs: None)
+    monkeypatch.setattr("ops_ui.routes.mail.run_outreach", lambda log, stop, **params: 0)
+    client = TestClient(create_app(path))
+
+    html = client.post("/mail", data={"mode": "remove", "award": f"{vendor_id}:T-1"}).text
+    started = client.post(
+        "/mail",
+        data={"mode": "send", "award": f"{vendor_id}:T-1"},
+        follow_redirects=False,
+    )
+
+    assert '<option value="outlook" selected>' in html
+    job = get_job(path, job_id_from(started.headers["location"]))
+    assert '"transport": "outlook"' in (job.params_json or "")
+
+
+def test_outlook_needs_an_address_and_a_password(monkeypatch):
+    from ops_ui.runs import credential_gap
+
+    monkeypatch.setenv("OUTLOOK_USER", "me@company.example")
+    monkeypatch.setenv("OUTLOOK_PASSWORD", "")
+    assert credential_gap("outlook") == (
+        "Outlook needs OUTLOOK_USER and OUTLOOK_PASSWORD in 03-outreach/.env."
+    )
+
+    monkeypatch.setenv("OUTLOOK_PASSWORD", "secret")
+    assert credential_gap("outlook") is None
+    assert credential_gap("outlook", preflight=True) is None
 
 
 def test_a_send_run_logs_each_address_and_stamps_its_run(tmp_path, monkeypatch):

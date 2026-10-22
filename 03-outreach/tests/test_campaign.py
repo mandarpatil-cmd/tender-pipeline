@@ -292,6 +292,13 @@ def test_a_missing_mailbox_raises_instead_of_exiting(monkeypatch):
     with pytest.raises(TransportError):
         GmailTransport()
 
+    monkeypatch.setenv("OUTLOOK_USER", "")
+    monkeypatch.setenv("OUTLOOK_PASSWORD", "")
+    from outlook.send import OutlookTransport
+
+    with pytest.raises(TransportError):
+        OutlookTransport()
+
     import graph.auth as auth
 
     monkeypatch.setattr(auth, "CLIENT_ID", "")

@@ -10,13 +10,13 @@ A transport is any object with:
 and which raises TransportError when a single recipient fails. Failing that
 way lets campaign.py log the address and carry on to the next person.
 
-Imports are deliberately inside build_transport: choosing "gmail" never
-loads msal or requests, and choosing "graph" never opens smtplib.
+Imports are deliberately inside build_transport: choosing "gmail" or
+"outlook" never loads msal or requests, and choosing "graph" never opens smtplib.
 """
 
 from __future__ import annotations
 
-TRANSPORTS = ("gmail", "graph")
+TRANSPORTS = ("gmail", "outlook", "graph")
 
 
 class TransportError(Exception):
@@ -28,6 +28,10 @@ def build_transport(name: str):
         from gmail.send import GmailTransport
 
         return GmailTransport()
+    if name == "outlook":
+        from outlook.send import OutlookTransport
+
+        return OutlookTransport()
     if name == "graph":
         from graph.send import GraphTransport
 

@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 from sqlalchemy import inspect
 
-from pipeline_core.db import drop_all, engine, ensure_schema, session, table_counts
+from pipeline_core.db import dispose_engines, drop_all, engine, ensure_schema, session, table_counts
 from pipeline_core.models import TABLES, Tender, Vendor
 
 # The scraper's hand-rolled DDL, exactly as it shipped: five reserved columns
@@ -244,46 +244,140 @@ def test_a_new_database_stores_amounts_as_integers(tmp_path):
     assert "contract_value" not in awards
 
 
-def test_text_amounts_are_copied_aside_and_the_file_starts_empty(tmp_path):
-    path = tmp_path / "pipeline.sqlite3"
+#: The schema of the 7 Oct release (97cae34): amounts and dates as portal text.
+OLD_RELEASE = """
+CREATE TABLE tenders (
+    tender_id TEXT PRIMARY KEY, title TEXT, organisation TEXT, status TEXT,
+    contract_date TEXT, contract_value TEXT, json_path TEXT, scraped_at TEXT NOT NULL
+);
+CREATE TABLE vendors (
+    vendor_id INTEGER PRIMARY KEY AUTOINCREMENT, name_raw TEXT NOT NULL,
+    name_norm TEXT NOT NULL UNIQUE, legal_form TEXT, city TEXT, state TEXT,
+    buyer_hint TEXT, source TEXT, pdf_email TEXT, pdf_phone TEXT, email TEXT,
+    phone TEXT, enrichment_status TEXT NOT NULL DEFAULT 'pending', enriched_at TEXT,
+    contact_origin TEXT
+);
+CREATE TABLE awards (
+    tender_id TEXT NOT NULL REFERENCES tenders(tender_id), bid_number TEXT NOT NULL DEFAULT '',
+    vendor_id INTEGER NOT NULL REFERENCES vendors(vendor_id), bidder_name TEXT NOT NULL,
+    rank TEXT, quoted_value TEXT, awarded_value TEXT, awarded_currency TEXT,
+    contract_date TEXT, contract_value TEXT, work_title TEXT,
+    PRIMARY KEY (tender_id, bid_number)
+);
+CREATE INDEX idx_awards_vendor ON awards (vendor_id);
+CREATE TABLE tender_documents (
+    tender_id TEXT NOT NULL REFERENCES tenders(tender_id), filename TEXT NOT NULL,
+    emails TEXT, phones TEXT, gstins TEXT, PRIMARY KEY (tender_id, filename)
+);
+CREATE TABLE outreach (
+    outreach_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor_id INTEGER NOT NULL REFERENCES vendors(vendor_id),
+    email TEXT, subject TEXT, transport TEXT, status TEXT, error TEXT, sent_at TEXT,
+    tender_id TEXT REFERENCES tenders(tender_id)
+);
+INSERT INTO tenders VALUES
+    ('T-1', 'Cable', 'NIT', 'AOC', '21-Sep-2026', 'INR 179,853.24', NULL, '2026-09-30T00:00:00+00:00'),
+    ('T-2', 'Fans', 'NIT', 'AOC', 'not a day', 'about ten lakh', NULL, '2026-09-30T00:00:00+00:00');
+INSERT INTO vendors (name_raw, name_norm, email, enrichment_status, pdf_email)
+    VALUES ('Kept Ltd', 'KEPT LTD', 'hi@kept.example', 'done', '-pdf@kept.example');
+INSERT INTO awards VALUES
+    ('T-1', '77', 1, 'Kept Ltd', 'L1', '46,08,100.00', '179,853.24', NULL, '21-Sep-2026', 'INR 179,853.24', 'Cable'),
+    ('T-2', '78', 1, 'Kept Ltd', NULL, NULL, 'USD 1,000', NULL, NULL, NULL, 'Fans');
+INSERT INTO tender_documents VALUES ('T-1', 'LOA.pdf', '-pdf@kept.example', '', '');
+INSERT INTO outreach (vendor_id, email, subject, transport, status, sent_at, tender_id)
+    VALUES (1, 'hi@kept.example', 'Hello', 'gmail', 'sent', '2026-10-01T00:00:00+00:00', 'T-1');
+"""
+
+
+def _old_release(path):
     conn = sqlite3.connect(path)
-    conn.execute(
-        "CREATE TABLE tenders ("
-        "tender_id TEXT PRIMARY KEY, contract_value TEXT, scraped_at TEXT NOT NULL)"
-    )
-    conn.execute(
-        "INSERT INTO tenders (tender_id, contract_value, scraped_at) "
-        "VALUES ('T-1', 'INR 10', '2026-01-01T00:00:00+00:00')"
-    )
-    conn.execute(
-        "CREATE TABLE vendors ("
-        "vendor_id INTEGER PRIMARY KEY, name_raw TEXT NOT NULL, "
-        "name_norm TEXT NOT NULL UNIQUE, "
-        "enrichment_status TEXT NOT NULL DEFAULT 'pending')"
-    )
-    conn.execute("INSERT INTO vendors (name_raw, name_norm) VALUES ('Kept Ltd', 'KEPT LTD')")
+    conn.executescript(OLD_RELEASE)
     conn.commit()
     conn.close()
 
-    bind = engine(path)
-    ensure_schema(bind)
 
-    bak = path.with_name(path.name + ".bak")
-    assert bak.exists()
-    old = sqlite3.connect(bak)
-    assert old.execute("SELECT contract_value FROM tenders").fetchone()[0] == "INR 10"
-    assert old.execute("SELECT name_raw FROM vendors").fetchone()[0] == "Kept Ltd"
-    old.close()
+def test_text_amounts_are_converted_and_every_row_is_kept(tmp_path):
+    """The client's update must never come back empty."""
+    path = tmp_path / "pipeline.sqlite3"
+    _old_release(path)
+    # A backup from an earlier upgrade must not stop this one from making its own.
+    stale = path.with_name(path.name + ".bak")
+    stale.write_bytes(b"older")
+
+    bind = engine(path)
+    report = ensure_schema(bind)
+
+    assert report.converted == [
+        "tenders 2 rows, 1 amount(s) unreadable and left empty",
+        "awards 2 rows",
+    ]
+    assert stale.read_bytes() == b"older"
+    copy = sqlite3.connect(report.backup)
+    assert copy.execute("SELECT contract_value FROM tenders WHERE tender_id='T-1'").fetchone() == (
+        "INR 179,853.24",
+    )
+    copy.close()
+
+    counts = table_counts(bind)
+    assert (counts["tenders"], counts["awards"], counts["vendors"]) == (2, 2, 1)
+    assert (counts["tender_documents"], counts["outreach"]) == (1, 1)
+    conn = sqlite3.connect(path)
+    assert conn.execute(
+        "SELECT contract_date, contract_value, contract_currency, origin FROM tenders ORDER BY tender_id"
+    ).fetchall() == [
+        ("2026-09-21", 17985324, "INR", "eprocure.gov.in"),
+        ("not a day", None, None, "eprocure.gov.in"),
+    ]
+    assert conn.execute(
+        "SELECT bid_number, quoted_value, awarded_value, awarded_currency FROM awards ORDER BY bid_number"
+    ).fetchall() == [("77", 460810000, 17985324, None), ("78", None, 100000, "USD")]
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert conn.execute("SELECT email, pdf_email, enrichment_status FROM vendors").fetchone() == (
+        "hi@kept.example",
+        "pdf@kept.example",
+        "done",
+    )
+    assert conn.execute("SELECT tender_id, status FROM outreach").fetchone() == ("T-1", "sent")
+    conn.close()
 
     awards = {col["name"] for col in inspect(bind).get_columns("awards")}
     assert "contract_date" not in awards
     assert "contract_value" not in awards
-    assert table_counts(bind)["tenders"] == 0
-    assert table_counts(bind)["vendors"] == 0
-
     again = ensure_schema(bind)
     assert not again.changed
-    assert table_counts(bind)["vendors"] == 0
+    assert again.backup == ""
+
+
+def test_adopt_puts_an_old_backup_back_over_an_empty_database(tmp_path, capsys):
+    """The recovery for a client whose update emptied the database."""
+    from pipeline_core.cli import main
+
+    backup = tmp_path / "pipeline.sqlite3.bak"
+    _old_release(backup)
+    live = tmp_path / "pipeline.sqlite3"
+    bind = engine(live)
+    ensure_schema(bind)
+    # The empty database is in WAL mode and has a log beside it, as on the client.
+    with session(bind) as current:
+        current.add(Vendor(name_raw="Typed After The Wipe", name_norm="TYPED AFTER THE WIPE"))
+    dispose_engines()
+
+    assert main(["--db", str(live), "adopt", str(backup)]) == 1
+    assert main(["--db", str(live), "adopt", str(backup), "--force"]) == 0
+
+    printed = capsys.readouterr().out
+    assert "amounts tenders 2 rows" in printed
+    conn = sqlite3.connect(live)
+    assert conn.execute("SELECT count(*) FROM tenders").fetchone() == (2,)
+    assert conn.execute("SELECT name_raw FROM vendors").fetchall() == [("Kept Ltd",)]
+    assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    conn.close()
+    replaced = [item for item in tmp_path.iterdir() if ".replaced-" in item.name]
+    assert len(replaced) == 1
+    kept = sqlite3.connect(replaced[0])
+    assert kept.execute("SELECT name_raw FROM vendors").fetchall() == [("Typed After The Wipe",)]
+    kept.close()
 
 
 def test_adding_a_not_null_column_is_refused(tmp_path, monkeypatch):

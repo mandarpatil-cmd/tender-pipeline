@@ -5,7 +5,7 @@ Finds companies that win Indian public tenders, looks up a public email and phon
 ```text
   01-scrape          02-enrich            03-outreach
   ─────────          ─────────            ───────────
-  eprocure.gov.in    company name     →   gmail / graph
+  eprocure.gov.in    company name     →   outlook / gmail / graph
       │              email + phone            │
       ▼                   │                   ▼
   tenders                 ▼                outreach
@@ -70,7 +70,7 @@ copy 03-outreach\.env.example 03-outreach\.env
 | --- | --- |
 | `01-scrape\.env` | `OPENROUTER_API_KEY`, used to read the portal captcha. <https://openrouter.ai/keys> |
 | `02-enrich\.env` | `OPENROUTER_API_KEY` and `MODEL`, same account |
-| `03-outreach\.env` | A mailbox: Microsoft 365 (Outlook, the default) or `GMAIL_USER` and `GMAIL_APP_PASSWORD`. The letter is edited on the Mail page. See [03-outreach/README.md](03-outreach/README.md) |
+| `03-outreach\.env` | A mailbox: `OUTLOOK_USER` and `OUTLOOK_PASSWORD` (Microsoft 365, the default), `GMAIL_USER` and `GMAIL_APP_PASSWORD`, or Microsoft Graph as a fallback. The letter is edited on the Mail page. See [03-outreach/README.md](03-outreach/README.md) |
 
 ## Windows
 

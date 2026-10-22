@@ -587,6 +587,12 @@ def credential_gap(transport: str, *, preflight: bool = False) -> str | None:
         ).strip():
             return "Gmail needs GMAIL_USER and GMAIL_APP_PASSWORD in 03-outreach/.env."
         return None
+    if transport == "outlook":
+        if not os.getenv("OUTLOOK_USER", "").strip() or not os.getenv(
+            "OUTLOOK_PASSWORD", ""
+        ).strip():
+            return "Outlook needs OUTLOOK_USER and OUTLOOK_PASSWORD in 03-outreach/.env."
+        return None
     if transport == "graph":
         if not os.getenv("GRAPH_CLIENT_ID", "").strip() or not os.getenv(
             "GRAPH_TENANT_ID", ""
@@ -595,7 +601,7 @@ def credential_gap(transport: str, *, preflight: bool = False) -> str | None:
         if preflight and not os.getenv("OUTLOOK_USER", "").strip():
             return "Preflight needs OUTLOOK_USER in 03-outreach/.env."
         return None
-    return "Transport must be gmail or graph."
+    return "Transport must be gmail, outlook or graph."
 
 
 def load_campaign():

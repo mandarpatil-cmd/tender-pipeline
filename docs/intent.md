@@ -24,7 +24,7 @@ Three stages share one SQLite database at `data/pipeline.sqlite3`.
 
 ```text
   01-scrape          02-enrich            03-outreach
-  eprocure.gov.in    email + phone        gmail / graph
+  eprocure.gov.in    email + phone        outlook / gmail / graph
        │                  │                    │
        ▼                  ▼                    ▼
     tenders            vendors.email        outreach
@@ -200,7 +200,7 @@ The UI says so.
 placeholder, or while the sender name and organisation are unset. Previews
 still work. The UI says why, and what to fix.
 
-**FR-506.** The operator chooses Gmail SMTP or Microsoft Graph. A missing
+**FR-506.** The operator chooses Outlook SMTP, Gmail SMTP or Microsoft Graph. A missing
 credential is reported before the run starts. A delay between sends is
 enforced and cannot be set below a safe floor.
 

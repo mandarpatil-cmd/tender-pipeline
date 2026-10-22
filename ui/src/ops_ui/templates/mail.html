@@ -43,8 +43,9 @@
   <div class="grid">
     <label>Transport
       <select name="transport">
+        <option value="outlook" {% if transport == 'outlook' %}selected{% endif %}>Outlook (email + password)</option>
         <option value="gmail" {% if transport == 'gmail' %}selected{% endif %}>Gmail</option>
-        <option value="graph" {% if transport == 'graph' %}selected{% endif %}>Microsoft Graph</option>
+        <option value="graph" {% if transport == 'graph' %}selected{% endif %}>Outlook via Microsoft Graph</option>
       </select>
     </label>
     <label>Instead, send every message to

@@ -60,9 +60,9 @@ async def post_mail(request: Request, path: Path = Depends(database_path)):
         return Response(snapshot.message, status_code=404, media_type="text/plain")
     form = await request.form()
     mode = str(form.get("mode") or "preview")
-    transport = str(form.get("transport") or "graph")
-    if transport not in {"gmail", "graph"}:
-        transport = "graph"
+    transport = str(form.get("transport") or "outlook")
+    if transport not in {"gmail", "outlook", "graph"}:
+        transport = "outlook"
     include_sent = str(form.get("send_again") or "") in _ON
     preflight = mode == "preflight"
     send = mode == "send"
@@ -258,7 +258,7 @@ def _render(
     *,
     awards: list[tuple[int, str]] | None,
     error: str,
-    transport: str = "graph",
+    transport: str = "outlook",
     delay: float = _DELAY_FLOOR,
     redirect_to: str = "",
     include_sent: bool = False,

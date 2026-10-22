@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import argparse
-import shutil
+import sqlite3
 import sys
 from pathlib import Path
 
 from . import settings
-from .db import dispose_engines, drop_all, engine, ensure_schema, session, table_counts
+from .db import (
+    backup_copy,
+    dispose_engines,
+    drop_all,
+    engine,
+    ensure_schema,
+    session,
+    table_counts,
+)
 from .importer import ImportError_, import_workbook
 from .models import SOURCE_BIDEASY, STATUS_PENDING, TABLES
 from .queries import (
@@ -28,6 +36,19 @@ def _target(args: argparse.Namespace) -> Path:
     return Path(args.db).expanduser() if args.db else settings.db_path()
 
 
+def _print_report(report) -> None:
+    if report.backup:
+        print(f"  backup  {report.backup}")
+    for line in report.converted:
+        print(f"  amounts {line} converted, every row kept")
+    if report.created_tables:
+        print(f"  tables  + {', '.join(report.created_tables)}")
+    if report.added_columns:
+        print(f"  columns + {', '.join(report.added_columns)}")
+    if report.created_indexes:
+        print(f"  indexes + {', '.join(report.created_indexes)}")
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     path = _target(args)
     existed = path.is_file()
@@ -35,12 +56,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     print(f"database  {path}")
     print(f"          {'updated' if existed else 'created'}")
-    if report.created_tables:
-        print(f"  tables  + {', '.join(report.created_tables)}")
-    if report.added_columns:
-        print(f"  columns + {', '.join(report.added_columns)}")
-    if report.created_indexes:
-        print(f"  indexes + {', '.join(report.created_indexes)}")
+    _print_report(report)
     if not report.changed:
         print("          no changes - already up to date")
 
@@ -229,12 +245,20 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
 
 def cmd_adopt(args: argparse.Namespace) -> int:
-    """Take an existing SQLite file as the shared database, then migrate it."""
+    """Take an existing SQLite file as the shared database, then migrate it.
+
+    This is also how a backup is put back. With ``--force`` the database it
+    replaces is first copied to ``<name>.replaced-<time>``, so nothing is lost.
+    Close the window first: the copy must not race a running job.
+    """
     legacy = Path(args.source).expanduser()
     path = _target(args)
 
     if not legacy.is_file():
         print(f"No such file: {legacy}", file=sys.stderr)
+        return 1
+    if legacy.resolve() == path.resolve():
+        print(f"{legacy} is already the shared database.", file=sys.stderr)
         return 1
     if path.is_file() and not args.force:
         print(
@@ -245,21 +269,71 @@ def cmd_adopt(args: argparse.Namespace) -> int:
 
     dispose_engines()
     path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(legacy, path)
+    if path.is_file():
+        kept = backup_copy(path, "replaced")
+        print(f"kept      {path}")
+        print(f"      ->  {kept}")
+    # SQLite's backup, not a file copy: it reads the source's log and rewrites
+    # the target's, so a -wal left beside either file cannot mix the two.
+    source = sqlite3.connect(legacy)
+    target = sqlite3.connect(path)
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
     print(f"copied    {legacy}")
     print(f"      ->  {path}")
 
     report = ensure_schema(engine(path))
-    if report.created_tables:
-        print(f"  tables  + {', '.join(report.created_tables)}")
-    if report.added_columns:
-        print(f"  columns + {', '.join(report.added_columns)}")
-    if report.created_indexes:
-        print(f"  indexes + {', '.join(report.created_indexes)}")
+    _print_report(report)
 
     print("\nrows carried over:")
     for name, count in table_counts(engine(path)).items():
         print(f"  {name:<10} {count:>6}")
+    return 0
+
+
+def cmd_merge(args: argparse.Namespace) -> int:
+    """Add an older copy's rows into the live database. Nothing already there is lost.
+
+    For a database an upgrade emptied after work carried on in it. Close the
+    window first. The live file is copied aside before anything is written.
+    """
+    from .merge import merge_backup
+
+    old = Path(args.source).expanduser()
+    path = _target(args)
+    if not old.is_file():
+        print(f"No such file: {old}", file=sys.stderr)
+        return 1
+    if not path.is_file():
+        print(f"{path} does not exist. Use: pipeline-db adopt {old}", file=sys.stderr)
+        return 1
+
+    dispose_engines()
+    try:
+        report = merge_backup(path, old, letter=args.letter)
+    except (RuntimeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(f"database  {path}")
+    print(f"  backup  {report.backup}")
+    print(f"  merged  {old}")
+    print("\nrows added from the old copy:")
+    for name, count in report.added.items():
+        print(f"  {name:<16} {count:>6}")
+    if not report.added:
+        print("  none - everything in it is already here")
+    if report.filled:
+        print("\nrows already here that took missing values from it:")
+        for name, count in report.filled.items():
+            print(f"  {name:<16} {count:>6}")
+    print(f"\nmail letter: the {'old copy' if report.letter == 'backup' else 'current'} one")
+    print("\nrows now:")
+    for name, count in table_counts(engine(path)).items():
+        print(f"  {name:<16} {count:>6}")
     return 0
 
 
@@ -365,6 +439,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="Overwrite the shared database if it exists"
     )
     adopt.set_defaults(func=cmd_adopt)
+
+    merge = sub.add_parser(
+        "merge", help="Add an older copy's rows into the database, keeping what is here"
+    )
+    merge.add_argument("source", help="Path to the older SQLite file, e.g. data/pipeline.sqlite3.bak")
+    merge.add_argument(
+        "--letter",
+        choices=("backup", "current"),
+        default="backup",
+        help="Which saved mail letter to keep (default: the one in the older copy)",
+    )
+    merge.set_defaults(func=cmd_merge)
 
     imp = sub.add_parser("import-xlsx", help="Insert companies from spreadsheets as vendors")
     imp.add_argument("files", nargs="+", help="One or more .xlsx files")

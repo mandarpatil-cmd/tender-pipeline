@@ -62,10 +62,12 @@ from transport import TRANSPORTS  # noqa: E402
 # Edit these, save, then run:  python main.py
 
 # Which mailer to use. Only the one you name here is ever loaded.
-# Both send the same letter and the same two PDFs.
-#   "graph" -> Outlook via Microsoft 365, needs GRAPH_CLIENT_ID + GRAPH_TENANT_ID in .env
-#   "gmail" -> Gmail SMTP, needs GMAIL_USER + GMAIL_APP_PASSWORD in .env
-TRANSPORT = "graph"
+# All three send the same letter and the same two PDFs.
+#   "outlook" -> Microsoft 365 SMTP, needs OUTLOOK_USER + OUTLOOK_PASSWORD in .env
+#   "graph"   -> Outlook via Microsoft Graph, needs GRAPH_CLIENT_ID + GRAPH_TENANT_ID in .env
+#                Use it if the tenant blocks password sign-in over SMTP.
+#   "gmail"   -> Gmail SMTP, needs GMAIL_USER + GMAIL_APP_PASSWORD in .env
+TRANSPORT = "outlook"
 
 # False -> dry run: write previews/*.txt and send nothing.
 # True  -> actually transmit to every vendor with an address who has not
@@ -73,7 +75,7 @@ TRANSPORT = "graph"
 SEND = False
 
 # True -> send ONE test mail to yourself and stop. Proves auth works.
-#         Recipient is GMAIL_USER (gmail) or OUTLOOK_USER (graph).
+#         Recipient is GMAIL_USER (gmail) or OUTLOOK_USER (outlook, graph).
 #         Overrides everything below, and is not logged as outreach.
 PREFLIGHT = False
 

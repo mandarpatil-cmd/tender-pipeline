@@ -1,7 +1,7 @@
 # stage3-outreach
 
-Mails the vendors the pipeline has found an address for, once each, through Gmail SMTP
-or Microsoft Graph.
+Mails the vendors the pipeline has found an address for, once each, through Outlook
+(Microsoft 365) SMTP, Gmail SMTP, or Microsoft Graph.
 
 This is **stage 3 of three**:
 
@@ -53,7 +53,7 @@ Then, in order, changing the `CONFIG` block in `main.py` each time:
 4. `SEND = True`, `TO = None`, `LIMIT` to taste — the real thing.
 
 A live send (steps 3 and 4) refuses to start while the saved letter is not ready —
-see [The message](#the-message). Outlook is the default
+see [The message](#the-message). Outlook (email + password) is the default
 transport. There is a from-scratch explanation in
 [learn/how-mail-works.md](../learn/how-mail-works.md).
 
@@ -101,7 +101,7 @@ Everything is in the `CONFIG` block at the top of `main.py`. There are no flags.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `TRANSPORT` | `"graph"` | `"graph"` (Outlook) or `"gmail"`. Only the one you name is imported. Both send the same letter and the same two PDFs |
+| `TRANSPORT` | `"outlook"` | `"outlook"` (Microsoft 365 SMTP), `"graph"` (Outlook via Microsoft Graph) or `"gmail"`. Only the one you name is imported. All three send the same letter and the same two PDFs |
 | `SEND` | `False` | `False` writes previews and mails nobody |
 | `PREFLIGHT` | `False` | `True` = one test mail to yourself, then stop. Overrides everything below |
 | `LIMIT` | `None` | `None` = everyone remaining; an int caps the batch |
@@ -118,6 +118,7 @@ Everything is in the `CONFIG` block at the top of `main.py`. There are no flags.
 | For | Variables |
 | --- | --- |
 | the letter | Edited on the Mail page: subject, body, signature, and PDFs. `{{company}}` is filled in for each company. The signature email is not the From address |
+| `outlook` | `OUTLOOK_USER`, `OUTLOOK_PASSWORD` (an app password if the account has MFA) — see [Using Outlook](#using-outlook) |
 | `gmail` | `GMAIL_USER`, `GMAIL_APP_PASSWORD` (an [App Password](https://myaccount.google.com/apppasswords), not your login; needs 2-Step Verification) |
 | `graph` | `GRAPH_CLIENT_ID`, `GRAPH_TENANT_ID`, `OUTLOOK_USER` — see [Using Microsoft Graph](#using-microsoft-graph) |
 
@@ -138,16 +139,40 @@ close(self)                            tear down
 A transport raises `TransportError` when one recipient fails. That is what lets the run
 log the address and carry on to the next person instead of stopping.
 
-Imports live **inside** `build_transport`, so choosing `"gmail"` never loads `msal`, and
-choosing `"graph"` never opens `smtplib`.
+Imports live **inside** `build_transport`, so choosing `"gmail"` or `"outlook"` never
+loads `msal`, and choosing `"graph"` never opens `smtplib`.
+
+---
+
+## Using Outlook
+
+`TRANSPORT = "outlook"` signs in to `smtp.office365.com:587` (STARTTLS) with
+`OUTLOOK_USER` and `OUTLOOK_PASSWORD`. The From address is `OUTLOOK_USER`. It works with a
+**Microsoft 365 work mailbox**. Personal Outlook.com / Hotmail accounts no longer accept a
+password over SMTP.
+
+The tenant has to allow password sign-in over SMTP. A Microsoft 365 admin checks these:
+
+1. **Authenticated SMTP is on for the mailbox.** Admin centre → Users → Active users →
+   the user → Mail → Manage email apps → *Authenticated SMTP*. Or, in Exchange Online
+   PowerShell: `Set-CASMailbox <user> -SmtpClientAuthenticationDisabled $false`.
+2. **Nothing blocks it.** Entra *Security defaults* and Conditional Access policies that
+   block legacy authentication both refuse it.
+3. **MFA.** If the account has MFA, `OUTLOOK_PASSWORD` must be an app password.
+
+When sign-in is refused, the run prints the Exchange error and which of these settings to
+change.
+
+Microsoft plans to turn password SMTP **off by default for existing tenants at the end of
+December 2026**. An admin can turn it back on. The final removal date will be announced
+in the second half of 2027. If it is blocked, switch to `"graph"`, below.
 
 ---
 
 ## Using Microsoft Graph
 
-Use this when the mailbox is Microsoft 365 and SMTP sign-in is disabled for the tenant,
-as many organisations now do. It needs a one-time app registration by a Microsoft 365 /
-Entra admin:
+The fallback when the tenant blocks password sign-in over SMTP, as many organisations
+now do. It needs a one-time app registration by a Microsoft 365 / Entra admin:
 
 1. **Entra ID → App registrations → New registration.** Any name. Supported account
    types: *this organizational directory only*. Redirect URI: none.
@@ -161,8 +186,8 @@ Entra admin:
    `OUTLOOK_USER` to the mailbox that receives the preflight. The From address is
    whichever account completes the device-code login.
 
-`TRANSPORT` is already `"graph"` in `main.py`. Run a preflight once those values are
-set. The first run prints a code to enter at <https://microsoft.com/devicelogin>. After
+Set `TRANSPORT = "graph"` in `main.py` (or pick *Outlook via Microsoft Graph* on the Mail
+page), then run a preflight once those values are set. The first run prints a code to enter at <https://microsoft.com/devicelogin>. After
 that the sign-in is cached in `.msal_token_cache.json` (never committed) and later runs
 are silent. To revoke access, delete the app registration. Until the client id and
 tenant id are filled in, a live send stops before any request. Preview does not need them.
@@ -200,8 +225,9 @@ is still in the letter.
 ├── get_data.py                 # download the send queue as CSV + Excel
 ├── campaign.py                 # recipients, rendering, previews, send loop, logging
 ├── transport.py                # the contract + build_transport
+├── outlook/send.py             # Microsoft 365 SMTP, STARTTLS, address + password
 ├── gmail/send.py               # SMTP over TLS, same letter and PDFs
-├── graph/auth.py, send.py      # MSAL device-code + Graph sendMail
+├── graph/auth.py, send.py      # MSAL device-code + Graph sendMail (fallback)
 ├── attachments/                # the two PDFs attached to every message
 ├── previews/                   # dry-run output (gitignored)
 ├── exports/                    # get_data.py output (gitignored)

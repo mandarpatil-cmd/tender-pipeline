@@ -665,6 +665,16 @@ def preflight(transport_name: str = "gmail", bind=None) -> int:
             return 1
         subject = "Gmail preflight - send test"
         body = "If you are reading this, Gmail SMTP is working and this mailbox can send the campaign."
+    elif transport_name == "outlook":
+        self_addr = os.getenv("OUTLOOK_USER")
+        if not self_addr:
+            print("Missing OUTLOOK_USER in .env - needed as the test recipient.", file=sys.stderr)
+            return 1
+        subject = "Outlook preflight - SMTP send test"
+        body = (
+            "If you are reading this, Outlook SMTP is working "
+            "and this mailbox can send the campaign."
+        )
     else:
         self_addr = os.getenv("OUTLOOK_USER")
         if not self_addr:
