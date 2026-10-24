@@ -119,8 +119,14 @@ def write_sheet(
         frame[column] = frame[column].replace("", MISSING)
     csv_path = export_dir / f"{basename}.csv"
     xlsx_path = export_dir / f"{basename}.xlsx"
-    frame.to_csv(csv_path, index=False)
-    frame.to_excel(xlsx_path, index=False)
+    try:
+        frame.to_csv(csv_path, index=False)
+        frame.to_excel(xlsx_path, index=False)
+    except PermissionError as exc:
+        raise ExportError(
+            f"{Path(exc.filename or xlsx_path).name} is open in Excel, so it was not rewritten. "
+            "Close it and export again. The tenders are saved."
+        ) from exc
     return csv_path, xlsx_path
 
 

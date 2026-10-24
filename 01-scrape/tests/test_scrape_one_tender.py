@@ -144,3 +144,26 @@ def test_a_scrape_without_pdfs_leaves_the_stored_clues(tmp_path, monkeypatch, ht
     scrape_one_tender(FakePortal(html), LISTING, store, download_pdfs=False)
 
     assert _stored(store) == before
+
+
+def test_scraping_a_tender_again_keeps_one_company_one_award_and_its_lookup(tmp_path, monkeypatch, html):
+    from pipeline_core.queries import mark_enriched
+
+    _fake_reader(monkeypatch)
+    store = Store(tmp_path / "out")
+    scrape_one_tender(FakePortal(html), LISTING, store, download_pdfs=True)
+    with session(store.engine) as current:
+        winner = current.scalar(select(Vendor))
+        mark_enriched(current, winner.vendor_id, email="found@winner.example", phone="9876543210")
+
+    scrape_one_tender(FakePortal(html), LISTING, store, download_pdfs=True)
+
+    with session(store.engine) as current:
+        assert current.query(Vendor).count() == 1
+        assert current.query(Award).count() == 1
+        vendor = current.scalar(select(Vendor))
+        assert (vendor.email, vendor.phone, vendor.enrichment_status) == (
+            "found@winner.example",
+            "9876543210",
+            "done",
+        )

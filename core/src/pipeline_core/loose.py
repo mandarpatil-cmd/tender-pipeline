@@ -26,6 +26,20 @@ _MONTHS = {
 }
 _NAMED_MONTH = re.compile(r"(\d{1,2})[- /.]([A-Za-z]{3,9})[- /.](\d{4})")
 _NUMERIC_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y")
+#: Digits with grouping commas and one decimal part. A dot after letters, as in
+#: ``Rs.``, is not a decimal point.
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?|(?<![A-Za-z.])\.\d+")
+
+
+def number_text(value: object) -> str | None:
+    """The one number in mixed text, without its commas. None unless there is exactly one.
+
+    ``Rs. 2,50,000/-`` is ``250000``. ``5,00,000 + GST 18%`` is None: two numbers.
+    """
+    found = _NUMBER.findall(str(value or ""))
+    if len(found) != 1:
+        return None
+    return found[0].replace(",", "")
 
 
 def loose_date(value: object) -> str | None:
@@ -57,11 +71,8 @@ def loose_number(value: object) -> float | None:
     """A float parsed from mixed text, or None when no single number is there."""
     if value is None:
         return None
-    text = str(value).strip()
-    if not any(character.isdigit() for character in text):
-        return None
-    digits = "".join(character for character in text if character.isdigit() or character == ".")
-    if digits.count(".") > 1 or digits in {"", "."}:
+    digits = number_text(value)
+    if digits is None:
         return None
     try:
         return float(digits)

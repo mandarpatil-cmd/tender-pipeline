@@ -249,3 +249,41 @@ def test_an_accepted_read_reports_the_search(tmp_path, monkeypatch):
 
     assert submitted == ["OCR123"]
     assert done == [True]
+
+
+def test_asking_to_type_before_the_first_read_spends_no_read(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    client = MagicMock()
+    client.fetch_search_form.return_value = "<form></form>"
+    submitted: list[str] = []
+    _rejecting_reads(monkeypatch, submitted, accepted="TYPED1")
+
+    pipeline._search_with_captcha(
+        client,
+        store,
+        None,
+        retries=5,
+        captcha_solver="openrouter",
+        ask=lambda path: "TYPED1",
+        prefer_typed=lambda: True,
+    )
+
+    assert submitted == ["TYPED1"]
+
+
+def test_an_accepted_search_with_no_rows_is_reported_then_refused(tmp_path, monkeypatch):
+    """The portal took the code, so the search counts; an empty result is still an error."""
+    store = Store(tmp_path)
+    client = MagicMock()
+    client.fetch_search_form.return_value = "<form></form>"
+    submitted: list[str] = []
+    done: list[bool] = []
+    _rejecting_reads(monkeypatch, submitted, accepted="OCR123")
+    monkeypatch.setattr(pipeline, "parse_results_table", lambda html: [])
+
+    with pytest.raises(pipeline.ParseError):
+        pipeline._search_with_captcha(
+            client, store, None, retries=1, captcha_solver="openrouter", searched=lambda: done.append(1)
+        )
+
+    assert done == [1]

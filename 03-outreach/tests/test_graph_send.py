@@ -143,3 +143,24 @@ def test_no_answer_after_the_message_went_up_is_not_a_failure(monkeypatch):
 
     with pytest.raises(requests.ReadTimeout):
         transport.send("a@b.example", "Subject", "Body")
+
+
+@pytest.mark.parametrize("status", [400, 403, 500, 503])
+def test_any_other_answer_fails_that_recipient_with_its_status(monkeypatch, status):
+    transport, _ = _transport(monkeypatch, [FakeResponse(status, text="nope")])
+
+    with pytest.raises(GraphError, match=f"HTTP {status}"):
+        transport.send("a@b.example", "Subject", "Body")
+
+
+def test_a_retry_after_given_as_a_date_waits_the_cap(monkeypatch):
+    waits = []
+    monkeypatch.setattr("graph.send.time.sleep", waits.append)
+    transport, _ = _transport(
+        monkeypatch,
+        [FakeResponse(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}), FakeResponse(202)],
+    )
+
+    transport.send("a@b.example", "Subject", "Body")
+
+    assert waits == [RETRY_CAP_SECONDS]

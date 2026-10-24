@@ -45,3 +45,17 @@ def test_with_a_key_the_preflight_names_the_model(stage_main, monkeypatch, capsy
     stage_main.preflight()
 
     assert "OPENROUTER_API_KEY  ok" in capsys.readouterr().out
+
+
+def test_a_portal_failure_ends_the_run_with_a_message_not_a_traceback(stage_main, monkeypatch, capsys):
+    from stage1_scrape.domain.errors import ScraperError
+
+    monkeypatch.setattr(stage_main, "preflight", lambda: None)
+
+    def broken(out):
+        raise ScraperError("GET failed for https://eprocure.gov.in: 503 Server Error")
+
+    monkeypatch.setattr(stage_main, "scrape", broken)
+
+    assert stage_main.main() == 1
+    assert "Failed: GET failed" in capsys.readouterr().err

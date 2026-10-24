@@ -7,6 +7,7 @@ from typing import Any
 
 from stage1_scrape.app.pipeline import SEARCH_AWARDED, scrape_aoc
 from stage1_scrape.config import DEFAULT_DELAY_SECONDS
+from stage1_scrape.domain.errors import ExportError
 from stage1_scrape.export.vendor_sheet import write_vendor_sheet
 from stage1_scrape.persist.store import Store
 
@@ -60,7 +61,12 @@ def run_scrape(
         searched=searched,
     )
     store = Store(out_dir)
-    csv_path, xlsx_path = write_vendor_sheet(store, out_dir)
+    try:
+        csv_path, xlsx_path = write_vendor_sheet(store, out_dir)
+    except ExportError as exc:
+        # The scrape itself worked. Only the spreadsheet copy is out of date.
+        log.warning("%s", exc)
+        csv_path = xlsx_path = ""
 
     if not records:
         log.info(

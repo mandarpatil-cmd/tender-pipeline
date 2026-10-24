@@ -121,3 +121,35 @@ def test_rewriting_the_sheet_does_not_accumulate_rows(tmp_path):
 
     frame = pandas.read_csv(csv_path, dtype=str, keep_default_na=False)
     assert len(frame) == 1
+
+
+def test_a_sheet_open_in_excel_is_a_clear_export_error(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from stage1_scrape.domain.errors import ExportError
+    from stage1_scrape.export.vendor_sheet import write_sheet
+
+    def locked(self, path, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(pd.DataFrame, "to_excel", locked)
+
+    with pytest.raises(ExportError, match="open in Excel"):
+        write_sheet([], tmp_path)
+
+
+def test_a_scrape_whose_sheet_cannot_be_written_still_reports_its_tenders(tmp_path, monkeypatch, caplog):
+    from stage1_scrape.app import run
+    from stage1_scrape.domain.errors import ExportError
+
+    def locked(store, out_dir):
+        raise ExportError("vendors.xlsx is open in Excel. Close it and run again.")
+
+    monkeypatch.setattr(run, "scrape_aoc", lambda out, **kwargs: [])
+    monkeypatch.setattr(run, "write_vendor_sheet", locked)
+
+    result = run.run_scrape(tmp_path)
+
+    assert result["scraped"] == 0
+    assert result["xlsx"] == ""
+    assert "open in Excel" in caplog.text

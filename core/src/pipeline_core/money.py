@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
 
-from .loose import loose_date
+from .loose import loose_date, number_text
 
 _CODES = ("INR", "USD", "EUR", "GBP")
 
@@ -35,10 +35,8 @@ def parse_money(value: object) -> tuple[int | None, str | None]:
     if not text:
         return None, None
     currency = _currency(text)
-    if not any(character.isdigit() for character in text):
-        return None, currency
-    digits = "".join(character for character in text if character.isdigit() or character == ".")
-    if digits.count(".") > 1 or digits in {"", "."}:
+    digits = number_text(text)
+    if digits is None:
         return None, currency
     try:
         hundredths = int(

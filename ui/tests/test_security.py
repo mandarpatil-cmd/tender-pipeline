@@ -110,3 +110,26 @@ def test_a_local_back_link_is_kept(tmp_path):
     )
 
     assert answer.headers["location"] == back
+
+
+def test_no_page_shows_a_secret(tmp_path, monkeypatch):
+    """NFR-3: the window may say a setting is missing, never what it holds."""
+    secrets = {
+        "OUTLOOK_USER": "me@company.example",
+        "OUTLOOK_PASSWORD": "Pw-6c1f-NEVER-SHOWN",
+        "GMAIL_APP_PASSWORD": "gm-4d2e-NEVER-SHOWN",
+        "GRAPH_CLIENT_ID": "id-9a7b-NEVER-SHOWN",
+        "OPENROUTER_API_KEY": "sk-or-8e3a-NEVER-SHOWN",
+    }
+    for name, value in secrets.items():
+        monkeypatch.setenv(name, value)
+    client, vendor_id = _seeded(tmp_path)
+
+    pages = [client.get(url).text for url in ["/", "/scrape", "/enrich", "/mail", "/jobs"]]
+    pages.append(client.post("/mail", data={"mode": "preflight", "transport": "gmail"}).text)
+    pages.append(client.post("/mail", data={"mode": "send", "award": f"{vendor_id}:T-1"}).text)
+
+    for page in pages:
+        for name, value in secrets.items():
+            if name != "OUTLOOK_USER":
+                assert value not in page, name

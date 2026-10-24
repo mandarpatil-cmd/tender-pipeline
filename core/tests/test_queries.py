@@ -1112,3 +1112,19 @@ def test_a_bid_number_listed_twice_is_one_award_not_a_crash(bind):
     assert written == 1
     with session(bind) as s:
         assert [(a.bid_number, a.vendor_id) for a in s.query(Award).all()] == [("77", first)]
+
+
+def test_the_send_queue_can_be_narrowed_to_a_count_or_to_companies(bind):
+    with session(bind) as s:
+        ids = []
+        for index in range(3):
+            vendor_id = upsert_vendor(s, name_raw=f"Company {index} Ltd")
+            mark_enriched(s, vendor_id, email=f"c{index}@x.example", phone=None)
+            _award(s, vendor_id, f"T-{index}", "2020-01-01T00:00:00+00:00", f"Company {index} Ltd")
+            ids.append(vendor_id)
+
+    with session(bind) as s:
+        assert len(mail_messages(s)) == 3
+        assert len(mail_messages(s, limit=2)) == 2
+        assert {m.vendor_id for m in mail_messages(s, vendor_ids=[ids[1]])} == {ids[1]}
+        assert mail_messages(s, vendor_ids=[]) == []

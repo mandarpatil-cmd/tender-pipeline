@@ -106,7 +106,7 @@ _require(
 )
 
 from stage1_scrape.app.pipeline import scrape_aoc                    # noqa: E402
-from stage1_scrape.domain.errors import CaptchaError                  # noqa: E402
+from stage1_scrape.domain.errors import CaptchaError, ScraperError    # noqa: E402
 from stage1_scrape.export.vendor_sheet import write_vendor_sheet      # noqa: E402
 from stage1_scrape.persist.store import Store                         # noqa: E402
 from stage1_scrape.settings import (                                  # noqa: E402
@@ -344,7 +344,8 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\n\nStopped. Anything already saved is still on disk.")
         return 130
-    except CaptchaError as exc:
+    except ScraperError as exc:
+        # The captcha, the portal, or the sheet. What was saved stays saved.
         print(f"\nFailed: {exc}", file=sys.stderr)
         return 1
 
