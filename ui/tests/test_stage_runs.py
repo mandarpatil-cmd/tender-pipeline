@@ -85,7 +85,8 @@ def test_scrape_and_enrich_and_mail_stay_on_their_pages(tmp_path, monkeypatch):
         )
     monkeypatch.setattr("ops_ui.routes.jobs.run_scrape", lambda log, stop, **params: 0)
     monkeypatch.setattr("ops_ui.routes.jobs.run_enrich", lambda log, stop, **params: 0)
-    monkeypatch.setattr("ops_ui.runs.run_outreach", lambda log, stop, **params: 0)
+    monkeypatch.setattr("ops_ui.routes.entry.run_enrich", lambda log, stop, **params: 0)
+    monkeypatch.setattr("ops_ui.routes.mail.run_outreach", lambda log, stop, **params: 0)
     client = TestClient(create_app(path))
 
     scrape = client.post("/jobs/scrape", data={"search": "awarded"}, follow_redirects=False)
