@@ -66,15 +66,21 @@ class GraphTransport:
         files = _file_attachments(attachments)
         if files:
             message["attachments"] = files
-        resp = self._session.post(
-            SENDMAIL_URL,
-            headers={
-                "Authorization": f"Bearer {self._token}",
-                "Content-Type": "application/json",
-            },
-            json={"message": message, "saveToSentItems": True},
-            timeout=TIMEOUT_SECONDS,
-        )
+        # A connection that could not open, or was cut, fails this recipient like
+        # a dropped SMTP connection. A timeout waiting for the answer is left to
+        # the caller: Graph may have queued the message, so it is not retried.
+        try:
+            resp = self._session.post(
+                SENDMAIL_URL,
+                headers={
+                    "Authorization": f"Bearer {self._token}",
+                    "Content-Type": "application/json",
+                },
+                json={"message": message, "saveToSentItems": True},
+                timeout=TIMEOUT_SECONDS,
+            )
+        except requests.ConnectionError as err:
+            raise GraphError(f"Could not reach Graph: {err}") from err
         # 202 Accepted = Graph has queued it. Anything else is a failure.
         if resp.status_code == 202:
             return

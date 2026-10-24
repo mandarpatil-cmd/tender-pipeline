@@ -259,13 +259,20 @@ def replace_awards(session: Session, tender_id: str, rows: Iterable[dict[str, An
 
     Quoted and awarded amounts are parsed to hundredths. Contract date and
     contract value are not copied onto the award; the tender row holds them.
+    A bid number is the award's key, so a second row with the same one is
+    skipped rather than failing the whole save.
     """
     session.query(Award).filter(Award.tender_id == tender_id).delete(
         synchronize_session=False
     )
     written = 0
+    seen: set[str] = set()
     for row in rows:
-        session.execute(sqlite_insert(Award).values(tender_id=tender_id, **_stored_award(row)))
+        values = _stored_award(row)
+        if values["bid_number"] in seen:
+            continue
+        seen.add(values["bid_number"])
+        session.execute(sqlite_insert(Award).values(tender_id=tender_id, **values))
         written += 1
     return written
 
@@ -1588,17 +1595,24 @@ def enrichment_by_source(session: Session) -> dict[str, dict[str, int]]:
 
 
 def _vendor_has_email():
-    """The company column, or any valid email row."""
+    """The company column, or any valid email row, judged by today's address rule.
+
+    A row's stored ``valid`` can predate a buyer marker. The mail queue checks
+    the address again, so this does too, and the counts match what is mailed.
+    """
     contact = (
         select(VendorContact.contact_id)
         .where(
             VendorContact.vendor_id == Vendor.vendor_id,
             VendorContact.channel == CHANNEL_EMAIL,
             VendorContact.valid == 1,
+            _is_email_sql(VendorContact.value),
+            ~_is_buyer_sql(VendorContact.value),
         )
         .exists()
     )
-    return or_(and_(Vendor.email.is_not(None), Vendor.email != ""), contact)
+    company = and_(_is_email_sql(Vendor.email), ~_is_buyer_sql(Vendor.email))
+    return or_(company, contact)
 
 
 def contact_breakdown(session: Session) -> dict[str, int]:
@@ -2326,6 +2340,9 @@ def delete_vendors_by_source(session: Session, source: str) -> int:
     statement and with an opaque message -- and a caller that meant to drop
     imported rows should hear "these are referenced" rather than an
     IntegrityError.
+
+    The vendors' own `vendor_contacts` rows go with them: those are the
+    company's addresses, and `init` writes one for every stored email.
     """
     doomed = select(Vendor.vendor_id).where(Vendor.source == source)
     for model, label in ((Award, "awards"), (LlmRun, "llm_runs"), (Outreach, "outreach")):
@@ -2340,6 +2357,9 @@ def delete_vendors_by_source(session: Session, source: str) -> int:
                 f"Refusing to delete source={source!r}: {referencing} {label} row(s) "
                 "reference these vendors. Remove them first, or keep the vendors."
             )
+    session.query(VendorContact).filter(VendorContact.vendor_id.in_(doomed)).delete(
+        synchronize_session=False
+    )
     return int(
         session.query(Vendor)
         .filter(Vendor.source == source)

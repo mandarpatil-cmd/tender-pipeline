@@ -44,8 +44,15 @@ class GmailTransport:
         self._server = self._connect()
 
     def _connect(self) -> smtplib.SMTP_SSL:
-        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30)
-        server.login(self._user, self._password)
+        try:
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30)
+        except OSError as err:
+            raise GmailError(f"Could not reach {SMTP_HOST}: {err}") from err
+        try:
+            server.login(self._user, self._password)
+        except (smtplib.SMTPException, OSError) as err:
+            server.close()
+            raise GmailError(f"Gmail sign-in failed: {err}") from err
         return server
 
     def send(
@@ -67,7 +74,10 @@ class GmailTransport:
         except smtplib.SMTPServerDisconnected:
             print("  connection dropped, reconnecting ...")
             self._server = self._connect()
-            self._server.send_message(msg)
+            try:
+                self._server.send_message(msg)
+            except smtplib.SMTPException as err:
+                raise GmailError(str(err)) from err
         except smtplib.SMTPException as err:
             raise GmailError(str(err)) from err
 

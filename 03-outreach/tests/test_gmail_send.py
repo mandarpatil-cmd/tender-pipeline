@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import smtplib
 
-from gmail.send import GmailTransport
+import pytest
+
+from gmail.send import GmailError, GmailTransport
 
 
 class FakeSMTP:
@@ -23,6 +25,9 @@ class FakeSMTP:
     def quit(self) -> None:
         return None
 
+    def close(self) -> None:
+        return None
+
 
 def _transport(monkeypatch, servers: list[FakeSMTP]) -> GmailTransport:
     monkeypatch.setenv("GMAIL_USER", "me@gmail.com")
@@ -30,7 +35,10 @@ def _transport(monkeypatch, servers: list[FakeSMTP]) -> GmailTransport:
     pending = list(servers)
 
     def connect(*_args, **_kwargs):
-        return pending.pop(0)
+        server = pending.pop(0)
+        if isinstance(server, Exception):
+            raise server
+        return server
 
     monkeypatch.setattr("gmail.send.smtplib.SMTP_SSL", connect)
     return GmailTransport()
@@ -73,3 +81,32 @@ def test_a_dropped_connection_resends_the_same_message(monkeypatch):
     msg = second.sent[0]
     assert [part.get_filename() for part in msg.iter_attachments()] == ["one.pdf", "two.pdf"]
     assert list(msg.iter_attachments())[1].get_payload(decode=True) == b"BBB"
+
+
+class RefusingSMTP(FakeSMTP):
+    def send_message(self, msg) -> None:
+        raise smtplib.SMTPRecipientsRefused({"a@b.example": (550, b"no such user")})
+
+
+class LockedSMTP(FakeSMTP):
+    def login(self, user: str, password: str) -> None:
+        raise smtplib.SMTPAuthenticationError(535, b"Username and Password not accepted")
+
+
+def test_a_reconnect_that_cannot_reach_gmail_fails_that_recipient(monkeypatch):
+    transport = _transport(monkeypatch, [FakeSMTP(fail=True), OSError("getaddrinfo failed")])
+
+    with pytest.raises(GmailError, match="getaddrinfo failed"):
+        transport.send("a@b.example", "Subject", "Body")
+
+
+def test_a_resend_the_server_refuses_fails_that_recipient(monkeypatch):
+    transport = _transport(monkeypatch, [FakeSMTP(fail=True), RefusingSMTP()])
+
+    with pytest.raises(GmailError, match="no such user"):
+        transport.send("a@b.example", "Subject", "Body")
+
+
+def test_a_refused_sign_in_is_a_gmail_error(monkeypatch):
+    with pytest.raises(GmailError, match="not accepted"):
+        _transport(monkeypatch, [LockedSMTP()])

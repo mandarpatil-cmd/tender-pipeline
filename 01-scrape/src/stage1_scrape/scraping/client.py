@@ -62,11 +62,17 @@ class GePNICClient:
             log.debug("Could not close the HTTP connection pool", exc_info=True)
 
     def _send(self, verb: str, url: str, call):
-        """Run one HTTP call. A connection, DNS, or read stall is tried again."""
+        """Run one HTTP call. A connection, DNS, or read stall is tried again.
+
+        An HTTP error status is a `ScraperError` at once, so a run stops cleanly
+        and keeps what it saved.
+        """
         last: Exception | None = None
         for attempt in range(1, _TRANSIENT_ATTEMPTS + 1):
             try:
-                return call()
+                response = call()
+                response.raise_for_status()
+                return response
             except requests.RequestException as exc:
                 last = exc
                 if attempt >= _TRANSIENT_ATTEMPTS or not _is_transient(exc):
@@ -93,7 +99,6 @@ class GePNICClient:
             url,
             lambda: self.session.get(url, headers=headers, timeout=self.timeout),
         )
-        response.raise_for_status()
         self._last_url = response.url
         return response
 
@@ -121,7 +126,6 @@ class GePNICClient:
                 timeout=self.timeout,
             ),
         )
-        response.raise_for_status()
         self._last_url = response.url
         return response
 

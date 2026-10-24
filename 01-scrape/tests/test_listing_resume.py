@@ -204,3 +204,60 @@ def test_get_does_not_retry_a_non_connection_error(monkeypatch):
         raise AssertionError("expected ScraperError")
 
     assert calls["n"] == 1
+
+
+def _answer(status: int) -> requests.Response:
+    response = requests.Response()
+    response.status_code = status
+    response.url = "https://eprocure.gov.in/eprocure/app"
+    response.reason = "Server Error"
+    return response
+
+
+def test_an_http_error_is_a_scraper_error_and_is_not_retried(monkeypatch):
+    client = GePNICClient(delay=0)
+    calls = {"get": 0, "post": 0}
+
+    def get(url, headers, timeout):
+        calls["get"] += 1
+        return _answer(500)
+
+    def post(url, data, headers, timeout):
+        calls["post"] += 1
+        return _answer(503)
+
+    client.session.get = get
+    client.session.post = post
+
+    for send in (lambda: client.get("https://eprocure.gov.in/eprocure/app"), lambda: client.post([])):
+        try:
+            send()
+        except ScraperError as exc:
+            assert "50" in str(exc)
+        else:
+            raise AssertionError("expected ScraperError")
+
+    assert calls == {"get": 1, "post": 1}
+
+
+def test_a_server_error_on_the_next_page_keeps_the_saved_tender(tmp_path, monkeypatch):
+    """The real client, so the HTTP status reaches the pipeline as it would live."""
+    order = []
+
+    class Client(GePNICClient):
+        def __init__(self, delay=0) -> None:
+            super().__init__(delay=0)
+            self.session.get = lambda url, headers, timeout: _answer(500)
+
+    def save_one(client, listing, store, download_pdfs, **_kwargs):
+        order.append(listing.tender_id)
+        return TenderRecord(listing=listing)
+
+    monkeypatch.setattr("stage1_scrape.app.pipeline.GePNICClient", Client)
+    monkeypatch.setattr("stage1_scrape.app.pipeline.Store", _Store)
+    monkeypatch.setattr("stage1_scrape.app.pipeline.scrape_one_tender", save_one)
+    with patch("stage1_scrape.app.pipeline._search_with_captcha", return_value=_PAGE):
+        records = scrape_aoc(tmp_path, max_pages=3, max_tenders=5)
+
+    assert order == ["T-ONE"]
+    assert [record.listing.tender_id for record in records] == ["T-ONE"]

@@ -20,7 +20,7 @@ from pipeline_core.queries import (
 
 from ops_ui.deps import database_path
 from ops_ui.jobs import Busy, start_job
-from ops_ui.present import enrich_plan, job_page
+from ops_ui.present import enrich_plan, job_page, local_href
 from ops_ui.routes.awards import remember_job_stage
 from ops_ui.queries import load_home
 from ops_ui.runs import enrich_cost_line, run_enrich
@@ -95,7 +95,7 @@ async def post_contact(request: Request, vendor_id: int):
     if not snapshot.ready:
         return Response(snapshot.message, status_code=404, media_type="text/plain")
     form = await request.form()
-    back = str(form.get("back") or "/")
+    back = local_href(str(form.get("back") or "/"))
     ensure_schema(engine(path))
     try:
         with session(engine(path)) as current:
@@ -117,7 +117,7 @@ async def post_contact_remove(request: Request, vendor_id: int, contact_id: int)
     if not snapshot.ready:
         return Response(snapshot.message, status_code=404, media_type="text/plain")
     form = await request.form()
-    back = str(form.get("back") or "/")
+    back = local_href(str(form.get("back") or "/"))
     ensure_schema(engine(path))
     try:
         with session(engine(path)) as current:
@@ -134,7 +134,7 @@ async def post_do_not_mail(request: Request, vendor_id: int):
     if not snapshot.ready:
         return Response(snapshot.message, status_code=404, media_type="text/plain")
     form = await request.form()
-    back = str(form.get("back") or "/")
+    back = local_href(str(form.get("back") or "/"))
     ensure_schema(engine(path))
     try:
         with session(engine(path)) as current:

@@ -84,7 +84,10 @@ class OutlookTransport:
         self._server = self._connect()
 
     def _connect(self) -> smtplib.SMTP:
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+        try:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+        except OSError as err:
+            raise OutlookError(f"Could not reach {SMTP_HOST}: {err}") from err
         try:
             server.starttls(context=ssl.create_default_context())
             server.login(self._user, self._password)
@@ -96,6 +99,9 @@ class OutlookTransport:
             hint = explain(detail)
             message = f"Outlook sign-in failed: {err.smtp_code} {detail}"
             raise OutlookError(f"{message}\n{hint}" if hint else message) from err
+        except (smtplib.SMTPException, OSError) as err:
+            server.close()
+            raise OutlookError(f"Outlook sign-in failed: {err}") from err
         return server
 
     def send(
@@ -118,7 +124,10 @@ class OutlookTransport:
         except smtplib.SMTPServerDisconnected:
             print("  connection dropped, reconnecting ...")
             self._server = self._connect()
-            self._server.send_message(msg)
+            try:
+                self._server.send_message(msg)
+            except smtplib.SMTPException as err:
+                raise OutlookError(str(err)) from err
         except smtplib.SMTPException as err:
             raise OutlookError(str(err)) from err
 

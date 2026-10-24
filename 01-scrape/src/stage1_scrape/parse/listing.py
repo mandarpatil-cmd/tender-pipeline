@@ -76,10 +76,11 @@ def parse_results_table(html: str) -> list[ListingRow]:
         row = link.find_parent("tr")
         if row is None:
             continue
-        cells = [cell_text(td) for td in row.find_all("td", recursive=False)]
-        if len(cells) < 6:
-            cells = [cell_text(td) for td in row.find_all("td")]
-        text_cells = [c for c in cells if c]
+        # A blank cell keeps its place, so an empty title cannot shift the
+        # organisation into it. Only a nested layout falls back to text order.
+        text_cells = [cell_text(td) for td in row.find_all("td", recursive=False)]
+        if len(text_cells) < 6:
+            text_cells = [c for c in (cell_text(td) for td in row.find_all("td")) if c]
         while len(text_cells) < 6:
             text_cells.append("")
         rows.append(

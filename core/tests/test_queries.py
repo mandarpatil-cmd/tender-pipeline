@@ -24,6 +24,7 @@ from pipeline_core.models import (
 )
 from pipeline_core.queries import (
     known_tender_ids,
+    mail_messages,
     mark_enriched,
     mark_failed,
     outreach_targets,
@@ -576,6 +577,32 @@ def test_an_old_company_send_covers_earlier_awards_only(bind):
         assert [t.tender_id for t in outreach_targets(s)] == ["T-AFTER"]
 
 
+
+def test_the_send_queue_honours_an_old_company_send_too(bind):
+    """`mail_messages` is what stage 3 and the Mail page send from."""
+    with session(bind) as s:
+        vendor_id = upsert_vendor(s, name_raw="Reachable Ltd")
+        mark_enriched(s, vendor_id, email="hi@reachable.example", phone=None)
+        _award(s, vendor_id, "T-BEFORE", "2020-01-01T00:00:00+00:00", "Reachable Ltd")
+        record_outreach(
+            s,
+            vendor_id=vendor_id,
+            email="hi@reachable.example",
+            subject="Enquiry",
+            transport="gmail",
+            status=OUTREACH_SENT,
+        )
+        _award(s, vendor_id, "T-AFTER", "2099-01-01T00:00:00+00:00", "Reachable Ltd")
+
+    with session(bind) as s:
+        assert [m.tender_id for m in mail_messages(s)] == ["T-AFTER"]
+        # "Send again" is the deliberate second send, so the old send no longer covers it.
+        assert sorted(m.tender_id for m in mail_messages(s, include_sent=True)) == [
+            "T-AFTER",
+            "T-BEFORE",
+        ]
+
+
 def test_outreach_target_carries_what_the_mail_needs(bind):
     with session(bind) as s:
         vendor_id = upsert_vendor(s, name_raw="Kanta Enterprises")
@@ -974,6 +1001,24 @@ def test_delete_vendors_by_source_removes_only_that_source(bind):
         assert [v.vendor_id for v in s.query(Vendor).all()] == [kept]
 
 
+def test_delete_vendors_by_source_takes_their_addresses_with_them(bind):
+    """Every imported company with an email has contact rows after `init`."""
+    from pipeline_core.queries import delete_vendors_by_source
+
+    with session(bind) as s:
+        kept = upsert_vendor(s, name_raw="Scraped Traders", source=SOURCE_SCRAPE)
+        mark_enriched(s, kept, email="kept@scraped.example", phone=None)
+        gone = upsert_vendor(s, name_raw="Imported Works", source=SOURCE_BIDEASY)
+        mark_enriched(s, gone, email="hi@imported.example", phone="9876543210")
+
+    with session(bind) as s:
+        assert delete_vendors_by_source(s, SOURCE_BIDEASY) == 1
+
+    with session(bind) as s:
+        assert [v.vendor_id for v in s.query(Vendor).all()] == [kept]
+        assert {c.vendor_id for c in s.query(VendorContact).all()} == {kept}
+
+
 def test_delete_vendors_by_source_refuses_when_awards_reference_them(bind):
     """A clear refusal beats a half-applied delete and an IntegrityError."""
     from pipeline_core.queries import delete_vendors_by_source
@@ -1047,3 +1092,23 @@ def test_last_scraped_at_reports_the_newest_tender(bind):
 
     with session(bind) as s:
         assert last_scraped_at(s) == "2026-06-01T00:00:00+00:00"
+
+
+def test_a_bid_number_listed_twice_is_one_award_not_a_crash(bind):
+    """The portal has never done this, but one bad tender must not end a scrape."""
+    with session(bind) as s:
+        first = upsert_vendor(s, name_raw="First Works")
+        second = upsert_vendor(s, name_raw="Second Works")
+        upsert_tender(s, tender_id="T-DUP", title="Work", scraped_at=utcnow())
+        written = replace_awards(
+            s,
+            "T-DUP",
+            [
+                {"bid_number": "77", "vendor_id": first, "bidder_name": "First Works"},
+                {"bid_number": "77", "vendor_id": second, "bidder_name": "Second Works"},
+            ],
+        )
+
+    assert written == 1
+    with session(bind) as s:
+        assert [(a.bid_number, a.vendor_id) for a in s.query(Award).all()] == [("77", first)]

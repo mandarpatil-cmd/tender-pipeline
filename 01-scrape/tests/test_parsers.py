@@ -37,6 +37,37 @@ def test_result_count_and_next_link(html):
     assert "SnextToken" in nxt.url
 
 
+def test_the_live_listing_layout_gives_rows_a_total_and_the_next_page(html):
+    """The portal's own markup: six cells, the last one only the status link."""
+    page = html("live_listing_page.html")
+    rows = parse_results_table(page)
+
+    assert [row.tender_id for row in rows] == ["2026_WBNPI_922548_1", "2026_WBNPI_921620_1"]
+    assert rows[0].title_and_ref.startswith("[Annual Maintenance Contract")
+    assert rows[0].organisation_chain.endswith("Visvesvaraya National Institute of Technology Nagpur")
+    assert rows[0].tender_stage == "AOC"
+    assert rows[0].status == ""
+    assert parse_total_records(page) == 159559
+    nxt = find_next_page(page)
+    assert nxt is not None and nxt.kind == "get"
+    assert "component=loadNext" in nxt.url
+
+
+def test_a_blank_cell_keeps_the_other_columns_in_place():
+    page = """
+    <table><tr>
+      <td>1.</td><td>2026_X_1_1</td><td></td><td>Ministry||Unit</td><td>AOC</td>
+      <td><a href="/eprocure/app?sp=1" title="View Tender Status"><img></a></td>
+    </tr></table>
+    """
+    [row] = parse_results_table(page)
+
+    assert row.tender_id == "2026_X_1_1"
+    assert row.title_and_ref == ""
+    assert row.organisation_chain == "Ministry||Unit"
+    assert row.tender_stage == "AOC"
+
+
 def test_search_form_is_not_treated_as_results(html):
     assert search_still_showing_form(html("search_form.html")) is True
     assert search_still_showing_form(html("results_table.html")) is False

@@ -120,6 +120,20 @@ def banner() -> None:
           f"  web={'on' if settings.web_search() else 'OFF'}")
 
 
+def requeue() -> None:
+    """Put failed (and, if asked, not_found) vendors back. A dry run only counts them."""
+    retries = [(RETRY_FAILED, "failed", reset_failed), (RETRY_NOT_FOUND, "not_found", reset_not_found)]
+    for wanted, status, reset in retries:
+        if not wanted:
+            continue
+        with session() as current:
+            if DRY_RUN:
+                waiting = enrichment_breakdown(current).get(status, 0)
+                print(f"\n      dry run: {waiting} {status} vendor(s) would be requeued")
+            else:
+                print(f"\n      requeued {reset(current)} previously {status} vendor(s)")
+
+
 def show_queue() -> int:
     print("\n[1/3] The work queue")
     with session() as current:
@@ -138,15 +152,7 @@ def main() -> int:
     started = time.time()
     banner()
 
-    if RETRY_FAILED:
-        with session() as current:
-            moved = reset_failed(current)
-        print(f"\n      requeued {moved} previously failed vendor(s)")
-
-    if RETRY_NOT_FOUND:
-        with session() as current:
-            moved = reset_not_found(current)
-        print(f"      requeued {moved} previously not_found vendor(s)")
+    requeue()
 
     pending = show_queue()
     if not pending:
@@ -170,7 +176,8 @@ def main() -> int:
         say("            returns nothing for small regional firms")
 
     work = queue(LIMIT, source=ONLY_SOURCE)
-    say(f"{len(work)} vendor(s) this run" + (" (LIMIT reached)" if LIMIT else ""))
+    reached = LIMIT is not None and len(work) >= LIMIT
+    say(f"{len(work)} vendor(s) this run" + (" (LIMIT reached)" if reached else ""))
 
     if DRY_RUN:
         print("\n[3/3] Dry run -- nothing sent, nothing spent")

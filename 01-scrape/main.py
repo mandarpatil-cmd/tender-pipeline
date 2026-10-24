@@ -197,7 +197,10 @@ def preflight() -> None:
         say("https://openrouter.ai/keys")
         if OCR_ATTEMPTS > 0:
             say("(needed for captcha OCR; set OCR_ATTEMPTS = 0 to type it instead)")
-        raise SystemExit(1)
+            raise SystemExit(1)
+        say("OCR_ATTEMPTS = 0, so you will type the captcha. Going ahead without a key:")
+        say("PDF text is still read, but no contact clues are taken from it.")
+        return
     say("OPENROUTER_API_KEY  ok")
     say(f"captcha model       {openrouter_ocr_model()}")
 

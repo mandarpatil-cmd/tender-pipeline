@@ -35,7 +35,7 @@ def _keeps(row: dict, query: AwardQuery) -> bool:
         return False
     if query.state and (row.get("state") or "").casefold() != query.state.strip().casefold():
         return False
-    if query.mailable and not _mailable(row.get("email"), query.mailable):
+    if query.mailable and not _mailable(row.get("mail_address", row.get("email")), query.mailable):
         return False
     if query.pdf_contact == "yes" and not (
         _filled(row.get("pdf_email")) and _filled(row.get("pdf_phone"))

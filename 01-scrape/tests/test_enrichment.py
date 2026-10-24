@@ -58,6 +58,25 @@ def test_winner_falls_back_to_an_accepted_bid():
     assert [row.bidder_name for row in winner_rows(record)] == ["Accepted Co"]
 
 
+def test_a_bid_not_accepted_is_never_the_winner():
+    # Spellings seen on the portal. Each contains "accepted".
+    refused = [
+        BidRow("1", str(n), f"Refused {n}", "", status, "", "")
+        for n, status in enumerate(
+            [
+                "Not Accepted Financially",
+                "Not Accepted-Financially",
+                "Not Accepted Finanially",
+                "not  accepted financially",
+            ]
+        )
+    ]
+    accepted = BidRow("1", "9", "Accepted Co", "", "Accepted-Financially", "", "")
+    assert winner_rows(TenderRecord(listing=_LISTING, bids=refused)) == []
+    record = TenderRecord(listing=_LISTING, bids=[*refused, accepted])
+    assert [row.bidder_name for row in winner_rows(record)] == ["Accepted Co"]
+
+
 def test_winner_falls_back_to_one_bid_with_l1_in_remarks():
     first = BidRow("1", "1", "First L1", "", "", "Declared L1", "")
     second = BidRow("2", "2", "Second L1", "", "", "also L1", "")

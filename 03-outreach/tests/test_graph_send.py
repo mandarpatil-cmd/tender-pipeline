@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 
 import pytest
+import requests
 
 from graph.send import RETRY_CAP_SECONDS, TIMEOUT_SECONDS, GraphError, GraphTransport
 
@@ -24,7 +25,10 @@ class FakeSession:
 
     def post(self, url, headers=None, json=None, timeout=None):
         self.calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
-        return self.responses.pop(0)
+        answer = self.responses.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     def close(self) -> None:
         self.closed = True
@@ -116,4 +120,26 @@ def test_a_second_throttle_fails_the_recipient(monkeypatch):
     )
 
     with pytest.raises(GraphError, match="throttled"):
+        transport.send("a@b.example", "Subject", "Body")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        requests.ConnectionError("Failed to resolve graph.microsoft.com"),
+        requests.ConnectTimeout("connect timed out"),
+    ],
+)
+def test_graph_out_of_reach_fails_that_recipient(monkeypatch, error):
+    transport, _ = _transport(monkeypatch, [error])
+
+    with pytest.raises(GraphError, match="Graph"):
+        transport.send("a@b.example", "Subject", "Body")
+
+
+def test_no_answer_after_the_message_went_up_is_not_a_failure(monkeypatch):
+    """Graph may have queued it. Calling it failed would let a later run mail it twice."""
+    transport, _ = _transport(monkeypatch, [requests.ReadTimeout("read timed out")])
+
+    with pytest.raises(requests.ReadTimeout):
         transport.send("a@b.example", "Subject", "Body")

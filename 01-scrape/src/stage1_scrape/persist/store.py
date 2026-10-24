@@ -29,6 +29,7 @@ from pipeline_core.money import format_amount
 from pipeline_core.naming import buyer_tail, infer_city_state
 from pipeline_core.queries import (
     backfill_tender_documents,
+    documents_for_tenders,
     known_tender_ids,
     replace_awards,
     clear_pdf_contacts,
@@ -150,6 +151,10 @@ class Store:
                     current, listing.tender_id, record.pdf_extracts
                 )
             self._save_awards(current, record, replace_clues=replace_documents)
+
+    def has_documents(self, tender_id: str) -> bool:
+        with session(self.engine) as current:
+            return bool(documents_for_tenders(current, [tender_id]))
 
     def known_ids(self) -> set[str]:
         with session(self.engine) as current:

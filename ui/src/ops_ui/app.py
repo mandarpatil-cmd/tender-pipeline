@@ -27,11 +27,11 @@ _LOCAL_ORIGIN_HOSTS = {"127.0.0.1", "localhost"}
 
 
 def _cross_site_post(request: Request) -> bool:
-    """A browser form posted from another site. A missing Origin is allowed."""
+    """A browser form posted from another site. A missing Origin is allowed.
+
+    Every POST writes, starts a run, or spends money, so every one is checked.
+    """
     if request.method != "POST":
-        return False
-    path = request.url.path
-    if not (path == "/mail" or path.startswith("/mail/") or path == "/jobs" or path.startswith("/jobs/")):
         return False
     origin = request.headers.get("origin")
     if not origin:

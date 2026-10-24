@@ -6,6 +6,7 @@ import pytest
 from pipeline_core.db import session
 from pipeline_core.models import (
     OUTREACH_FAILED,
+    OUTREACH_SENDING,
     OUTREACH_SENT,
     OUTREACH_TEST,
     MailLetter,
@@ -165,6 +166,36 @@ def test_a_rejected_address_is_logged_and_stays_in_the_queue(monkeypatch, writte
 
     # A failure is not a send, so that vendor is offered again next run.
     assert [p.company for p in campaign.load_recipients()] == ["Bounces Ltd"]
+
+
+class UnsureTransport(FakeTransport):
+    """The second message goes up and no answer comes back."""
+
+    def send(self, to: str, subject: str, body: str, attachments=None) -> None:
+        if len(self.sent) == 1:
+            raise TimeoutError("read timed out")
+        super().send(to, subject, body, attachments)
+
+
+def test_an_unknown_outcome_is_never_mailed_again_and_stops_the_batch(
+    monkeypatch, written_pitch, capsys
+):
+    for name in ("First Ltd", "Second Ltd", "Third Ltd"):
+        _vendor(name, f"hi@{name.split()[0].lower()}.example")
+    transport = UnsureTransport()
+    monkeypatch.setattr(campaign, "build_transport", lambda name: transport)
+
+    with pytest.raises(TimeoutError):
+        campaign.run(send=True, delay=0)
+
+    with session() as current:
+        rows = {r.email: r.status for r in current.query(Outreach).all()}
+    assert rows == {"hi@first.example": OUTREACH_SENT, "hi@second.example": OUTREACH_SENDING}
+    assert transport.closed
+    out = capsys.readouterr().out
+    assert "hi@second.example" in out and "not be mailed again" in out
+    # Third is still waiting; Second is never offered again.
+    assert [p.company for p in campaign.load_recipients()] == ["Third Ltd"]
 
 
 def test_the_transport_is_closed_even_when_a_send_fails(monkeypatch, written_pitch):

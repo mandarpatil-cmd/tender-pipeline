@@ -13,9 +13,10 @@ import sys
 from itertools import combinations
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from pipeline_core.emailcheck import is_buyer_email, is_email
 from pipeline_core.grid import AwardQuery, award_view
 from pipeline_core.loose import loose_date, loose_number
 
@@ -33,7 +34,11 @@ def main() -> int:
         return 1
     current = _open()
     try:
-        catalogue = award_view(current, AwardQuery(), page_size=None).rows
+        addressed = _vendors_with_an_address(current)
+        catalogue = [
+            {**row, "mail_address": row["vendor_id"] in addressed}
+            for row in award_view(current, AwardQuery(), page_size=None).rows
+        ]
         cases = _cases(catalogue)
         failed = 0
         for label, query in cases:
@@ -75,6 +80,19 @@ def main() -> int:
         current.close()
 
 
+def _vendors_with_an_address(current) -> set[int]:
+    """Python's own reading of "mailable": a valid, non-buyer email stored anywhere for the company."""
+    stored = current.execute(
+        text(
+            "SELECT vendor_id, value FROM vendor_contacts WHERE channel = 'email' "
+            "UNION ALL SELECT vendor_id, email FROM vendors WHERE email IS NOT NULL"
+        )
+    )
+    return {
+        vendor_id for vendor_id, value in stored if is_email(value) and not is_buyer_email(value)
+    }
+
+
 def _open():
     uri = f"{DATABASE.resolve().as_uri()}?mode=ro"
 
@@ -82,6 +100,11 @@ def _open():
         connection = sqlite3.connect(uri, uri=True)
         connection.create_function("loose_date", 1, loose_date)
         connection.create_function("loose_number", 1, loose_number)
+        # The mail filters call these, as the pipeline's own engine registers them.
+        connection.create_function("pc_is_email", 1, lambda value: int(is_email(value)))
+        connection.create_function(
+            "pc_is_buyer_email", 1, lambda value: int(is_buyer_email(value))
+        )
         return connection
 
     engine = create_engine("sqlite://", creator=connect)

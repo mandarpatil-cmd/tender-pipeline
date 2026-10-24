@@ -26,6 +26,12 @@ __all__ = [
 ]
 
 
+def _accepted(status: str | None) -> bool:
+    """The portal writes refusals as "Not Accepted Financially" and similar."""
+    text = " ".join((status or "").lower().split())
+    return "accepted" in text and "not accepted" not in text
+
+
 def winner_rows(record) -> list:
     """Awarded vendors. Prefer the Awarded Bids table, then L1, then Accepted."""
     if record.awarded_bids:
@@ -33,7 +39,7 @@ def winner_rows(record) -> list:
     ranked = [row for row in record.financial_bids if (row.rank or "").upper() == "L1"]
     if ranked:
         return ranked
-    accepted = [row for row in record.bids if "accepted" in (row.status or "").lower()]
+    accepted = [row for row in record.bids if _accepted(row.status)]
     if accepted:
         return accepted
     remarked = [row for row in record.bids if "l1" in (row.remarks or "").lower()]

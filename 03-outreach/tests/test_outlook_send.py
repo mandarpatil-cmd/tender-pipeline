@@ -42,7 +42,10 @@ def _transport(monkeypatch, servers: list[FakeSMTP]) -> OutlookTransport:
     pending = list(servers)
 
     def connect(*_args, **_kwargs):
-        return pending.pop(0)
+        server = pending.pop(0)
+        if isinstance(server, Exception):
+            raise server
+        return server
 
     monkeypatch.setattr("outlook.send.smtplib.SMTP", connect)
     return OutlookTransport()
@@ -117,3 +120,32 @@ def test_explain_names_the_cause(text, hint):
     assert hint in result
     if not hint:
         assert result == ""
+
+
+class RefusingSMTP(FakeSMTP):
+    def send_message(self, msg) -> None:
+        raise smtplib.SMTPRecipientsRefused({"a@b.example": (550, b"no such user")})
+
+
+class NoTlsSMTP(FakeSMTP):
+    def starttls(self, context=None) -> None:
+        raise smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
+
+
+def test_a_reconnect_that_cannot_reach_outlook_fails_that_recipient(monkeypatch):
+    transport = _transport(monkeypatch, [FakeSMTP(fail=True), TimeoutError("timed out")])
+
+    with pytest.raises(OutlookError, match="timed out"):
+        transport.send("a@b.example", "Subject", "Body")
+
+
+def test_a_resend_the_server_refuses_fails_that_recipient(monkeypatch):
+    transport = _transport(monkeypatch, [FakeSMTP(fail=True), RefusingSMTP()])
+
+    with pytest.raises(OutlookError, match="no such user"):
+        transport.send("a@b.example", "Subject", "Body")
+
+
+def test_a_server_without_tls_is_an_outlook_error(monkeypatch):
+    with pytest.raises(OutlookError, match="STARTTLS"):
+        _transport(monkeypatch, [NoTlsSMTP()])

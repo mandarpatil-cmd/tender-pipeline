@@ -227,7 +227,18 @@ def scrape_one_tender(
                 copy_pdfs_to.mkdir(parents=True, exist_ok=True)
                 for path in pdf_paths(dest):
                     shutil.copy2(path, copy_pdfs_to / path.name)
-        store.save_tender(record, replace_documents=download_pdfs, source=source)
+        # A download that failed (an expired link) is not a file that held
+        # nothing, so the clues stored from an earlier read are kept.
+        missed = len(record.documents) - len(record.downloaded_files)
+        keep = download_pdfs and missed > 0 and store.has_documents(listing.tender_id)
+        if keep:
+            log.warning(
+                "%s of %s PDF(s) for %s did not download. The clues stored earlier are kept.",
+                missed,
+                len(record.documents),
+                listing.tender_id,
+            )
+        store.save_tender(record, replace_documents=download_pdfs and not keep, source=source)
     if download_pdfs and record.downloaded_files:
         log.info(
             "Read %s PDF(s) for %s, stored the clues, and deleted the files.",

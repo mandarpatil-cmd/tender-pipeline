@@ -1021,3 +1021,42 @@ def test_to_send_and_mail_messages_agree_on_edge_addresses(bind):
     assert not any(vendor_id == ids["Invalid Only Ltd"] for vendor_id, _ in mailed)
     assert not any(vendor_id == ids["Stopped Ltd"] for vendor_id, _ in mailed)
     assert not any(vendor_id == ids["Nothing Ltd"] for vendor_id, _ in mailed)
+
+
+def test_a_buyer_address_stored_as_valid_does_not_make_a_company_mailable(bind):
+    """A PDF row saved before a buyer marker existed still says valid=1.
+
+    The mail queue checks the address again and skips it, so the grid's
+    mailable filter and count must too, or the header promises mail that
+    never goes out.
+    """
+    from pipeline_core.models import CHANNEL_EMAIL, VendorContact
+    from pipeline_core.queries import contact_breakdown, mail_messages
+
+    with session(bind) as current:
+        buyer_only = upsert_vendor(current, name_raw="Buyer Only Works")
+        reachable = upsert_vendor(current, name_raw="Reachable Works")
+        for vendor_id, tender_id in ((buyer_only, "T-BUYER"), (reachable, "T-OK")):
+            upsert_tender(current, tender_id=tender_id, title="Work", scraped_at=utcnow())
+            replace_awards(
+                current,
+                tender_id,
+                [{"bid_number": "1", "vendor_id": vendor_id, "bidder_name": "x"}],
+            )
+        current.add_all(
+            [
+                VendorContact(vendor_id=buyer_only, tender_id="T-BUYER", channel=CHANNEL_EMAIL,
+                              value="stores@thsti.qov.in", source="pdf", valid=1),
+                VendorContact(vendor_id=reachable, tender_id="T-OK", channel=CHANNEL_EMAIL,
+                              value="office@reachable.example", source="pdf", valid=1),
+            ]
+        )
+
+    with session(bind) as current:
+        mailable = award_view(current, AwardQuery(mailable="yes"), page_size=None)
+        unmailable = award_view(current, AwardQuery(mailable="no"), page_size=None)
+        assert [row["tender_id"] for row in mailable.rows] == ["T-OK"]
+        assert [row["tender_id"] for row in unmailable.rows] == ["T-BUYER"]
+        assert award_view(current, AwardQuery(), page_size=1).counts.mailable == 1
+        assert contact_breakdown(current)["mailable"] == 1
+        assert {m.vendor_id for m in mail_messages(current)} == {reachable}

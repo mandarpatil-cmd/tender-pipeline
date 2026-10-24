@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from urllib.parse import unquote, urlencode
+from urllib.parse import unquote, urlencode, urlsplit
 
 from pipeline_core.grid import COLUMNS, FILE_COLUMNS, AwardQuery
 from pipeline_core.loose import loose_date
@@ -209,6 +209,25 @@ def back_href(raw: str) -> str:
     if _STAGE_BACK.fullmatch(text):
         return text or "/"
     return "/"
+
+
+def local_href(raw: str) -> str:
+    """A path in this window, as a form's `back`. Anything that could leave it opens Home.
+
+    Browsers read a backslash as a slash and drop tabs and newlines, so
+    ``/\\host`` and ``/\\t/host`` would reach another site.
+    """
+    text = (raw or "").strip()
+    probe = urlsplit(text.replace("\\", "/"))
+    if (
+        not text.startswith("/")
+        or text.replace("\\", "/").startswith("//")
+        or probe.scheme
+        or probe.netloc
+        or any(ch.isspace() or ord(ch) < 0x20 for ch in text)
+    ):
+        return "/"
+    return text
 
 
 def resolve_preset(

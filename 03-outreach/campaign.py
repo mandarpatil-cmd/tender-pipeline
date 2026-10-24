@@ -781,6 +781,15 @@ def send_all(
                     f"tender {person.tender_id}: {err}"
                 )
                 continue
+            except Exception as err:
+                # The mailbox may have taken it. The row stays "sending", so this
+                # address is never mailed twice, and the batch stops here.
+                print(
+                    f"  [{i}/{len(people)}] UNKNOWN {person.company} <{company_email}> "
+                    f"tender {person.tender_id}: {err!r}. It may have been delivered, so it "
+                    "will not be mailed again. Check the Sent folder. Stopping."
+                )
+                raise
 
             sent += 1
             if inbox:
