@@ -124,7 +124,7 @@
 {% if contacts %}
 <table id="addresses">
   <thead>
-    <tr><th>Kind</th><th>Address</th><th>Source</th><th>Mail for this award</th></tr>
+    <tr><th>Kind</th><th>Address</th><th>Source</th><th>Mail for this award</th><th>Remove</th></tr>
   </thead>
   <tbody>
     {% for item in contacts %}
@@ -133,6 +133,7 @@
       <td>{{ item.value }}{% if not item.valid %} (not valid){% endif %}</td>
       <td>{{ item.source }}{% if item.source == 'pdf' %}{% if item.filenames %} — {{ item.filenames|join(", ") }}{% endif %}{% if item.tender_id and item.this_tender %} on this tender{% elif item.tender_id %} on tender {{ item.tender_id }}{% else %}, tender not recorded{% endif %}{% endif %}{% if item.source_url %} — found at {{ item.source_url }}{% endif %}{% if item.job_id is not none %} — <a href="/jobs/{{ item.job_id }}?award={{ detail.vendor.vendor_id }}:{{ detail.tender.tender_id|urlencode }}">run {{ item.job_id }}</a>{% endif %}</td>
       <td>{% if item.channel != 'email' %}—{% elif item.will_mail %}will be mailed{% else %}not mailed: {{ item.reason }}{% endif %}</td>
+      <td>{% if item.source == 'typed' and item.contact_id %}<form method="post" action="/vendor/{{ detail.vendor.vendor_id }}/contact/{{ item.contact_id }}/remove"><input type="hidden" name="back" value="/award?tender_id={{ detail.tender.tender_id|urlencode }}&bid={{ detail.focus_bid|urlencode }}"><button type="submit">Remove</button></form>{% endif %}</td>
     </tr>
     {% endfor %}
   </tbody>
@@ -157,9 +158,9 @@
 </dl>
 <form class="contact" method="post" action="/vendor/{{ detail.vendor.vendor_id }}/contact">
   <input type="hidden" name="back" value="/award?tender_id={{ detail.tender.tender_id|urlencode }}&bid={{ detail.focus_bid|urlencode }}">
-  <p class="muted">A blank box leaves the stored value. Saving marks this company answered.{% if detail.vendor.contact_origin %} This contact was {{ detail.vendor.contact_origin }}.{% endif %}</p>
-  <label>Email <input name="email" placeholder="{{ detail.vendor.email or '' }}"></label>
-  <label>Phone <input name="phone" placeholder="{{ detail.vendor.phone or '' }}"></label>
+  <p class="muted">Each address you save is added to the list above. Separate several with commas. Saving marks this company answered.{% if detail.vendor.contact_origin %} This contact was {{ detail.vendor.contact_origin }}.{% endif %}</p>
+  <label>Email <input name="email" placeholder="name@firm.com, other@firm.com"></label>
+  <label>Phone <input name="phone" placeholder="98765 43210, 0123 456789"></label>
   <button type="submit">Save contact</button>
 </form>
 <form method="post" action="/vendor/{{ detail.vendor.vendor_id }}/do-not-mail">

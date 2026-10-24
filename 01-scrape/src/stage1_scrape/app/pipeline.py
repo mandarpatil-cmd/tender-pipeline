@@ -257,6 +257,8 @@ def fetch_tender_pdfs(
     ask: "Callable[[Path], str] | None" = None,
     should_stop: "Callable[[], bool] | None" = None,
     job_id: int | None = None,
+    prefer_typed: "Callable[[], bool] | None" = None,
+    searched: "Callable[[], None] | None" = None,
 ) -> dict:
     """Search by tender id, download that tender's PDFs, store the clues.
 
@@ -282,6 +284,8 @@ def fetch_tender_pdfs(
             captcha_solver=captcha_solver,
             ask=ask,
             should_stop=should_stop,
+            prefer_typed=prefer_typed,
+            searched=searched,
         )
     except StopRequested:
         return {"ok": False, "stopped": True, "message": "Stopped during the search."}
@@ -338,6 +342,8 @@ def scrape_aoc(
     only_aoc: bool = False,
     search_mode: str = SEARCH_AWARDED,
     job_id: int | None = None,
+    prefer_typed: "Callable[[], bool] | None" = None,
+    searched: "Callable[[], None] | None" = None,
 ) -> list[TenderRecord]:
     store = Store(out_dir)
     client = GePNICClient(delay=delay)
@@ -355,6 +361,8 @@ def scrape_aoc(
             captcha_solver=captcha_solver,
             ask=ask,
             should_stop=should_stop,
+            prefer_typed=prefer_typed,
+            searched=searched,
         )
     except StopRequested:
         log.info("Stop requested. Tenders already saved are kept.")
@@ -424,7 +432,15 @@ def _search_with_captcha(
     captcha_solver: str = "manual",
     ask: "Callable[[Path], str] | None" = None,
     should_stop: "Callable[[], bool] | None" = None,
+    prefer_typed: "Callable[[], bool] | None" = None,
+    searched: "Callable[[], None] | None" = None,
 ) -> str:
+    """Read the captcha automatically, then hand over to ``ask`` once the tries run out.
+
+    ``prefer_typed`` lets the window skip the remaining automatic tries. It is
+    checked before each try and ignored without ``ask``. ``searched`` is called
+    once the portal accepts a code.
+    """
     last_error: Exception | None = None
     session_path = store.root / "session.pkl"
     form_path = store.debug_dir / "search_form.html"
@@ -432,6 +448,9 @@ def _search_with_captcha(
     for attempt in range(1, attempts + 1):
         if should_stop is not None and should_stop():
             raise StopRequested("Stopped before the next captcha attempt.")
+        if ask is not None and prefer_typed is not None and prefer_typed():
+            log.info("Switching to a typed captcha, as asked.")
+            break
         if from_probe and attempt == 1:
             if not session_path.exists() or not form_path.exists():
                 raise CaptchaError(
@@ -475,6 +494,8 @@ def _search_with_captcha(
             captcha_text = None
             from_probe = False
             continue
+        if searched is not None:
+            searched()
         return _accepted_results(client, store, session_path, results)
     if ask is not None:
         while True:
@@ -493,6 +514,8 @@ def _search_with_captcha(
             )
             results = submit_search(client, html, code, extra=extra_fields)
             if not search_still_showing_form(results):
+                if searched is not None:
+                    searched()
                 return _accepted_results(client, store, session_path, results)
             store.write_debug("search_rejected_typed.html", results)
             last_error = CaptchaError(

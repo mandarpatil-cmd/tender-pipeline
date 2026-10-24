@@ -8,6 +8,7 @@ exactly one definition.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -545,28 +546,6 @@ def add_contact(
     return True
 
 
-def replace_company_contact(
-    session: Session,
-    vendor_id: int,
-    *,
-    source: str,
-    channel: str,
-    value: str | None,
-    source_url: str | None = None,
-    llm_run_id: int | None = None,
-) -> None:
-    """The new enrichment or typed value replaces only that source and channel."""
-    replace_company_contacts(
-        session,
-        vendor_id,
-        source=source,
-        channel=channel,
-        values=[value] if value else [],
-        source_url=source_url,
-        llm_run_id=llm_run_id,
-    )
-
-
 def replace_company_contacts(
     session: Session,
     vendor_id: int,
@@ -848,22 +827,13 @@ def backfill_vendor_contacts(session: Session) -> int:
             ):
                 written += 1
         source = vendor.contact_origin if vendor.contact_origin in {CONTACT_MODEL, CONTACT_TYPED} else CONTACT_MODEL
-        if vendor.email and add_contact(
-            session,
-            vendor.vendor_id,
-            channel=CHANNEL_EMAIL,
-            value=vendor.email,
-            source=source,
-        ):
-            written += 1
-        if vendor.phone and add_contact(
-            session,
-            vendor.vendor_id,
-            channel=CHANNEL_PHONE,
-            value=vendor.phone,
-            source=source,
-        ):
-            written += 1
+        for channel, raw in ((CHANNEL_EMAIL, vendor.email), (CHANNEL_PHONE, vendor.phone)):
+            # A value stored under any source is not copied again as typed: a
+            # looked-up phone kept when only an email was typed stays a lookup row.
+            if not raw or _value_known(session, vendor.vendor_id, channel, raw):
+                continue
+            if add_contact(session, vendor.vendor_id, channel=channel, value=raw, source=source):
+                written += 1
     return written
 
 
@@ -922,15 +892,21 @@ def _tender_holding(
 
 
 def _pdf_value_known(session: Session, vendor_id: int, channel: str, value: str) -> bool:
+    return _value_known(session, vendor_id, channel, value, source=CONTACT_PDF)
+
+
+def _value_known(
+    session: Session, vendor_id: int, channel: str, value: str, *, source: str | None = None
+) -> bool:
+    """The company already has this value, from ``source`` or, when it is empty, from any."""
     folded = (clean_email(value) if channel == CHANNEL_EMAIL else value.strip()).casefold()
-    rows = session.scalars(
-        select(VendorContact).where(
-            VendorContact.vendor_id == vendor_id,
-            VendorContact.channel == channel,
-            VendorContact.source == CONTACT_PDF,
-        )
-    ).all()
-    return any(row.value.casefold() == folded for row in rows)
+    statement = select(VendorContact).where(
+        VendorContact.vendor_id == vendor_id,
+        VendorContact.channel == channel,
+    )
+    if source is not None:
+        statement = statement.where(VendorContact.source == source)
+    return any(row.value.casefold() == folded for row in session.scalars(statement).all())
 
 
 @dataclass(frozen=True)
@@ -1089,6 +1065,12 @@ class ContactError(ValueError):
     """A typed email did not match the mailer's format check."""
 
 
+def _typed_values(raw: str | None, channel: str) -> list[str]:
+    """The addresses in one form box. A phone keeps its spaces, so only an email splits on them."""
+    pattern = r"[,;\s]+" if channel == CHANNEL_EMAIL else r"[,;\n]+"
+    return [part.strip() for part in re.split(pattern, raw or "") if part.strip()]
+
+
 def set_typed_contact(
     session: Session,
     vendor_id: int,
@@ -1096,49 +1078,88 @@ def set_typed_contact(
     email: str | None = None,
     phone: str | None = None,
 ) -> None:
-    """Record a contact a person typed. A blank field leaves the stored value.
+    """Add the emails and phones a person typed. Earlier typed ones stay.
 
-    The company is marked answered, so stage 2 will not pay to look it up again.
+    A box may hold several, separated by commas or semicolons. Every email is
+    checked before anything is written. The company columns take the first
+    value of this save, and a blank box leaves them. The company is marked
+    answered, so stage 2 will not pay to look it up again.
     """
     from .emailcheck import is_email
 
     vendor = session.get(Vendor, vendor_id)
     if vendor is None:
         raise ContactError(f"No company with id {vendor_id}.")
-    typed_email = clean_email(email)
-    typed_phone = (phone or "").strip()
-    if typed_email and not is_email(typed_email):
-        raise ContactError("That email is not a valid address.")
-    if not typed_email and not typed_phone:
+    emails: list[str] = []
+    for raw in _typed_values(email, CHANNEL_EMAIL):
+        cleaned = clean_email(raw)
+        if not cleaned or not is_email(cleaned):
+            raise ContactError(f"{raw} is not a valid email address.")
+        emails.append(cleaned)
+    phones = _typed_values(phone, CHANNEL_PHONE)
+    if not emails and not phones:
         raise ContactError("Type an email or a phone.")
-    new_email = typed_email or vendor.email
-    new_phone = typed_phone or vendor.phone
     session.query(Vendor).filter(Vendor.vendor_id == vendor_id).update(
         {
-            Vendor.email: new_email,
-            Vendor.phone: new_phone,
+            Vendor.email: emails[0] if emails else vendor.email,
+            Vendor.phone: phones[0] if phones else vendor.phone,
             Vendor.enrichment_status: STATUS_DONE,
             Vendor.enriched_at: utcnow(),
             Vendor.contact_origin: CONTACT_TYPED,
         },
         synchronize_session=False,
     )
-    if typed_email:
-        replace_company_contact(
-            session,
-            vendor_id,
-            source=CONTACT_TYPED,
-            channel=CHANNEL_EMAIL,
-            value=typed_email,
+    for channel, values in ((CHANNEL_EMAIL, emails), (CHANNEL_PHONE, phones)):
+        for value in values:
+            add_contact(session, vendor_id, channel=channel, value=value, source=CONTACT_TYPED)
+
+
+def remove_typed_contact(session: Session, vendor_id: int, contact_id: int) -> None:
+    """Delete one address a person typed. A PDF or lookup address cannot be removed.
+
+    When the company column held that value, it moves to the newest typed
+    address left, else the first lookup address. Sent mail stays in ``outreach``,
+    so typing the address again does not mail an award twice.
+    """
+    row = session.get(VendorContact, contact_id)
+    if row is None or row.vendor_id != vendor_id or row.source != CONTACT_TYPED:
+        raise ContactError("Only an address typed for this company can be removed.")
+    channel, value = row.channel, row.value
+    session.delete(row)
+    session.flush()
+    vendor = session.get(Vendor, vendor_id, populate_existing=True)
+    if vendor is None:
+        return
+    attribute = "email" if channel == CHANNEL_EMAIL else "phone"
+    held = getattr(vendor, attribute)
+    if held and _contact_key(channel, held) == _contact_key(channel, value):
+        setattr(vendor, attribute, _company_value(session, vendor_id, channel))
+
+
+def _contact_key(channel: str, value: str) -> str:
+    return _mail_key(value) if channel == CHANNEL_EMAIL else value.strip().casefold()
+
+
+def _company_value(session: Session, vendor_id: int, channel: str) -> str | None:
+    """The newest typed value of this channel, else the first lookup value."""
+    for source, order in (
+        (CONTACT_TYPED, VendorContact.contact_id.desc()),
+        (CONTACT_MODEL, VendorContact.contact_id.asc()),
+    ):
+        value = session.scalar(
+            select(VendorContact.value)
+            .where(
+                VendorContact.vendor_id == vendor_id,
+                VendorContact.channel == channel,
+                VendorContact.source == source,
+                VendorContact.tender_id.is_(None),
+            )
+            .order_by(order)
+            .limit(1)
         )
-    if typed_phone:
-        replace_company_contact(
-            session,
-            vendor_id,
-            source=CONTACT_TYPED,
-            channel=CHANNEL_PHONE,
-            value=typed_phone,
-        )
+        if value:
+            return value
+    return None
 
 
 def vendor_by_name(session: Session, name_raw: str) -> Vendor | None:
@@ -1971,6 +1992,8 @@ class AddressLine:
     will_mail: bool
     #: Empty when the address is mailed. Otherwise one of the ``SKIP_`` texts.
     reason: str = ""
+    #: The ``vendor_contacts`` row. Empty for the company-column fallback.
+    contact_id: int | None = None
 
 
 def clue_files(
@@ -2022,10 +2045,18 @@ def address_report(
         session, (row.tender_id for row in rows if row.source == CONTACT_PDF)
     )
     candidates = [
-        (row.value, row.source, row.tender_id, row.source_url, row.llm_run_id, bool(row.valid))
+        (
+            row.value,
+            row.source,
+            row.tender_id,
+            row.source_url,
+            row.llm_run_id,
+            bool(row.valid),
+            row.contact_id,
+        )
         for row in rows
     ]
-    if not any(valid for *_rest, valid in candidates) and (vendor.email or "").strip():
+    if not any(valid for *_rest, valid, _id in candidates) and (vendor.email or "").strip():
         fallback = clean_email(vendor.email)
         candidates.append(
             (
@@ -2035,6 +2066,7 @@ def address_report(
                 None,
                 None,
                 contact_is_valid(CHANNEL_EMAIL, fallback),
+                None,
             )
         )
     stopped = bool((vendor.do_not_mail or "").strip())
@@ -2045,7 +2077,7 @@ def address_report(
     )
     seen: set[str] = set()
     lines: list[AddressLine] = []
-    for value, source, found_on, source_url, run_id, valid in candidates:
+    for value, source, found_on, source_url, run_id, valid, contact_id in candidates:
         key = _mail_key(value)
         blocked_key = (int(vendor_id), str(tender_id), key)
         if not valid:
@@ -2077,6 +2109,7 @@ def address_report(
                 valid=valid,
                 will_mail=not reason,
                 reason=reason,
+                contact_id=contact_id,
             )
         )
     return lines

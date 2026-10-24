@@ -1,12 +1,22 @@
 <div id="live" {% if job.state == 'running' or job.state == 'waiting' %}hx-get="/jobs/{{ job.job_id }}/live" hx-trigger="every 1s [document.activeElement == null || document.activeElement.id != 'captcha-code']" hx-swap="outerHTML"{% endif %}>
   <p class="meta">{{ job.state }}{% if job.finished_at %} · {{ job.finished_at }}{% endif %}</p>
-  {% if job.state == 'waiting' %}
-  <div id="captcha-box" class="panel captcha-box" hx-preserve="true">
+  {% if job.state == 'running' and captcha_reading == 'reading' %}
+  <form method="post" action="/jobs/{{ job.job_id }}/captcha/typed">
+    <button type="submit">Type the captcha myself</button>
+  </form>
+  <p class="note">The captcha is being read automatically. The box opens after the current try.</p>
+  {% elif job.state == 'running' and captcha_reading == 'switching' %}
+  <p class="note">The captcha box opens after the current try.</p>
+  {% endif %}
+  {% if job.state == 'waiting' and captcha_wait %}
+  <div id="captcha-box-{{ captcha_wait.token }}" class="panel captcha-box" hx-preserve="true">
     <p class="label">Captcha</p>
-    <img class="captcha" src="/jobs/{{ job.job_id }}/captcha?v={{ captcha_version }}" alt="Captcha: type these 6 characters">
+    {% if captcha_wait.retry %}<p class="warn">The last code was not accepted. This is a new image.</p>{% endif %}
+    <img class="captcha" src="/jobs/{{ job.job_id }}/captcha?v={{ captcha_wait.token }}" width="380" height="92" alt="Captcha: type these 6 characters">
     <form method="post" action="/jobs/{{ job.job_id }}/captcha">
+      <input type="hidden" name="token" value="{{ captcha_wait.token }}">
       <label for="captcha-code">Type the 6 characters
-        <input id="captcha-code" class="captcha-code" name="code" type="text" inputmode="text" maxlength="6" minlength="6" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="6 characters" autofocus>
+        <input id="captcha-code" class="captcha-code" name="code" type="text" inputmode="text" minlength="6" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="6 characters">
       </label>
       <button type="submit">Continue</button>
     </form>

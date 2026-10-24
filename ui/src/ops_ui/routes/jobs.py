@@ -15,16 +15,19 @@ from ops_ui.jobs import (
     Busy,
     JobQuery,
     captcha_image,
+    captcha_reading,
     get_job,
     job_query_from,
     list_jobs,
+    open_captcha,
     pdf_zip_path,
     request_stop,
+    request_typed,
     start_job,
     submit_captcha,
 )
 from ops_ui.present import job_page as run_page
-from ops_ui.present import award_focus, focused_query, job_query, resolve_preset
+from ops_ui.present import CAPTCHA_NOTICES, award_focus, focused_query, job_query, resolve_preset
 from ops_ui.queries import load_home
 from ops_ui.runs import (
     organisation_choices,
@@ -203,13 +206,14 @@ def job_page(
     request: Request,
     job_id: int,
     refused: int = 0,
-    captcha: int = 0,
+    captcha: str = "",
     path: Path = Depends(database_path),
 ):
     job = get_job(path, job_id)
     if job is None:
         return Response("No run with that id.", status_code=404)
-    context = _job_view(job, refused=bool(refused), captcha_error=bool(captcha))
+    notice = CAPTCHA_NOTICES.get(captcha, "")
+    context = _job_view(job, refused=bool(refused), captcha_notice=notice)
     context["grid"] = False
     focus = award_focus(request.query_params.get("award"))
     page = _GRID_STAGE.get(job.stage)
@@ -219,7 +223,7 @@ def job_page(
             override = focused_query(override, focus)
         context.update(stage_context(request, path, page, query_override=override, job=job))
         context["refused"] = bool(refused)
-        context["captcha_error"] = bool(captcha)
+        context["captcha_notice"] = notice
         context["grid"] = context.get("view") is not None
     context["focus"] = focus
     return TEMPLATES.TemplateResponse(request=request, name="job.html", context=context)
@@ -281,9 +285,20 @@ def captcha_png(job_id: int):
 @router.post("/jobs/{job_id}/captcha")
 async def post_captcha(request: Request, job_id: int, path: Path = Depends(database_path)):
     form = await request.form()
-    code = "".join(str(form.get("code") or "").split())
-    if not submit_captcha(job_id, code):
-        return RedirectResponse(_job_target(path, job_id, captcha=True), status_code=303)
+    try:
+        token = int(str(form.get("token") or "0"))
+    except ValueError:
+        token = 0
+    result = submit_captcha(job_id, token, str(form.get("code") or ""))
+    notice = "" if result == "sent" else result
+    return RedirectResponse(_job_target(path, job_id, captcha=notice), status_code=303)
+
+
+@router.post("/jobs/{job_id}/captcha/typed")
+def post_captcha_typed(job_id: int, path: Path = Depends(database_path)):
+    if get_job(path, job_id) is None:
+        return Response("No run with that id.", status_code=404)
+    request_typed(job_id)
     return RedirectResponse(_job_target(path, job_id), status_code=303)
 
 
@@ -310,19 +325,18 @@ def _start(path, stage: str, params: dict, work) -> Response:
     return response
 
 
-def _job_target(path, job_id: int, *, refused: bool = False, captcha: bool = False) -> str:
+def _job_target(path, job_id: int, *, refused: bool = False, captcha: str = "") -> str:
     job = get_job(path, job_id)
     stage = job.stage if job is not None else ""
     return run_page(stage, job_id, refused=refused, captcha=captcha)
 
 
 def _job_view(job, **extra) -> dict:
-    image = captcha_image(job.job_id)
-    version = int(image.stat().st_mtime_ns) if image is not None else 0
     return {
         "job": job,
         "zip_ready": pdf_zip_path(job.job_id).is_file(),
-        "captcha_version": version,
+        "captcha_wait": open_captcha(job.job_id),
+        "captcha_reading": captcha_reading(job.job_id),
         **extra,
     }
 

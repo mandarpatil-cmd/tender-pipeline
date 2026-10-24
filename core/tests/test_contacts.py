@@ -399,3 +399,168 @@ def test_the_company_email_is_used_only_when_no_valid_row_exists(tmp_path):
         assert [line.value for line in address_report(current, vendor_id, "T-A")] == [
             "pdf@sk.example"
         ]
+
+
+# --------------------------------------------------------------------------
+# Typed addresses add up; only a typed one can be removed
+# --------------------------------------------------------------------------
+
+
+def _typed(current, vendor_id: int, channel: str = "email") -> list[str]:
+    return [
+        row.value
+        for row in current.query(VendorContact)
+        .filter(
+            VendorContact.vendor_id == vendor_id,
+            VendorContact.source == "typed",
+            VendorContact.channel == channel,
+        )
+        .order_by(VendorContact.contact_id)
+    ]
+
+
+def test_a_second_typed_email_is_added_and_both_are_mailed_once(tmp_path):
+    from pipeline_core.queries import SKIP_DUPLICATE, address_report, mail_messages
+
+    bind = engine(tmp_path / "pipeline.sqlite3")
+    ensure_schema(bind)
+    vendor_id = _two_tenders(bind)
+    with session(bind) as current:
+        record_pdf_contacts(current, vendor_id, "T-A", ["wo@sk.example"], [])
+        mark_enriched(current, vendor_id, email="model@sk.example", phone=None)
+        set_typed_contact(current, vendor_id, email="first@sk.example")
+        set_typed_contact(current, vendor_id, email="second@sk.example")
+        set_typed_contact(current, vendor_id, email="FIRST@sk.example")
+        set_typed_contact(current, vendor_id, email="WO@sk.example")
+
+        assert _typed(current, vendor_id) == [
+            "first@sk.example",
+            "second@sk.example",
+            "WO@sk.example",
+        ]
+        report = {line.value: line for line in address_report(current, vendor_id, "T-A")}
+        assert report["WO@sk.example"].reason == SKIP_DUPLICATE
+        sent_to = [m.email for m in mail_messages(current, awards=[(vendor_id, "T-A")])]
+
+    assert sent_to == [
+        "wo@sk.example",
+        "model@sk.example",
+        "first@sk.example",
+        "second@sk.example",
+    ]
+
+
+def test_one_save_adds_several_and_a_bad_email_saves_nothing(tmp_path):
+    from pipeline_core.queries import ContactError
+
+    bind = engine(tmp_path / "pipeline.sqlite3")
+    ensure_schema(bind)
+    vendor_id, _tender = _company(bind)
+    with session(bind) as current:
+        set_typed_contact(
+            current,
+            vendor_id,
+            email="a@roads.example; b@roads.example, c@roads.example",
+            phone="98111 11111, 9822222222",
+        )
+        assert _typed(current, vendor_id) == [
+            "a@roads.example",
+            "b@roads.example",
+            "c@roads.example",
+        ]
+        assert _typed(current, vendor_id, "phone") == ["98111 11111", "9822222222"]
+
+    with session(bind) as current:
+        assert current.get(Vendor, vendor_id).email == "a@roads.example"
+        try:
+            set_typed_contact(current, vendor_id, email="d@roads.example, not-an-email")
+        except ContactError as exc:
+            assert "not-an-email" in str(exc)
+        else:
+            raise AssertionError("a bad email was accepted")
+        assert _typed(current, vendor_id) == [
+            "a@roads.example",
+            "b@roads.example",
+            "c@roads.example",
+        ]
+
+
+def test_removing_a_typed_address_moves_the_company_column(tmp_path):
+    from pipeline_core.queries import ContactError, remove_typed_contact
+
+    bind = engine(tmp_path / "pipeline.sqlite3")
+    ensure_schema(bind)
+    vendor_id, tender_id = _company(bind)
+    with session(bind) as current:
+        record_pdf_contacts(current, vendor_id, tender_id, ["pdf@roads.example"], [])
+        set_typed_contact(current, vendor_id, email="old@roads.example")
+        set_typed_contact(current, vendor_id, email="new@roads.example", phone="9833333333")
+        rows = {
+            row.value: row.contact_id
+            for row in current.query(VendorContact).filter(VendorContact.vendor_id == vendor_id)
+        }
+
+    with session(bind) as current:
+        remove_typed_contact(current, vendor_id, rows["new@roads.example"])
+    with session(bind) as current:
+        vendor = current.get(Vendor, vendor_id)
+        assert vendor.email == "old@roads.example"
+        assert vendor.phone == "9833333333"
+        assert _typed(current, vendor_id) == ["old@roads.example"]
+
+    with session(bind) as current:
+        remove_typed_contact(current, vendor_id, rows["9833333333"])
+        remove_typed_contact(current, vendor_id, rows["old@roads.example"])
+    with session(bind) as current:
+        vendor = current.get(Vendor, vendor_id)
+        assert (vendor.email, vendor.phone) == (None, None)
+        assert vendor.contact_origin == "typed"
+
+    for contact_id, owner in ((rows["pdf@roads.example"], vendor_id), (999, vendor_id)):
+        with session(bind) as current:
+            try:
+                remove_typed_contact(current, owner, contact_id)
+            except ContactError:
+                pass
+            else:
+                raise AssertionError("a non-typed row was removed")
+    with session(bind) as current:
+        assert current.get(VendorContact, rows["pdf@roads.example"]) is not None
+
+
+def test_a_removed_and_retyped_address_is_not_mailed_twice(tmp_path):
+    from pipeline_core.models import OUTREACH_SENT
+    from pipeline_core.queries import mail_messages, record_outreach, remove_typed_contact
+
+    bind = engine(tmp_path / "pipeline.sqlite3")
+    ensure_schema(bind)
+    vendor_id = _two_tenders(bind)
+    with session(bind) as current:
+        set_typed_contact(current, vendor_id, email="boss@sk.example")
+        record_outreach(current, vendor_id=vendor_id, tender_id="T-A", email="boss@sk.example",
+                        subject="s", transport="gmail", status=OUTREACH_SENT)
+        typed = current.query(VendorContact).filter(VendorContact.source == "typed").one()
+        remove_typed_contact(current, vendor_id, typed.contact_id)
+        set_typed_contact(current, vendor_id, email="Boss@sk.example")
+        queued = [(m.tender_id, m.email) for m in mail_messages(current)]
+
+    assert queued == [("T-B", "Boss@sk.example")]
+
+
+def test_a_looked_up_address_is_never_copied_back_as_typed(tmp_path):
+    from pipeline_core.queries import remove_typed_contact
+
+    bind = engine(tmp_path / "pipeline.sqlite3")
+    ensure_schema(bind)
+    vendor_id, _tender = _company(bind)
+    with session(bind) as current:
+        mark_enriched(current, vendor_id, email="model@roads.example", phone="9822222222")
+        set_typed_contact(current, vendor_id, email="typed@roads.example")
+        backfill_vendor_contacts(current)
+        assert _typed(current, vendor_id, "phone") == []
+
+        typed = current.query(VendorContact).filter(VendorContact.source == "typed").one()
+        remove_typed_contact(current, vendor_id, typed.contact_id)
+        assert current.get(Vendor, vendor_id).email == "model@roads.example"
+        backfill_vendor_contacts(current)
+        assert _typed(current, vendor_id) == []

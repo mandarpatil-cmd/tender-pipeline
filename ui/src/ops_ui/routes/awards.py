@@ -30,8 +30,9 @@ from ops_ui.deps import database_path
 from ops_ui.evidence import fill_evidence, read_documents
 from ops_ui.export import csv_bytes, xlsx_bytes
 from ops_ui.jobs import active_jobs
-from ops_ui.jobs import captcha_image, get_job, pdf_zip_path
+from ops_ui.jobs import captcha_reading, get_job, open_captcha, pdf_zip_path
 from ops_ui.present import (
+    CAPTCHA_NOTICES,
     DATE_PRESETS,
     STAGE_COLUMNS,
     STAGE_PATHS,
@@ -150,18 +151,14 @@ def stage_context(
         "job": job,
         "watching": watching,
         "refused": request.query_params.get("refused") == "1",
-        "captcha_error": request.query_params.get("captcha") == "1",
+        "captcha_notice": CAPTCHA_NOTICES.get(request.query_params.get("captcha", ""), ""),
         "empty_note": _empty_note(stage, job, view) if watching else "",
         "zip_ready": pdf_zip_path(job.job_id).is_file() if watching else False,
-        "captcha_version": _captcha_version(job) if watching else 0,
+        "captcha_wait": open_captcha(job.job_id) if watching else None,
+        "captcha_reading": captcha_reading(job.job_id) if watching else "",
         "fresh": request.query_params.get("fresh") == "1",
         "remembered_job": None,
     }
-
-
-def _captcha_version(job) -> int:
-    image = captcha_image(job.job_id)
-    return int(image.stat().st_mtime_ns) if image is not None else 0
 
 
 def _job_export(stage_path: str, job, suffix: str) -> str:
@@ -313,7 +310,7 @@ def scrape_page(request: Request, path: Path = Depends(database_path)):
                 "watching": False,
                 "error": "",
                 "refused": False,
-                "captcha_error": False,
+                "captcha_notice": "",
                 "fresh": request.query_params.get("fresh") == "1",
                 "remembered_job": remembered_run(request, path, "scrape"),
             },

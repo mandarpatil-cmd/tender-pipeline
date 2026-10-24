@@ -437,6 +437,7 @@ def award_addresses(session: Session, vendor_id: int, tender_id: str) -> list[di
             "valid": line.valid,
             "will_mail": line.will_mail,
             "reason": line.reason,
+            "contact_id": line.contact_id,
         }
         for line in lines
     ]
@@ -456,6 +457,7 @@ def award_addresses(session: Session, vendor_id: int, tender_id: str) -> list[di
                 "valid": bool(row.valid),
                 "will_mail": False,
                 "reason": "",
+                "contact_id": row.contact_id,
             }
         )
     return shown

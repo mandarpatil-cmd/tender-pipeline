@@ -30,6 +30,8 @@ def run_scrape(
     only_aoc: bool = False,
     search_mode: str = SEARCH_AWARDED,
     job_id: int | None = None,
+    prefer_typed: "Callable[[], bool] | None" = None,
+    searched: "Callable[[], None] | None" = None,
 ) -> dict[str, Any]:
     """Scrape AOC records, then export every stored vendor to CSV and Excel.
 
@@ -53,6 +55,8 @@ def run_scrape(
         only_aoc=only_aoc,
         search_mode=search_mode,
         job_id=job_id,
+        prefer_typed=prefer_typed,
+        searched=searched,
     )
     store = Store(out_dir)
     csv_path, xlsx_path = write_vendor_sheet(store, out_dir)

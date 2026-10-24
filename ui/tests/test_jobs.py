@@ -12,8 +12,8 @@ from pipeline_core.models import Vendor
 from pipeline_core.queries import mark_failed, upsert_vendor
 
 from ops_ui.app import create_app
-from ops_ui.present import job_id_from
-from ops_ui.jobs import Busy, get_job, start_job
+from ops_ui.present import job_id_from, job_page
+from ops_ui.jobs import Busy, captcha_reading, get_job, open_captcha, start_job, wants_typed
 from pipeline_core.db import session
 
 
@@ -188,31 +188,40 @@ def test_typed_captcha_reaches_the_same_run(tmp_path):
             break
         threading.Event().wait(0.05)
     assert "6 characters" in page
-    assert 'id="captcha-box"' in page
+    wait = open_captcha(job_id)
+    assert wait is not None and not wait.retry
+    assert f'id="captcha-box-{wait.token}"' in page
     assert 'hx-preserve="true"' in page
     assert 'id="captcha-code"' in page
     assert 'class="captcha-code"' in page
+    assert f'name="token" value="{wait.token}"' in page
+    assert "autofocus" not in page
+    assert "maxlength" not in page
     assert client.get(f"/jobs/{job_id}/captcha").content.startswith(b"\x89PNG")
     short = client.post(
         f"/jobs/{job_id}/captcha",
-        data={"code": "ab"},
+        data={"token": str(wait.token), "code": "ab"},
         follow_redirects=False,
     )
     assert short.status_code == 303
-    assert short.headers["location"].endswith(f"/scrape?job={job_id}&captcha=1")
+    assert short.headers["location"].endswith(f"/scrape?job={job_id}&captcha=short")
     assert "Type all 6 characters" in client.get(short.headers["location"]).text
     posted = client.post(
         f"/jobs/{job_id}/captcha",
-        data={"code": "Ab12Xy"},
+        data={"token": str(wait.token), "code": " Ab12 Xy "},
         follow_redirects=False,
     )
     assert posted.status_code == 303
+    assert "captcha=" not in posted.headers["location"]
+    assert open_captcha(job_id) is None
+    assert client.get(f"/jobs/{job_id}/captcha").status_code == 404
+    job = None
     for _ in range(50):
-        if received:
+        job = get_job(path, job_id)
+        if job is not None and job.state == "done":
             break
         threading.Event().wait(0.05)
     assert received == ["Ab12Xy"]
-    job = get_job(path, job_id)
     assert job is not None and job.state == "done"
     assert "continued" in (job.log or "")
 
@@ -244,6 +253,155 @@ def test_captcha_wait_ends_when_nobody_types(tmp_path, monkeypatch):
     assert job is not None
     assert job.state == "failed"
     assert "Nobody typed the captcha in time" in (job.log or "")
+
+    client = TestClient(create_app(path))
+    late = client.post(
+        f"/jobs/{job_id}/captcha",
+        data={"token": "1", "code": "Ab12Xy"},
+        follow_redirects=False,
+    )
+    assert late.status_code == 303
+    assert late.headers["location"].endswith(f"/scrape?job={job_id}&captcha=closed")
+    page = client.get(late.headers["location"]).text
+    assert "no longer waiting" in page
+    assert 'id="captcha-box-' not in page
+
+
+def test_a_rejected_code_brings_a_new_box(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    image = tmp_path / "captcha.png"
+    image.write_bytes(b"\x89PNG\r\n")
+    received: list[str] = []
+
+    def work(log, stop):
+        from ops_ui.jobs import wait_for_captcha
+
+        received.append(wait_for_captcha(log, stop, image))
+        received.append(wait_for_captcha(log, stop, image))
+        return 0
+
+    def next_wait(after: int):
+        for _ in range(50):
+            wait = open_captcha(job_id)
+            if wait is not None and wait.token != after:
+                return wait
+            threading.Event().wait(0.05)
+        raise AssertionError("no new captcha wait")
+
+    job_id = start_job(path, "scrape", {}, work)
+    client = TestClient(create_app(path))
+    first = next_wait(0)
+    client.post(
+        f"/jobs/{job_id}/captcha",
+        data={"token": str(first.token), "code": "Wrong1"},
+        follow_redirects=False,
+    )
+    second = next_wait(first.token)
+    assert second.retry
+    page = ""
+    for _ in range(50):
+        page = client.get(f"/jobs/{job_id}/live").text
+        if f'id="captcha-box-{second.token}"' in page:
+            break
+        threading.Event().wait(0.05)
+    assert f'id="captcha-box-{second.token}"' in page
+    assert f"captcha?v={second.token}" in page
+    assert "not accepted" in page
+
+    again = client.post(
+        f"/jobs/{job_id}/captcha",
+        data={"token": str(first.token), "code": "Wrong1"},
+        follow_redirects=False,
+    )
+    assert "captcha=" not in again.headers["location"]
+    assert open_captcha(job_id) is second
+
+    client.post(
+        f"/jobs/{job_id}/captcha",
+        data={"token": str(second.token), "code": "Right2"},
+        follow_redirects=False,
+    )
+    for _ in range(50):
+        if len(received) == 2:
+            break
+        threading.Event().wait(0.05)
+    assert received == ["Wrong1", "Right2"]
+
+
+def test_type_it_myself_opens_the_box_before_the_reads_run_out(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    image = tmp_path / "captcha.png"
+    image.write_bytes(b"\x89PNG\r\n")
+    received: list[str] = []
+
+    def work(log, stop):
+        from ops_ui.jobs import begin_reading, wait_for_captcha
+
+        begin_reading(log.job_id)
+        for _ in range(100):
+            if wants_typed(log.job_id):
+                break
+            threading.Event().wait(0.05)
+        received.append(wait_for_captcha(log, stop, image))
+        return 0
+
+    job_id = start_job(path, "scrape", {}, work)
+    client = TestClient(create_app(path))
+    live = ""
+    for _ in range(50):
+        live = client.get(f"/jobs/{job_id}/live").text
+        if "Type the captcha myself" in live:
+            break
+        threading.Event().wait(0.05)
+    assert "Type the captcha myself" in live
+    assert f'action="/jobs/{job_id}/captcha/typed"' in live
+
+    pressed = client.post(f"/jobs/{job_id}/captcha/typed", follow_redirects=False)
+    assert pressed.status_code == 303
+    assert pressed.headers["location"].endswith(f"/scrape?job={job_id}")
+    for _ in range(50):
+        live = client.get(f"/jobs/{job_id}/live").text
+        if 'id="captcha-box-' in live:
+            break
+        threading.Event().wait(0.05)
+    assert 'id="captcha-box-' in live
+    assert "Type the captcha myself" not in live
+    assert captcha_reading(job_id) == ""
+
+    wait = open_captcha(job_id)
+    assert wait is not None
+    client.post(
+        f"/jobs/{job_id}/captcha",
+        data={"token": str(wait.token), "code": "Ab12Xy"},
+        follow_redirects=False,
+    )
+    for _ in range(50):
+        if received:
+            break
+        threading.Event().wait(0.05)
+    assert received == ["Ab12Xy"]
+
+
+def test_type_it_myself_after_the_captcha_step_does_nothing(tmp_path):
+    path = tmp_path / "pipeline.sqlite3"
+    ensure_schema(engine(path))
+    job_id = start_job(path, "scrape", {}, lambda log, stop: 0)
+    client = TestClient(create_app(path))
+
+    pressed = client.post(f"/jobs/{job_id}/captcha/typed", follow_redirects=False)
+
+    assert pressed.status_code == 303
+    assert not wants_typed(job_id)
+    assert captcha_reading(job_id) == ""
+    assert client.post("/jobs/999/captcha/typed").status_code == 404
+
+
+def test_a_pdf_run_keeps_the_captcha_notice():
+    assert job_page("pdfs", 7) == "/jobs/7"
+    assert job_page("pdfs", 7, captcha="short") == "/jobs/7?captcha=short"
+    assert job_page("pdfs", 7, refused=True) == "/jobs/7?refused=1"
 
 
 def test_stop_marks_the_run_stopped(tmp_path):
@@ -594,6 +752,8 @@ def test_a_ui_scrape_tells_stage_one_its_search_and_run(tmp_path, monkeypatch):
         threading.Event().wait(0.05)
     assert seen["search_mode"] == "awarded"
     assert seen["job_id"] == job_id
+    assert seen["prefer_typed"]() is False
+    assert callable(seen["searched"])
 
 
 def test_an_enrich_run_tells_stage_two_its_job(tmp_path, monkeypatch):
@@ -658,6 +818,9 @@ def test_download_pdfs_tells_stage_one_its_run(tmp_path, monkeypatch):
     assert run_fetch_pdfs(log, threading.Event(), tender_id="2026_X_1") == 0
     assert seen["tender_id"] == "2026_X_1"
     assert seen["job_id"] == 12
+    assert seen["prefer_typed"]() is False
+    assert callable(seen["searched"])
+    assert captcha_reading(12) == ""
     assert "Saved clues." in log.lines
 
 

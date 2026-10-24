@@ -27,6 +27,10 @@ from ops_ui.jobs import Log
 
 _SCRAPE_DELAY_FLOOR = 1.5
 _MAIL_DELAY_FLOOR = 5.0
+_CAPTCHA_LINE = (
+    "Captcha is read automatically. To type it yourself, press Type the captcha myself. "
+    "If every read fails, the box opens on this page."
+)
 
 
 def status_cost() -> str:
@@ -193,7 +197,13 @@ def run_scrape(
         published_to=checked.get("publishedToDate", ""),
         organ_name=organ_name,
     )
-    from ops_ui.jobs import CaptchaTimedOut, wait_for_captcha
+    from ops_ui.jobs import (
+        CaptchaTimedOut,
+        begin_reading,
+        end_reading,
+        wait_for_captcha,
+        wants_typed,
+    )
 
     organisation_search = search == SEARCH_ORGANISATION
     if organisation_search:
@@ -213,7 +223,7 @@ def run_scrape(
     if shown:
         log.write("Portal fields: " + ", ".join(shown))
     log.write(scrape_cost(max_tenders=max_tenders, probe=probe))
-    log.write("Captcha is read automatically. If that fails, type it on this page.")
+    log.write(_CAPTCHA_LINE)
 
     def ask(image_path: Path) -> str:
         try:
@@ -225,6 +235,7 @@ def run_scrape(
     logger = logging.getLogger("stage1_scrape")
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+    begin_reading(log.job_id)
     try:
         info = scrape(
             out,
@@ -241,6 +252,8 @@ def run_scrape(
             ask=ask,
             search_mode=search,
             job_id=log.job_id,
+            prefer_typed=lambda: wants_typed(log.job_id),
+            searched=lambda: end_reading(log.job_id),
         )
     except CaptchaError as exc:
         log.write(str(exc))
@@ -249,6 +262,7 @@ def run_scrape(
             return 0
         return 1
     finally:
+        end_reading(log.job_id)
         logger.removeHandler(handler)
     if probe:
         log.write("Probe finished. No tenders were fetched.")
@@ -267,10 +281,17 @@ def run_fetch_pdfs(log: Log, stop: threading.Event, *, tender_id: str) -> int:
     from stage1_scrape.app.pipeline import fetch_tender_pdfs
     from stage1_scrape.domain.errors import CaptchaError, ParseError
 
-    from ops_ui.jobs import CaptchaTimedOut, pdf_zip_path, wait_for_captcha
+    from ops_ui.jobs import (
+        CaptchaTimedOut,
+        begin_reading,
+        end_reading,
+        pdf_zip_path,
+        wait_for_captcha,
+        wants_typed,
+    )
 
     log.write(f"Fetching PDFs for {tender_id}. One captcha read.")
-    log.write("Captcha is read automatically. If that fails, type it on this page.")
+    log.write(_CAPTCHA_LINE)
 
     def ask(image_path: Path) -> str:
         try:
@@ -283,6 +304,7 @@ def run_fetch_pdfs(log: Log, stop: threading.Event, *, tender_id: str) -> int:
     logger = logging.getLogger("stage1_scrape")
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+    begin_reading(log.job_id)
     try:
         info = fetch_tender_pdfs(
             out,
@@ -294,6 +316,8 @@ def run_fetch_pdfs(log: Log, stop: threading.Event, *, tender_id: str) -> int:
             should_stop=stop.is_set,
             ask=ask,
             job_id=log.job_id,
+            prefer_typed=lambda: wants_typed(log.job_id),
+            searched=lambda: end_reading(log.job_id),
         )
     except CaptchaError as exc:
         log.write(str(exc))
@@ -302,6 +326,7 @@ def run_fetch_pdfs(log: Log, stop: threading.Event, *, tender_id: str) -> int:
         log.write(str(exc))
         return 1
     finally:
+        end_reading(log.job_id)
         logger.removeHandler(handler)
     log.write(info["message"])
     if info.get("stopped") or stop.is_set():

@@ -1,5 +1,5 @@
 {% if refused %}<p class="warn">A new run was refused. This one is still going.</p>{% endif %}
-{% if captcha_error %}<p class="warn">Type all 6 characters shown in the image, then Continue.</p>{% endif %}
+{% if captcha_notice %}<p class="warn">{{ captcha_notice }}</p>{% endif %}
 {% include "job_live.html" %}
 <p class="label">Log</p>
 <pre id="job-log" data-job="{{ job.job_id }}" data-offset="{{ (job.log or '')|length }}" data-active="{% if job.state == 'running' or job.state == 'waiting' %}1{% else %}0{% endif %}">{{ job.log }}</pre>
@@ -33,6 +33,10 @@
           if (follow) panel.scrollTop = panel.scrollHeight;
         }
         if (update.next) offset = Number(update.next);
+        // #live skips its poll while the captcha input has focus, so drop a box nobody is waiting on.
+        if (update.state !== "waiting" && document.querySelector(".captcha-box")) {
+          htmx.ajax("GET", "/jobs/" + jobId + "/live", { target: "#live", swap: "outerHTML" });
+        }
         if (update.state === "running" || update.state === "waiting") {
           window.setTimeout(poll, 1000);
         }
@@ -42,5 +46,24 @@
       });
   }
   window.setTimeout(poll, 1000);
+})();
+</script>
+<script>
+(function () {
+  // Focus each new captcha once. A box htmx preserves keeps data-focused, so polls never pull focus back.
+  function focusCaptcha() {
+    var input = document.getElementById("captcha-code");
+    if (!input || input.getAttribute("data-focused")) return;
+    input.setAttribute("data-focused", "1");
+    input.focus();
+  }
+  focusCaptcha();
+  document.body.addEventListener("htmx:afterSettle", focusCaptcha);
+  document.addEventListener("input", function (event) {
+    var input = event.target;
+    if (input.id !== "captcha-code") return;
+    var clean = input.value.replace(/\s+/g, "").slice(0, 6);
+    if (clean !== input.value) input.value = clean;
+  });
 })();
 </script>

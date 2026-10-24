@@ -337,19 +337,26 @@ def job_id_from(location: str) -> int:
     return int(location.rstrip("/").rsplit("/", 1)[-1])
 
 
-def job_page(stage: str, job_id: int, *, refused: bool = False, captcha: bool = False) -> str:
-    """Where the operator watches a run. Status stays on Activity."""
+CAPTCHA_NOTICES = {
+    "short": "Type all 6 characters shown in the image, then Continue.",
+    "closed": "That image was no longer waiting, so the code was not sent.",
+}
+
+
+def job_page(stage: str, job_id: int, *, refused: bool = False, captcha: str = "") -> str:
+    """Where the operator watches a run. Status stays on Activity.
+
+    ``captcha`` is a key of ``CAPTCHA_NOTICES``, or empty.
+    """
     paths = {"scrape": "/scrape", "enrich": "/enrich", "outreach": "/mail"}
     path = paths.get(stage)
-    if path is None:
-        target = f"/jobs/{job_id}"
-        return f"{target}?refused=1" if refused else target
-    parts = [f"job={job_id}"]
+    parts = [] if path is None else [f"job={job_id}"]
     if refused:
         parts.append("refused=1")
     if captcha:
-        parts.append("captcha=1")
-    return f"{path}?{'&'.join(parts)}"
+        parts.append(f"captcha={captcha}")
+    target = f"/jobs/{job_id}" if path is None else path
+    return f"{target}?{'&'.join(parts)}" if parts else target
 
 
 def mail_job_awards(params_json: str | None) -> tuple[tuple[int, str], ...]:

@@ -13,6 +13,7 @@ from pipeline_core.manual import NeedsAttach, TenderExists, WinnerInput, save_ma
 from pipeline_core.queries import (
     ContactError,
     classify_selection,
+    remove_typed_contact,
     set_do_not_mail,
     set_typed_contact,
 )
@@ -104,6 +105,23 @@ async def post_contact(request: Request, vendor_id: int):
                 email=str(form.get("email") or ""),
                 phone=str(form.get("phone") or ""),
             )
+    except ContactError as exc:
+        return Response(str(exc), status_code=400, media_type="text/plain")
+    return RedirectResponse(back, status_code=303)
+
+
+@router.post("/vendor/{vendor_id}/contact/{contact_id}/remove")
+async def post_contact_remove(request: Request, vendor_id: int, contact_id: int):
+    path = database_path(request)
+    snapshot = load_home(path)
+    if not snapshot.ready:
+        return Response(snapshot.message, status_code=404, media_type="text/plain")
+    form = await request.form()
+    back = str(form.get("back") or "/")
+    ensure_schema(engine(path))
+    try:
+        with session(engine(path)) as current:
+            remove_typed_contact(current, vendor_id, contact_id)
     except ContactError as exc:
         return Response(str(exc), status_code=400, media_type="text/plain")
     return RedirectResponse(back, status_code=303)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import threading
@@ -43,8 +44,12 @@ class Log:
 
 
 class CaptchaWait:
-    def __init__(self, image: Path) -> None:
+    """One image the run is waiting on. A new image gets a new token."""
+
+    def __init__(self, image: Path, token: int, retry: bool) -> None:
         self.image = image
+        self.token = token
+        self.retry = retry
         self.answer: str | None = None
         self.event = threading.Event()
 
@@ -52,6 +57,11 @@ class CaptchaWait:
 _GUARD = threading.Lock()
 _STOPS: dict[int, threading.Event] = {}
 _CAPTCHA: dict[int, CaptchaWait] = {}
+_ANSWERED: dict[int, int] = {}
+_READING: set[int] = set()
+_TYPED: set[int] = set()
+_CAPTCHA_LOCK = threading.Lock()
+_TOKENS = itertools.count(1)
 CAPTCHA_TIMEOUT_SECONDS = 180
 
 
@@ -138,28 +148,79 @@ def close_orphaned_jobs(database: Path) -> int:
 
 
 def begin_captcha(database: Path, job_id: int, image: Path) -> CaptchaWait:
-    """Mark the run as waiting and hold the image until six characters arrive."""
-    wait = CaptchaWait(image)
-    _CAPTCHA[job_id] = wait
+    """Mark the run as waiting and hold the image until six characters arrive.
+
+    A run searches once, so a second wait after a sent code means the portal
+    rejected that code.
+    """
+    end_reading(job_id)
+    with _CAPTCHA_LOCK:
+        wait = CaptchaWait(image, next(_TOKENS), retry=job_id in _ANSWERED)
+        _CAPTCHA[job_id] = wait
     _set_state(database, job_id, "waiting")
     return wait
 
 
-def submit_captcha(job_id: int, code: str) -> bool:
+def begin_reading(job_id: int) -> None:
+    """The captcha is being read automatically. The page offers to type it instead."""
+    with _CAPTCHA_LOCK:
+        _READING.add(job_id)
+
+
+def end_reading(job_id: int) -> None:
+    with _CAPTCHA_LOCK:
+        _READING.discard(job_id)
+        _TYPED.discard(job_id)
+
+
+def request_typed(job_id: int) -> bool:
+    """Skip the remaining automatic tries. False once the captcha step is over."""
+    with _CAPTCHA_LOCK:
+        if job_id not in _READING:
+            return False
+        _TYPED.add(job_id)
+        return True
+
+
+def wants_typed(job_id: int) -> bool:
+    return job_id in _TYPED
+
+
+def captcha_reading(job_id: int) -> str:
+    """Empty, reading (the button shows) or switching (asked, waiting for the try to end)."""
+    if job_id not in _READING:
+        return ""
+    return "switching" if job_id in _TYPED else "reading"
+
+
+def submit_captcha(job_id: int, token: int, code: str) -> str:
+    """Return sent, short (not six characters) or closed (that image is not waiting)."""
+    text = "".join((code or "").split())
+    with _CAPTCHA_LOCK:
+        if _ANSWERED.get(job_id) == token:
+            return "sent"
+        wait = _CAPTCHA.get(job_id)
+        if wait is None or wait.token != token or wait.event.is_set():
+            return "closed"
+        if len(text) != 6:
+            return "short"
+        wait.answer = text
+        _ANSWERED[job_id] = token
+        wait.event.set()
+    return "sent"
+
+
+def open_captcha(job_id: int) -> CaptchaWait | None:
+    """The wait still taking a code. None once a code is sent or the run is stopped."""
     wait = _CAPTCHA.get(job_id)
-    text = (code or "").strip()
-    if wait is None or len(text) != 6:
-        return False
-    wait.answer = text
-    wait.event.set()
-    return True
+    if wait is None or wait.event.is_set() or not wait.image.is_file():
+        return None
+    return wait
 
 
 def captcha_image(job_id: int) -> Path | None:
-    wait = _CAPTCHA.get(job_id)
-    if wait is None or not wait.image.is_file():
-        return None
-    return wait.image
+    wait = open_captcha(job_id)
+    return wait.image if wait is not None else None
 
 
 def finish_captcha(job_id: int) -> None:
@@ -335,3 +396,4 @@ def _execute(database: Path, job_id: int, work: Work, stop: threading.Event) -> 
                 job.exit_code = code
                 job.finished_at = utcnow()
         _STOPS.pop(job_id, None)
+        _ANSWERED.pop(job_id, None)

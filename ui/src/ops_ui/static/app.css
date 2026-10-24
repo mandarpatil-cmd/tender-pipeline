@@ -725,14 +725,18 @@ fieldset {
   margin: 1rem 0;
 }
 
+/* The portal's image is 190x46. Content-box keeps the 2x exact under the padding. */
 img.captcha {
   display: block;
+  box-sizing: content-box;
+  width: 380px;
+  height: auto;
   margin: 0.8rem 0;
   background: #fff;
   padding: 0.5rem;
   border: 1px solid #111;
   border-radius: calc(var(--radius) - 2px);
-  max-width: 100%;
+  max-width: calc(100% - 1rem - 2px);
   image-rendering: pixelated;
 }
 
@@ -763,11 +767,7 @@ input.captcha-code {
   padding: 0.55rem 0.75rem;
 }
 
-.dark input.captcha-code {
-  background: #fff;
-  color: #111;
-  caret-color: #111;
-}
+input.captcha-code::placeholder { letter-spacing: normal; }
 
 .recent { width: 100%; margin-top: 0.4rem; }
 .recent th, .recent td { white-space: normal; }

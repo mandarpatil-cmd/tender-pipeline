@@ -6,7 +6,7 @@ import threading
 
 from fastapi.testclient import TestClient
 from pipeline_core.db import engine, ensure_schema, session
-from pipeline_core.models import CONTACT_TYPED, Vendor
+from pipeline_core.models import CONTACT_TYPED, Vendor, VendorContact
 from pipeline_core.queries import (
     mark_enriched,
     mark_failed,
@@ -99,6 +99,33 @@ def test_typed_email_is_marked_and_a_bad_one_is_refused(tmp_path):
     assert vendor.email == "person@firm.example"
     assert vendor.phone == "9999999999"
     assert vendor.contact_origin == CONTACT_TYPED
+
+    again = client.post(
+        f"/vendor/{vendor_id}/contact",
+        data={"email": "boss@firm.example, desk@firm.example", "phone": "", "back": "/"},
+        follow_redirects=False,
+    )
+    assert again.status_code == 303
+    page = client.get("/award?tender_id=T-9&bid=1").text
+    for value in ("person@firm.example", "boss@firm.example", "desk@firm.example"):
+        assert value in page
+    assert page.count(">Remove</button>") == 3
+
+    with session(engine(path)) as current:
+        ids = {row.value: row.contact_id for row in current.query(VendorContact)}
+    model_phone = client.post(
+        f"/vendor/{vendor_id}/contact/{ids['9999999999']}/remove", data={"back": "/"}
+    )
+    assert model_phone.status_code == 400
+    removed = client.post(
+        f"/vendor/{vendor_id}/contact/{ids['desk@firm.example']}/remove",
+        data={"back": "/"},
+        follow_redirects=False,
+    )
+    assert removed.status_code == 303
+    page = client.get("/award?tender_id=T-9&bid=1").text
+    assert "desk@firm.example" not in page
+    assert page.count(">Remove</button>") == 2
 
 
 def test_ticked_company_dry_run_lists_it_and_spends_nothing(tmp_path):
