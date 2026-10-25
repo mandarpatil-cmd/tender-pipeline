@@ -23,6 +23,8 @@ from stage1_scrape.parse import (
     parse_result_count,
     parse_results_table,
     parse_summary_page,
+    portal_message,
+    search_found_no_tenders,
     search_still_showing_form,
 )
 from stage1_scrape.persist import Store, download_document
@@ -492,14 +494,14 @@ def _search_with_captcha(
         results = submit_search(client, html, code, extra=extra_fields)
         if search_still_showing_form(results):
             store.write_debug(f"search_rejected_{attempt}.html", results)
-            last_error = CaptchaError(
-                "Search was rejected (captcha still on the page). Try again."
-            )
+            reason = portal_message(results) or "The portal returned the search form again."
+            last_error = CaptchaError(f"Search was rejected. {reason}")
             log.warning(
-                "Captcha/search rejected (attempt %s/%s), submitted=%s",
+                "Search rejected (attempt %s/%s), submitted=%s. %s",
                 attempt,
                 attempts,
                 code,
+                reason,
             )
             captcha_text = None
             from_probe = False
@@ -528,10 +530,9 @@ def _search_with_captcha(
                     searched()
                 return _accepted_results(client, store, session_path, results)
             store.write_debug("search_rejected_typed.html", results)
-            last_error = CaptchaError(
-                "Search was rejected (captcha still on the page). Try again."
-            )
-            log.warning("Typed captcha was rejected. A new image is on this page.")
+            reason = portal_message(results) or "The portal returned the search form again."
+            last_error = CaptchaError(f"Search was rejected. {reason}")
+            log.warning("%s A new image is on this page.", reason)
     assert last_error is not None
     raise last_error
 
@@ -539,6 +540,10 @@ def _search_with_captcha(
 def _accepted_results(client: GePNICClient, store: Store, session_path: Path, results: str) -> str:
     rows = parse_results_table(results)
     if not rows:
+        if search_found_no_tenders(results):
+            log.info("The portal ran the search. No tenders matched it.")
+            client.save_state(session_path)
+            return results
         store.write_debug("search_no_rows.html", results)
         raise ParseError(
             "Search succeeded but no 'View Tender Status' rows were found. "

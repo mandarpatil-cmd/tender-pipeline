@@ -287,3 +287,39 @@ def test_an_accepted_search_with_no_rows_is_reported_then_refused(tmp_path, monk
         )
 
     assert done == [1]
+
+
+def test_a_search_that_matched_nothing_ends_the_run(tmp_path, monkeypatch):
+    """The portal keeps its captcha image on an accepted search that matched
+    nothing. Reading that page as a rejection asked the operator for one
+    captcha after another while every code they typed was in fact correct."""
+    store = Store(tmp_path)
+    client = MagicMock()
+    client.fetch_search_form.return_value = "<form></form>"
+    empty = (
+        '<form id="frmSearchFilter">'
+        '<img id="captchaImage" src="data:image/png;base64,AA="></form>'
+        '<table><tr><td>S.No</td></tr><tr><td colspan="6">'
+        '<span class="error">No Tenders found.</span></td></tr></table>'
+    )
+    asked: list = []
+    searched: list = []
+
+    monkeypatch.setattr(pipeline, "resolve_captcha_code", lambda *a, **k: "OCR123")
+    monkeypatch.setattr(pipeline, "save_captcha", _save)
+    monkeypatch.setattr(pipeline, "submit_search", lambda *a, **k: empty)
+
+    html = pipeline._search_with_captcha(
+        client,
+        store,
+        None,
+        retries=10,
+        captcha_solver="openrouter",
+        ask=lambda path: asked.append(path) or "TYPED1",
+        searched=lambda: searched.append(True),
+    )
+
+    assert html == empty
+    assert asked == []
+    assert searched == [True]
+    assert client.fetch_search_form.call_count == 1

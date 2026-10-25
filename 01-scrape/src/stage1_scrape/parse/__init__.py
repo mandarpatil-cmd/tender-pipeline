@@ -4,6 +4,8 @@ from .listing import (
     parse_result_count,
     parse_results_table,
     parse_total_records,
+    portal_message,
+    search_found_no_tenders,
     search_still_showing_form,
 )
 from .status import find_stage_summary_url
@@ -23,5 +25,7 @@ __all__ = [
     "parse_results_table",
     "parse_summary_page",
     "parse_total_records",
+    "portal_message",
+    "search_found_no_tenders",
     "search_still_showing_form",
 ]

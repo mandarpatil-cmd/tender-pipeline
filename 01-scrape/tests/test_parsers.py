@@ -12,6 +12,8 @@ from stage1_scrape.parse import (
     parse_results_table,
     parse_summary_page,
     parse_total_records,
+    portal_message,
+    search_found_no_tenders,
     search_still_showing_form,
 )
 
@@ -71,6 +73,36 @@ def test_a_blank_cell_keeps_the_other_columns_in_place():
 def test_search_form_is_not_treated_as_results(html):
     assert search_still_showing_form(html("search_form.html")) is True
     assert search_still_showing_form(html("results_table.html")) is False
+
+
+#: Both pages below are the live portal's markup for one submitted search.
+#: The captcha image is on each of them, so it cannot tell them apart.
+EMPTY_RESULT = """
+<form id="frmSearchFilter"><img id="captchaImage" src="data:image/png;base64,AA="></form>
+<table><tr><td>S.No</td><td>Tender ID</td><td>Tender Stage</td></tr>
+<tr><td colspan="6" class="td_space" align="center">
+<span class="error">No Tenders found.</span><td></tr></table>
+"""
+
+REFUSED = """
+<span id="If_17"><table width="90%" class="message_box"><tr><td class="alerttext">
+<span class="error"><img src="images/failure.png" align="absmiddle">&nbsp;&nbsp;
+<b>Invalid Captcha! Please Enter Correct Captcha.</b></td></tr></table></span>
+<form id="frmSearchFilter"><img id="captchaImage" src="data:image/png;base64,AA="></form>
+"""
+
+
+def test_a_search_that_matched_nothing_is_not_a_rejected_captcha():
+    """The run used to ask for the captcha again forever on an empty search."""
+    assert search_found_no_tenders(EMPTY_RESULT) is True
+    assert portal_message(EMPTY_RESULT) == ""
+    assert search_still_showing_form(EMPTY_RESULT) is False
+
+
+def test_a_refused_search_is_read_from_the_portals_own_banner():
+    assert portal_message(REFUSED) == "Invalid Captcha! Please Enter Correct Captcha."
+    assert search_found_no_tenders(REFUSED) is False
+    assert search_still_showing_form(REFUSED) is True
 
 
 def test_stage_summary_link(html):

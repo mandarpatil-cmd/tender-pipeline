@@ -21,7 +21,49 @@ RECORDS_RE = re.compile(
 TOTAL_RECORDS_RE = re.compile(r"Total\s+records\s*:\s*([\d,]+)", re.I)
 
 
+#: The portal's own refusal banner: ``<table class="message_box">`` inside
+#: ``span#If_17``. CONFIRMED on the live portal: only a submit the portal
+#: refused renders it, and that page carries no results table at all.
+NO_TENDERS_RE = re.compile(r"No\s+Tenders\s+found", re.I)
+
+
+def portal_message(html: str) -> str:
+    """The portal's refusal banner as one line, or "" when the page has none."""
+    soup = parse_html(html)
+    box = soup.find("table", class_="message_box")
+    if box is None:
+        return ""
+    return " ".join(box.get_text(" ", strip=True).split())
+
+
+def search_found_no_tenders(html: str) -> bool:
+    """True when the portal ran the search and nothing matched.
+
+    CONFIRMED: an accepted search that matched nothing still renders the
+    results table, with ``<span class="error">No Tenders found.</span>`` in
+    place of the rows.
+    """
+    soup = parse_html(html)
+    return any(
+        NO_TENDERS_RE.search(span.get_text(" ", strip=True))
+        for span in soup.find_all("span", class_="error")
+    )
+
+
 def search_still_showing_form(html: str) -> bool:
+    """True when the portal refused the search instead of running it.
+
+    The search form and its captcha image sit above the results on the same
+    page, so a captcha image alone proves nothing: an accepted search that
+    matched nothing looks exactly like a rejected one. Reading it that way
+    sends a correct captcha back to the operator as "rejected", and the run
+    asks for another one forever. The banner and "No Tenders found." are what
+    tell the two apart.
+    """
+    if portal_message(html):
+        return True
+    if search_found_no_tenders(html):
+        return False
     soup = parse_html(html)
     has_captcha = soup.find("img", id="captchaImage") is not None
     has_results = soup.find("a", attrs={"title": VIEW_STATUS_TITLE}) is not None
