@@ -335,9 +335,10 @@ def run_fetch_pdfs(log: Log, stop: threading.Event, *, tender_id: str) -> int:
 
 
 def enrich_cost_line(count: int, dry_run: bool) -> str:
+    noun = "company" if count == 1 else "companies"
     if dry_run:
-        return f"{count} companies would be listed. Nothing will be spent."
-    return f"{count} companies. One paid model call each."
+        return f"{count} {noun} would be listed. Nothing will be spent."
+    return f"{count} {noun}. One paid model call each."
 
 
 def _would_requeue(count: int, status: str) -> str:

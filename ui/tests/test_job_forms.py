@@ -196,3 +196,10 @@ def test_a_code_for_a_run_that_does_not_exist_is_not_an_error(window):
     answer = client.post("/jobs/999/captcha", data={"token": "1", "code": "ABC123"}, follow_redirects=False)
 
     assert answer.status_code < 500
+
+
+def test_the_cost_line_counts_one_company_as_one():
+    from ops_ui.runs import enrich_cost_line
+
+    assert enrich_cost_line(1, True) == "1 company would be listed. Nothing will be spent."
+    assert enrich_cost_line(3, False) == "3 companies. One paid model call each."

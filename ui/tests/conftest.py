@@ -9,6 +9,12 @@ import pytest
 
 from pipeline_core.db import dispose_engines
 
+try:
+    import playwright  # noqa: F401
+except ImportError:
+    # The browser suite runs with: uv run --with pytest-playwright python -m pytest tests/e2e
+    collect_ignore = ["e2e"]
+
 #: Every setting the real stage .env files can hold. Tests see a fresh clone.
 _STAGE_SETTINGS = (
     "OPENROUTER_API_KEY",

@@ -121,7 +121,7 @@ Raise those limits in the stage's `main.py`. Stage 2 with `DRY_RUN = False` spen
 
 ## Tests
 
-No network, no API keys, no mail. Each suite uses its own throwaway database.
+No network, no API keys, no mail. Each suite uses its own throwaway database. A test that tries to reach the network fails, and the real `.env` values are blanked while the tests run.
 
 ```powershell
 cd core           ; uv run python -m pytest -q
@@ -129,6 +129,14 @@ cd ..\01-scrape   ; uv run python -m pytest -q
 cd ..\02-enrich   ; uv run python -m pytest -q
 cd ..\03-outreach ; uv run python -m pytest -q
 cd ..\ui          ; uv run python -m pytest -q
+```
+
+The browser tests drive the window in Chromium. They are skipped by the commands above. Playwright is not in `uv.lock`, so `--with` adds it for this command only. The install line downloads Chromium once.
+
+```powershell
+cd ui
+uv run --with pytest-playwright python -m playwright install chromium
+uv run --with pytest-playwright python -m pytest tests/e2e -q
 ```
 
 If a command is using the wrong Python, `uv run python -c "import sys; print(sys.prefix)"` should end in `tender-pipeline\.venv`. Do not run `uv init` in this repo or in a parent folder.
