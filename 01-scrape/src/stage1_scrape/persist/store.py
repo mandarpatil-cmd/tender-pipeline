@@ -75,14 +75,13 @@ AWARD_SEED_COLUMNS = (
 
 
 class Store:
-    """`root` holds json/, pdfs/ and debug/. Rows go to the shared database."""
+    """`root` holds pdfs/ and debug/. Rows go to the shared database."""
 
     def __init__(self, root: Path, *, db_path: Path | None = None) -> None:
         self.root = Path(root)
-        self.json_dir = self.root / "json"
         self.pdf_dir = self.root / "pdfs"
         self.debug_dir = self.root / "debug"
-        for folder in (self.json_dir, self.pdf_dir, self.debug_dir):
+        for folder in (self.pdf_dir, self.debug_dir):
             folder.mkdir(parents=True, exist_ok=True)
 
         # Default to the pipeline's database; `db_path` is for tests and scratch copies.
@@ -92,11 +91,6 @@ class Store:
         backfill_tender_documents(self.db_path)
 
     # ----------------------------------------------------------------- files
-
-    def pdf_dir_for(self, tender_id: str) -> Path:
-        folder = self.pdf_dir / _slug(tender_id)
-        folder.mkdir(parents=True, exist_ok=True)
-        return folder
 
     def write_debug(self, name: str, html: str) -> Path:
         path = self.debug_dir / name
@@ -119,9 +113,9 @@ class Store:
         A scrape that downloaded PDFs passes true even when the extracts are
         empty, so a tender whose files yielded nothing does not keep old clues.
 
-        `source` is the portal search of the run. Without it, as in a reindex,
-        the stored search, page and run are left as they are. A PDF download
-        (a tender-id search) never changes them, nor ``scraped_at``: the scrape
+        `source` is the portal search of the run. Without it the stored search,
+        page and run are left as they are. A PDF download (a tender-id search)
+        never changes them, nor ``scraped_at``: the scrape
         that brought the tender in stays its source. Every run that saves the
         tender is kept in ``job_tenders``.
         """
@@ -367,8 +361,3 @@ def _stage_from_json(json_path: str | None, scrape_root: Path) -> str:
         return ""
     listing = payload.get("listing") or {}
     return listing_status(listing.get("status"), listing.get("tender_stage"))
-
-
-def _slug(value: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in value)
-    return cleaned.strip("._") or "unknown"

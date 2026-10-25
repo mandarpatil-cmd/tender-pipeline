@@ -186,6 +186,20 @@ def test_the_style_sheet_and_htmx_are_served(seeded):
     assert "htmx" in js.text[:2000]
 
 
+def test_the_fonts_are_served_from_the_window(seeded):
+    """Every font the style sheet names is a local file, so no page calls out."""
+    client, _ = seeded
+    css = client.get("/static/app.css").text
+    fonts = re.findall(r'url\("([^"]+\.woff2)"\)', css)
+
+    assert len(fonts) == 4
+    for name in fonts:
+        answer = client.get(f"/static/{name}")
+        assert answer.status_code == 200, name
+        assert answer.content[:4] == b"wOF2", name
+    assert "fonts.googleapis" not in client.get("/").text
+
+
 def test_the_api_schema_is_not_published(seeded):
     """The window is not an API. Its routes are not listed for anyone to call."""
     client, _ = seeded

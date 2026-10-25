@@ -1,6 +1,5 @@
 from __future__ import annotations
 from collections.abc import Callable
-import json
 import logging
 import shutil
 import tempfile
@@ -572,47 +571,6 @@ def probe_search_form(out_dir: Path, delay: float = 1.0) -> dict:
         "search_html": str(store.debug_dir / "search_form.html"),
         "session": str(store.root / "session.pkl"),
     }
-
-
-def reindex_saved(out_dir: Path) -> int:
-    """Re-parse saved summary HTML into the vendor and award tables. No HTTP.
-
-    An empty PDF folder does not clear document rows already stored.
-    """
-    store = Store(out_dir)
-    count = 0
-    for path in sorted(store.json_dir.glob("*.json")):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        record = TenderRecord.from_dict(data)
-        summary_path = store.debug_dir / f"summary_{_slug_id(record.listing.tender_id)}.html"
-        if summary_path.exists():
-            parsed = parse_summary_page(
-                summary_path.read_text(encoding="utf-8", errors="replace")
-            )
-            record.financial_bids = parsed["financial_bids"]
-            record.awarded_bids = parsed["awarded_bids"]
-            if parsed.get("aoc"):
-                record.aoc = {**record.aoc, **parsed["aoc"]}
-            if parsed.get("header"):
-                record.header = {**record.header, **parsed["header"]}
-        folder = store.pdf_dir_for(record.listing.tender_id)
-        saved_pdfs = pdf_paths(folder)
-        if saved_pdfs:
-            record.pdf_extracts = extract_folder(folder)
-            _read_documents(record.pdf_extracts)
-        store.save_tender(
-            record,
-            scraped_at=data.get("scraped_at"),
-            replace_documents=bool(saved_pdfs),
-        )
-        count += 1
-        log.info(
-            "Indexed %s — %s financial row(s), %s awarded",
-            record.listing.tender_id,
-            len(record.financial_bids),
-            len(record.awarded_bids),
-        )
-    return count
 
 
 def _slug_id(value: str) -> str:

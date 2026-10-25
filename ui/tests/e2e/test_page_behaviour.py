@@ -23,6 +23,24 @@ def test_every_page_loads_without_a_script_error(browser_page, window):
     assert errors == []
 
 
+def test_the_fonts_load_from_the_window_alone(browser_page, window):
+    outside: list[str] = []
+    browser_page.on(
+        "request",
+        lambda request: None if request.url.startswith(window.base) else outside.append(request.url),
+    )
+    browser_page.goto(window.url("/"))
+    browser_page.evaluate("document.fonts.ready")
+
+    assert browser_page.evaluate("document.fonts.check('600 16px Inter')")
+    assert browser_page.evaluate("document.fonts.check('16px \"JetBrains Mono\"')")
+    loaded = browser_page.evaluate(
+        "[...document.fonts].filter(f => f.status === 'loaded').map(f => f.family)"
+    )
+    assert "Inter" in {name.strip('"') for name in loaded}
+    assert outside == []
+
+
 def test_the_counts_on_home_match_the_rows(browser_page, window):
     browser_page.goto(window.url("/"))
 

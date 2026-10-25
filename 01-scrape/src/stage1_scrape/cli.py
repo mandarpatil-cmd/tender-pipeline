@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .app.pipeline import probe_search_form, reindex_saved, scrape_aoc
+from .app.pipeline import probe_search_form, scrape_aoc
 from .scraping.captcha import parse_captcha_option
 
 
@@ -46,12 +46,6 @@ def main(argv: list[str] | None = None) -> int:
         max_tenders_default=1,
     )
 
-    index = sub.add_parser(
-        "index",
-        help="Re-parse saved summary HTML into JSON and vendor/award SQLite tables",
-    )
-    _add_common(index)
-
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -67,13 +61,6 @@ def main(argv: list[str] | None = None) -> int:
             "Type the 6 characters from captcha.png, or run:"
         )
         print(f"  python -m stage1_scrape run --out {out} --from-probe --max-tenders 1")
-        return 0
-
-    if args.command == "index":
-        from .persist.store import Store
-
-        n = reindex_saved(out)
-        print(f"Indexed {n} tender(s) into {Store(out).db_path}")
         return 0
 
     extra = {
@@ -136,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--out", default="data", help="Output directory (json, pdfs, sqlite)")
+    parser.add_argument("--out", default="data", help="Output directory (pdfs, debug pages)")
     parser.add_argument("--delay", type=float, default=1.5, help="Seconds to wait between HTTP calls")
     parser.add_argument("-v", "--verbose", action="store_true")
 

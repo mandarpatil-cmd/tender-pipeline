@@ -1,7 +1,7 @@
 """A real window on a free local port, with seeded data, driven by Chromium.
 
-Nothing leaves this computer: the browser may only load this window, so the
-Google Fonts request is refused, and the stage work is replaced in-process.
+Nothing leaves this computer: the browser may only load this window, so any
+outside request is refused, and the stage work is replaced in-process.
 """
 
 from __future__ import annotations

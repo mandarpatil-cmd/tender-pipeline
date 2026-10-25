@@ -194,15 +194,6 @@ python -m stage1_scrape scrape --out data --from-probe --captcha ABC123 --max-te
 `--from-probe` reuses the probe's session so the captcha matches the form. A fresh
 session would invalidate it.
 
-### Re-index saved HTML (no portal, no network)
-
-```powershell
-python -m stage1_scrape index --out data
-```
-
-Re-parses everything under `data/debug/` back through the parsers and into the database.
-The best way to check a parser change against real markup.
-
 ### Useful scrape flags
 
 | Flag | Effect |
@@ -231,16 +222,16 @@ The best way to check a parser change against real markup.
 │   └── scaling.md
 ├── src/stage1_scrape/
 │   ├── __main__.py             # python -m stage1_scrape
-│   ├── cli.py                  # probe / scrape / run / index
+│   ├── cli.py                  # probe / scrape / run
 │   ├── config.py               # portal constants
 │   ├── settings.py             # .env loaders
 │   ├── app/
-│   │   ├── pipeline.py         # scrape_aoc, probe_search_form, reindex_saved
+│   │   ├── pipeline.py         # scrape_aoc, scrape_one_tender, probe_search_form
 │   │   └── run.py              # run_scrape: scrape then export
 │   ├── domain/                 # models, errors, winner_rows
 │   ├── scraping/               # HTTP client, forms, captcha, OCR
 │   ├── parse/                  # listing / status / summary HTML
-│   ├── persist/                # JSON, PDFs, the shared database
+│   ├── persist/                # PDFs, the shared database
 │   └── export/                 # vendor rows -> CSV/Excel
 └── tests/
     ├── fixtures/               # frozen portal HTML
@@ -257,8 +248,7 @@ Created locally; **not** source, and gitignored:
 data/
   captcha.png
   session.pkl                 # cookies; do not commit
-  json/<tender_id>.json
-  pdfs/<tender_id>/*.pdf
+  pdfs/                       # empty: PDFs are read in a temp folder, then deleted
   debug/                      # search / listing / status / summary HTML
   exports/vendors.csv         # 15 cols, scrape + PDF facts only
   exports/vendors.xlsx

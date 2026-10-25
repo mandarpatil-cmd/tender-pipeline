@@ -30,8 +30,8 @@ flowchart TB
   end
 
   subgraph persist [Persistence]
-    JSON["data/json/*.json"]
-    PDF["data/pdfs/<tender_id>/"]
+    PDF["temp folder per tender
+(PDFs deleted after reading)"]
     DB["../data/pipeline.sqlite3
 (shared)"]
     DBG["data/debug/*.html"]
@@ -47,7 +47,6 @@ flowchart TB
   HTTP --> P3
   PARSE --> persist
   DOCS --> PDF
-  PIPE --> JSON
   PIPE --> DB
 ```
 
@@ -64,7 +63,7 @@ Dependencies point inward. The CLI does not parse HTML. Parsers do not write SQL
 | Domain | `stage1_scrape.domain` | `TenderRecord`, errors |
 | Scraping | `stage1_scrape.scraping` | session, forms, captcha image |
 | Parse | `stage1_scrape.parse` | listing, status, summary HTML |
-| Persist | `stage1_scrape.persist` | JSON, PDF files, the shared database |
+| Persist | `stage1_scrape.persist` | PDF files, the shared database |
 | Export | `stage1_scrape.export` | read-only: vendor rows → CSV/Excel |
 | Schema | `pipeline_core` (`../core`) | the tables themselves, shared by all three stages |
 
@@ -90,7 +89,7 @@ flowchart LR
 ```text
 main.py                  entry: one command, scrape then vendors.csv
 src/stage1_scrape/
-  cli.py                 entry: probe / scrape / run / index
+  cli.py                 entry: probe / scrape / run
   config.py              portal constants
   domain/
     models.py            ListingRow, BidRow, TenderRecord
@@ -125,8 +124,7 @@ All of this is gitignored. It is not source.
 data/
   captcha.png
   session.pkl            cookies from the last probe/search
-  json/<tender_id>.json
-  pdfs/<tender_id>/*.pdf
+  pdfs/                  empty: PDFs are read in a temp folder, then deleted
   debug/                 search form, listing, status, summary HTML
   exports/
     vendors.csv          15 cols, scrape + PDF facts only

@@ -32,7 +32,7 @@ stage2-enrich = { workspace = true }
 where = ["src"]
 
 [tool.setuptools.package-data]
-ops_ui = ["templates/*", "static/*"]
+ops_ui = ["templates/*", "static/*", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

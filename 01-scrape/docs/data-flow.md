@@ -62,7 +62,7 @@ PDF links: label in `td.td_caption`, filename in nested `<b>`, href `FrontEndVie
 
 ## Output per tender
 
-Listing fields, bids, financial ranking, awarded bids, AOC block, local PDF paths — written to `data/json/<tender_id>.json` and indexed in the shared database (`../data/pipeline.sqlite3`) as `tenders`, `vendors` and `awards` rows.
+Listing fields, bids, financial ranking, awarded bids, AOC block and document clues — saved in the shared database (`../data/pipeline.sqlite3`) as `tenders`, `vendors` and `awards` rows.
 
 ## Stop 6 — Spreadsheet
 

@@ -54,7 +54,7 @@ def _require(*modules: "tuple[str, str]") -> None:
 
 
 # ============================== SETTINGS ==============================
-OUT_DIR = "data"          # where json/, pdfs/, debug/, exports/ and the DB live
+OUT_DIR = "data"          # where debug/, exports/ and the captcha live (the database is ../data)
 MAX_TENDERS = 1           # NEW tenders to fetch this run (already-stored ones do not count)
 MAX_PAGES = 1             # listing pages to walk (10 rows each) -- the candidate pool
 REFRESH = False           # True = re-fetch tenders already saved in SQLite

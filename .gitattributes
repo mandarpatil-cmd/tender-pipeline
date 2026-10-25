@@ -1,3 +1,4 @@
 # Store text files with LF in the repo; Git converts to the platform's line
 # ending on checkout. Binary files (PDF, PNG) are detected and left alone.
 * text=auto
+*.woff2 binary

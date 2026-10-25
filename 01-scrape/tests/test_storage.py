@@ -27,7 +27,7 @@ def test_store_roundtrip(tmp_path):
     record = TenderRecord(listing=listing, aoc={"Contract Date": "20-Jul-2026"})
     store.save_tender(record)
     assert "2026_ORG_1" in store.known_ids()
-    assert list(store.json_dir.glob("*.json")) == []
+    assert not (tmp_path / "json").exists()
 
 
 def test_store_writes_vendor_and_award(tmp_path):
@@ -105,6 +105,7 @@ def test_blank_status_is_filled_from_saved_json(tmp_path):
     )
     store.save_tender(TenderRecord(listing=listing))
     document = tmp_path / "json" / "2026_ORG_2.json"
+    document.parent.mkdir()
     document.write_text(
         json.dumps({"listing": {"status": "", "tender_stage": "AOC"}}),
         encoding="utf-8",
@@ -259,26 +260,6 @@ def test_a_dash_before_a_pdf_email_is_not_stored(tmp_path):
         assert current.query(Vendor).one().pdf_email == "sunrise@example.com"
 
 
-def test_reindex_keeps_document_rows_when_no_pdf_is_on_disk(tmp_path):
-    import json
-
-    from pipeline_core.db import session
-    from pipeline_core.models import TenderDocument
-    from stage1_scrape.app.pipeline import reindex_saved
-
-    store = Store(tmp_path)
-    record = _pdf_contact_record("2026_A_1", "Sunrise Builders")
-    record.pdf_extracts = list(FAKE_EXTRACT)
-    store.save_tender(record)
-    payload = record.to_dict()
-    payload["pdf_extracts"] = []
-    (store.json_dir / "2026_A_1.json").write_text(json.dumps(payload), encoding="utf-8")
-
-    assert reindex_saved(tmp_path) == 1
-    with session(store.engine) as current:
-        assert current.query(TenderDocument).count() == 1
-
-
 def test_backfill_copies_json_extracts_once(tmp_path):
     import json
     import sqlite3
@@ -361,7 +342,7 @@ def test_save_tender_records_where_the_tender_came_from(tmp_path):
 
 
 def test_a_save_without_a_search_keeps_the_recorded_source(tmp_path):
-    """A reindex re-reads saved HTML. It cannot know the search, so it keeps it."""
+    """A save that names no search keeps the search already recorded."""
     store = Store(tmp_path)
     store.save_tender(_sourced(), source=_AWARDED_SEARCH)
     store.save_tender(_sourced(page=None))

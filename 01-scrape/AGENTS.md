@@ -26,7 +26,6 @@ Run these with it activated, or prefix each with `uv run`. Never create a venv i
 python main.py                 # scrape -> SQLite -> data/exports/vendors.csv
 python -m stage1_scrape probe --out data
 python -m stage1_scrape scrape --out data --from-probe --captcha <6-chars> --max-tenders 1
-python -m stage1_scrape index --out data     # re-parse saved HTML, no network
 python -m stage1_scrape run --out data --max-tenders 1
 python -m pytest -q
 ```

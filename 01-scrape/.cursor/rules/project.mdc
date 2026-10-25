@@ -11,11 +11,11 @@ Layers do not mix jobs.
 - `main.py` (project root) — one-command runner. Constants block, no argparse.
   Scrapes, then writes `data/exports/vendors.csv` / `.xlsx`.
   It calls `app/` and `export/`; new orchestration belongs in `app/`, not here.
-- `cli.py` — argparse only (`probe`, `scrape`, `run`, `index`)
-- `app/` — scrape/reindex order
+- `cli.py` — argparse only (`probe`, `scrape`, `run`)
+- `app/` — scrape order
 - `scraping/` — HTTP to eprocure.gov.in (and captcha OCR, the only model call here)
 - `parse/` — HTML → dataclasses
-- `persist/` — JSON, SQLite, PDFs
+- `persist/` — SQLite, PDFs
 - `export/` — read-only: vendor facts → CSV/Excel
 - `domain/` — models, name helpers, errors
 
