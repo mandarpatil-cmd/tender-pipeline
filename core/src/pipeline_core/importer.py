@@ -17,9 +17,17 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from .models import SOURCE_BIDEASY, STATUS_DONE, STATUS_PENDING, Vendor
+from .models import (
+    CHANNEL_EMAIL,
+    CHANNEL_PHONE,
+    CONTACT_MODEL,
+    SOURCE_BIDEASY,
+    STATUS_DONE,
+    STATUS_PENDING,
+    Vendor,
+)
 from .naming import normalize_name
-from .queries import upsert_vendor, utcnow
+from .queries import add_contact, upsert_vendor, utcnow
 
 #: Header names that hold the company, best first. Compared case-insensitively.
 COMPANY_COLUMNS = (
@@ -227,5 +235,9 @@ def import_workbook(
             report.updated += 1
         else:
             report.unchanged += 1
+            continue
+        # A spreadsheet answer is filed as a lookup, as the company columns always were.
+        for channel, value in ((CHANNEL_EMAIL, vendor.email), (CHANNEL_PHONE, vendor.phone)):
+            add_contact(session, vendor_id, channel=channel, value=value, source=CONTACT_MODEL)
 
     return report

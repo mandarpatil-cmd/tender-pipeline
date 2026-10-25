@@ -80,7 +80,7 @@ copy 03-outreach\.env.example 03-outreach\.env
 | --- | --- |
 | `setup.bat` | Once, after clone. Runs `uv sync --frozen` and `pipeline-db init`. |
 | `start-ui.bat` | Opens the UI. Starts `ops-ui` in a window titled **Tender pipeline** and opens <http://127.0.0.1:8000> after a short wait. Leave that window open. Closing it stops the UI. |
-| `update.bat` | Gets new code with `git pull origin main`, then runs the same install and database update as `setup.bat`. Close the Tender pipeline window first. |
+| `update.bat` | Gets new code with `git pull origin main`, runs `uv sync --frozen`, saves a checked copy of the database with `pipeline-db backup --label update`, then runs `pipeline-db init`. Close the Tender pipeline window first. |
 
 The first clone is still a command. The `.bat` files arrive with the repo:
 
@@ -91,7 +91,34 @@ cd tender-pipeline
 
 Double-click `setup.bat`, fill in the `.env` files, then double-click `start-ui.bat`.
 
-`update.bat` pulls the `main` branch from the remote named `origin`. Change that line in the file if this checkout uses another remote or branch. `.env`, `.venv`, and `data/` are gitignored, so a pull leaves secrets and the database in place. `pipeline-db init` on an existing database updates the schema and keeps the rows. If a step fails, the window stays open.
+`update.bat` pulls the `main` branch from the remote named `origin`. To pull from somewhere else, point the remote there with `git remote set-url origin <url>`. Do not edit the file's first lines. A running copy carries on at the same place in the file the pull writes, so the lines up to the pull must stay the same in every release. `.env`, `.venv`, and `data/` are gitignored, so a pull leaves secrets and the database in place. If a step fails, the window stays open.
+
+### What an update does to the data
+
+New code never rewrites stored rows on a page load. The first time new code opens the database, through `pipeline-db init` or the window, it does three things:
+
+1. Adds the tables, columns, and indexes the new code needs. It does not change existing rows.
+2. Runs each data fix the database has not had yet, once, and records it in `data_migrations`. `init` prints each one, for example `data    2026-10-contacts-v1 (12 rows)`.
+3. Writes `PRAGMA user_version`. A database that newer code has already updated is refused, with nothing changed.
+
+When there is any work for steps 1 or 2, a checked copy goes to `data/backups/` first. Every copy is made with SQLite's backup API and must pass `PRAGMA integrity_check`. The newest 10 copies of each kind are kept:
+
+| Copy | Made by |
+| --- | --- |
+| `pipeline.sqlite3.update-<time>` | `update.bat`, before `init` |
+| `pipeline.sqlite3.auto-<time>` | `init` or the window, before a schema change or a data fix |
+| `pipeline.sqlite3.manual-<time>` | `uv run pipeline-db backup` |
+| `pipeline.sqlite3.before-recheck-<time>` | `recheck-contacts --apply`, with the list of changes in `recheck-<time>.txt` |
+
+If the data looks wrong after an update, close the Tender pipeline window and put the copy from before it back:
+
+```powershell
+uv run pipeline-db restore data\backups\pipeline.sqlite3.update-<time>
+```
+
+`restore` first copies the database it replaces to `data\pipeline.sqlite3.replaced-<time>`, so nothing is lost either way.
+
+A change to the address rules does not touch stored addresses by itself. The mail queue applies the current rules each time it reads, so a government address is never mailed. `uv run pipeline-db recheck-contacts` lists the saved lookup answers the current rules would drop. It changes nothing until it is run again with `--apply`.
 
 ## Run
 
@@ -117,7 +144,7 @@ A first run is cheap and sends nothing:
 
 Raise those limits in the stage's `main.py`. Stage 2 with `DRY_RUN = False` spends one model call per company, up to `LIMIT`. Stage 3 with `SEND = True` emails real companies. Send only after the order in [03-outreach/README.md](03-outreach/README.md): previews, one message to yourself, then the real run. A live send refuses to start while the letter is incomplete.
 
-`pipeline-db status` shows the queues. `import-xlsx` loads companies from a spreadsheet. `prune` and `reset` delete data and ask first.
+`pipeline-db status` shows the queues. `import-xlsx` loads companies from a spreadsheet. `backup` and `restore` copy the database out and back. `prune` and `reset` delete data and ask first.
 
 ## Tests
 

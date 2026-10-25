@@ -345,6 +345,23 @@ class UiJob(Base):
         return f"<UiJob {self.job_id} {self.stage} {self.state}>"
 
 
+class DataMigration(Base):
+    """One data fix from ``migrations.MIGRATIONS`` that has run on this file.
+
+    Bookkeeping, not pipeline data, so it is not in ``TABLES``.
+    """
+
+    __tablename__ = "data_migrations"
+
+    migration_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    applied_at: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Rows the fix changed, as it reported them.
+    rows_changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    def __repr__(self) -> str:
+        return f"<DataMigration {self.migration_id}>"
+
+
 #: Printed by `pipeline-db status`, in pipeline order.
 TABLES = (
     Tender,

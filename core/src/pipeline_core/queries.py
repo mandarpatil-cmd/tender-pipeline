@@ -420,6 +420,9 @@ def backfill_tender_documents(db_path: Path) -> int:
                 continue
             replace_tender_documents(current, tender.tender_id, extracts)
             filled += 1
+        if filled:
+            # The clues just read belong to each tender's single winner.
+            backfill_vendor_contacts(current)
     return filled
 
 
@@ -468,14 +471,24 @@ def set_pdf_contacts(
     if vendor is None:
         return False
 
-    wrote = False
+    written: list[tuple[str, str]] = []
     if clean_email and not vendor.pdf_email:
         vendor.pdf_email = clean_email
-        wrote = True
+        written.append((CHANNEL_EMAIL, clean_email))
     if clean_phone and not vendor.pdf_phone:
         vendor.pdf_phone = clean_phone
-        wrote = True
-    return wrote
+        written.append((CHANNEL_PHONE, clean_phone))
+    for channel, value in written:
+        if not _pdf_value_known(session, vendor_id, channel, value):
+            add_contact(
+                session,
+                vendor_id,
+                channel=channel,
+                value=value,
+                source=CONTACT_PDF,
+                tender_id=_tender_holding(session, vendor_id, channel, value),
+            )
+    return bool(written)
 
 
 _SOURCE_ORDER = {CONTACT_PDF: 0, CONTACT_MODEL: 1, CONTACT_TYPED: 2}

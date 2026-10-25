@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import threading
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
@@ -140,6 +141,46 @@ def test_every_page_opens(seeded):
         answer = client.get(page)
         assert answer.status_code == 200, page
         assert "Traceback" not in answer.text and "Internal Server Error" not in answer.text, page
+
+
+def _stored_rows(path) -> dict[str, list[tuple]]:
+    con = sqlite3.connect(path)
+    try:
+        names = [
+            row[0]
+            for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        ]
+        return {
+            name: sorted(con.execute(f'SELECT * FROM "{name}"').fetchall(), key=repr)
+            for name in sorted(names)
+        }
+    finally:
+        con.close()
+
+
+def test_opening_every_page_changes_no_stored_row(seeded, tmp_path):
+    """Reading never writes. New code must not change a client's rows on a page load.
+
+    The first visit to the mail page saves the default letter into an empty
+    table, so the first round may only add rows. The second may change nothing.
+    """
+    client, job_id = seeded
+    path = tmp_path / "pipeline.sqlite3"
+    before = _stored_rows(path)
+
+    for page in _pages(job_id):
+        client.get(page)
+    first = _stored_rows(path)
+    for page in _pages(job_id):
+        client.get(page)
+
+    for table, rows in before.items():
+        assert set(rows) <= set(first[table]), table
+    assert {table for table in before if before[table] != first[table]} <= {"mail_letter"}
+    assert _stored_rows(path) == first
+    assert not (tmp_path / "backups").exists()
 
 
 def test_every_link_form_and_poll_goes_to_a_route(seeded):

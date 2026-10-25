@@ -62,7 +62,9 @@ def test_ensure_schema_creates_every_table(tmp_path):
     bind = engine(tmp_path / "fresh.sqlite3")
     report = ensure_schema(bind)
 
-    assert set(report.created_tables) == {model.__tablename__ for model in TABLES}
+    assert set(report.created_tables) == {model.__tablename__ for model in TABLES} | {
+        "data_migrations"
+    }
     assert set(inspect(bind).get_table_names()) >= {m.__tablename__ for m in TABLES}
     assert all(count == 0 for count in table_counts(bind).values())
 

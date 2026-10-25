@@ -6,7 +6,13 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline_core.db import BUSY_TIMEOUT_MS, engine, ensure_schema, session
+from pipeline_core.db import (
+    BUSY_TIMEOUT_MS,
+    SchemaTooNew,
+    engine,
+    ensure_schema,
+    session,
+)
 from pipeline_core.models import STATUS_PENDING, TABLES, Tender, Vendor
 from pipeline_core.queries import backfill_tender_documents, mail_messages
 from sqlalchemy import func, select
@@ -84,6 +90,8 @@ def load_home(path: Path) -> HomeSnapshot:
                 or 0
             )
             to_mail = len(mail_messages(current))
+    except SchemaTooNew as exc:
+        return _unread(path, str(exc))
     except OperationalError as exc:
         return _unread(path, _operational_message(exc))
     except DatabaseError:

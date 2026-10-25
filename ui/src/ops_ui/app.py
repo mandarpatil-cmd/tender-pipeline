@@ -11,6 +11,7 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from pipeline_core import settings
+from pipeline_core.db import SchemaTooNew
 
 from ops_ui.jobs import close_orphaned_jobs
 from ops_ui.routes.awards import router as awards_router
@@ -67,5 +68,9 @@ app = create_app()
 
 
 def main() -> None:
-    close_orphaned_jobs(settings.db_path())
+    try:
+        close_orphaned_jobs(settings.db_path())
+    except SchemaTooNew as exc:
+        # Every page says the same, so the window still opens to explain it.
+        print(exc)
     uvicorn.run(app, host=HOST, port=PORT)

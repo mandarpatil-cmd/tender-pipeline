@@ -5,15 +5,19 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import settings
 from .db import (
+    SchemaTooNew,
     backup_copy,
+    backup_dir,
     dispose_engines,
     drop_all,
     engine,
     ensure_schema,
+    rolling_backup,
     session,
     table_counts,
 )
@@ -47,12 +51,18 @@ def _print_report(report) -> None:
         print(f"  columns + {', '.join(report.added_columns)}")
     if report.created_indexes:
         print(f"  indexes + {', '.join(report.created_indexes)}")
+    for line in report.migrated:
+        print(f"  data    {line}")
 
 
 def cmd_init(args: argparse.Namespace) -> int:
     path = _target(args)
     existed = path.is_file()
-    report = ensure_schema(engine(path))
+    try:
+        report = ensure_schema(engine(path))
+    except SchemaTooNew as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     print(f"database  {path}")
     print(f"          {'updated' if existed else 'created'}")
@@ -372,31 +382,59 @@ def cmd_import_xlsx(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    """A checked copy in ``backups/`` beside the database. Keeps the newest few per label."""
+    path = _target(args)
+    print(f"database  {path}")
+    if not path.is_file():
+        print("          not created yet - nothing to back up")
+        return 0
+    print(f"  backup  {rolling_backup(path, args.label)}")
+    return 0
+
+
 def cmd_recheck_contacts(args: argparse.Namespace) -> int:
-    """Drop saved model answers the address rule would not keep. Dry run unless --apply."""
+    """Drop saved model answers the address rule would not keep. Dry run unless --apply.
+
+    With ``--apply`` the database is copied to ``backups/`` first and the list of
+    changes is written beside the copy, so every dropped value can be found again.
+    """
     path = _target(args)
     if not path.is_file():
         print(f"{path} does not exist - run: pipeline-db init", file=sys.stderr)
         return 1
 
     with session(engine(path)) as current:
-        rows = recheck_model_contacts(current, apply=args.apply)
-        if not args.apply:
-            current.rollback()
+        rows = recheck_model_contacts(current, apply=False)
+        current.rollback()
+    copy = None
+    if rows and args.apply:
+        copy = rolling_backup(path, "before-recheck")
+        with session(engine(path)) as current:
+            rows = recheck_model_contacts(current, apply=True)
 
     if not rows:
         print("Every saved model answer passes the address rule. Nothing to do.")
         return 0
     verb = "Changed" if args.apply else "Would change"
-    print(f"{verb} {len(rows)} company(ies):")
+    lines = [f"{verb} {len(rows)} company(ies):"]
     for row in rows:
-        print(f"  {row.vendor_id:>5}  {row.name}")
+        lines.append(f"  {row.vendor_id:>5}  {row.name}")
         for item in row.dropped:
-            print(f"         drop {item}")
+            lines.append(f"         drop {item}")
         if row.status_after != row.status_before:
-            print(f"         status {row.status_before} -> {row.status_after}")
-    if not args.apply:
+            lines.append(f"         status {row.status_before} -> {row.status_after}")
+    print("\n".join(lines))
+    if copy is None:
         print("\nDry run. Nothing was changed. Run again with --apply to make these changes.")
+        return 0
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    listing = backup_dir(path) / f"recheck-{stamp}.txt"
+    listing.write_text(
+        f"database  {path}\nbackup    {copy}\n\n" + "\n".join(lines) + "\n", encoding="utf-8"
+    )
+    print(f"\n  backup  {copy}")
+    print(f"  list    {listing}")
     return 0
 
 
@@ -414,6 +452,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = sub.add_parser("init", help="Create the schema, or bring it up to date")
     init.set_defaults(func=cmd_init)
+
+    backup = sub.add_parser("backup", help="Write a checked copy of the database to backups/")
+    backup.add_argument(
+        "--label",
+        choices=("manual", "update"),
+        default="manual",
+        help="Name part of the copy (default: manual). The newest 10 of each are kept.",
+    )
+    backup.set_defaults(func=cmd_backup)
+
+    restore = sub.add_parser(
+        "restore", help="Put a backup back as the database. The current one is copied aside first"
+    )
+    restore.add_argument("source", help="The backup, e.g. data/backups/pipeline.sqlite3.update-...")
+    restore.set_defaults(func=cmd_adopt, force=True)
 
     status = sub.add_parser("status", help="Row counts and the two work queues")
     status.set_defaults(func=cmd_status)
@@ -469,7 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Drop saved model answers that are government addresses or bad phones",
     )
     recheck.add_argument(
-        "--apply", action="store_true", help="Make the changes (default: report only)"
+        "--apply", action="store_true", help="Back up, then make the changes (default: report only)"
     )
     recheck.set_defaults(func=cmd_recheck_contacts)
 

@@ -6,7 +6,13 @@ import pytest
 
 from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.importer import ImportError_, import_workbook, read_companies
-from pipeline_core.models import STATUS_DONE, STATUS_PENDING, SOURCE_BIDEASY, Vendor
+from pipeline_core.models import (
+    SOURCE_BIDEASY,
+    STATUS_DONE,
+    STATUS_PENDING,
+    Vendor,
+    VendorContact,
+)
 from pipeline_core.queries import mark_enriched, pending_vendors, upsert_vendor
 
 pd = pytest.importorskip("pandas")
@@ -113,6 +119,12 @@ def test_import_marks_rows_with_an_email_as_done(tmp_path, bind):
         assert rows["No Email Ltd"].enrichment_status == STATUS_PENDING
         # Only the one without an address is work for stage 2.
         assert [v.name_raw for v in pending_vendors(s)] == ["No Email Ltd"]
+        # The address is mailable straight away, without waiting for a later backfill.
+        contacts = [
+            (row.vendor_id, row.channel, row.value)
+            for row in s.query(VendorContact).all()
+        ]
+        assert contacts == [(rows["Has Email Ltd"].vendor_id, "email", "hi@has.example")]
 
 
 def test_import_never_overwrites_what_stage_2_already_found(tmp_path, bind):

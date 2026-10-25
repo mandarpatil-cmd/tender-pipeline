@@ -6,7 +6,9 @@ belt-and-braces rather than a concurrency design.
 
 from __future__ import annotations
 
+import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,6 +24,12 @@ from .models import TABLES, Base
 
 #: Seconds a blocked writer waits before raising "database is locked".
 BUSY_TIMEOUT_MS = 5000
+
+#: Copies kept per label in ``backups/``. Older ones with that label are deleted.
+BACKUP_KEEP = 10
+
+#: One schema change at a time in this process. Two requests may arrive together.
+_SCHEMA_LOCK = threading.Lock()
 
 _ENGINES: dict[tuple[str, bool], Engine] = {}
 
@@ -112,14 +120,24 @@ class SchemaReport:
     created_indexes: list[str] = field(default_factory=list)
     #: Tables rebuilt to turn text amounts into hundredths: ``tenders 915 rows``.
     converted: list[str] = field(default_factory=list)
-    #: The copy written before a rebuild. Empty when nothing was rebuilt.
+    #: Data fixes from ``migrations`` that ran: ``2026-10-contacts-v1 (12 rows)``.
+    migrated: list[str] = field(default_factory=list)
+    #: The checked copy written before anything changed. Empty when nothing did.
     backup: str = ""
 
     @property
     def changed(self) -> bool:
         return bool(
-            self.created_tables or self.added_columns or self.created_indexes or self.converted
+            self.created_tables
+            or self.added_columns
+            or self.created_indexes
+            or self.converted
+            or self.migrated
         )
+
+
+class SchemaTooNew(RuntimeError):
+    """The file was last brought up to date by a newer release than this code."""
 
 
 def create_all(bind: Engine | None = None) -> None:
@@ -131,25 +149,47 @@ def drop_all(bind: Engine | None = None) -> None:
 
 
 def ensure_schema(bind: Engine | None = None) -> SchemaReport:
-    """Bring a database up to the models, old or brand new.
+    """Bring a database up to the models, old or brand new. Safe to call on every page.
 
-    `create_all` only ever creates *missing tables* — it will not add a column to
-    a table that already exists, which is exactly what adopting the scraper's
-    database needs (`vendors.source`). So new columns and new indexes on
-    pre-existing tables are applied here explicitly.
+    When the file is already up to date this only reads. Otherwise a checked
+    copy goes to ``backups/`` first, then:
 
-    Only nullable columns can be added this way; a new NOT NULL column needs a
-    backfill and so is refused rather than half-applied.
+    - missing tables, nullable columns and indexes are added. `create_all` only
+      creates *missing tables*, so columns and indexes on existing ones are
+      added here. A new NOT NULL column needs a backfill and is refused;
+    - a file that still holds text amounts (``INR 179,853.24``) has ``tenders``
+      and ``awards`` rebuilt with every row kept and each amount converted;
+    - each data fix in ``migrations.MIGRATIONS`` that this file has not run
+      runs once and is recorded.
 
-    Amounts used to be text (``INR 179,853.24``). SQLite cannot change a
-    column's type, so a file that still holds text amounts gets a dated copy
-    first, then ``tenders`` and ``awards`` are rebuilt with every row kept and
-    each amount and date converted. Nothing is ever dropped to get there.
+    The schema step itself never rewrites stored rows. A database that a newer
+    release has already updated raises `SchemaTooNew` and is not touched.
     """
     eng = bind or engine()
+    with _SCHEMA_LOCK:
+        return _ensure_schema(eng)
+
+
+def _ensure_schema(eng: Engine) -> SchemaReport:
+    from .migrations import SCHEMA_VERSION, apply_pending, pending
+
     report = SchemaReport()
-    if _has_text_amounts(eng):
-        report.backup, report.converted = _convert_text_amounts(eng)
+    stored = _user_version(eng)
+    if stored > SCHEMA_VERSION:
+        raise SchemaTooNew(
+            f"This database was updated by a newer version of the program "
+            f"(version {stored}; this one knows up to {SCHEMA_VERSION}). "
+            "Run update.bat to get the latest code. Nothing was changed."
+        )
+
+    existing = set(inspect(eng).get_table_names())
+    text_amounts = bool(existing) and _has_text_amounts(eng)
+    if existing and (text_amounts or _schema_behind(eng) or pending(eng)):
+        path = _sqlite_path(eng)
+        if path is not None and path.is_file():
+            report.backup = str(rolling_backup(path, "auto"))
+    if text_amounts:
+        report.backup, report.converted = _convert_text_amounts(eng, report.backup)
 
     before = set(inspect(eng).get_table_names())
     Base.metadata.create_all(eng)
@@ -188,10 +228,9 @@ def ensure_schema(bind: Engine | None = None) -> SchemaReport:
         backfill_model_contact_sources,
         backfill_outreach_jobs,
         backfill_tender_origin,
-        backfill_vendor_contacts,
-        clean_stored_contacts,
     )
 
+    # Each of these fills a column or table the step above just added, once.
     with session(eng) as current:
         if "tenders.origin" in report.added_columns or report.converted:
             backfill_tender_origin(current)
@@ -199,14 +238,43 @@ def ensure_schema(bind: Engine | None = None) -> SchemaReport:
             backfill_job_tenders(current)
         if "outreach.job_id" in report.added_columns:
             backfill_outreach_jobs(current)
-        clean_stored_contacts(current)
-        backfill_vendor_contacts(current)
-        if (
-            "vendor_contacts.source_url" in report.added_columns
-            or "vendor_contacts" in report.created_tables
-        ):
+
+    report.migrated = [
+        f"{item.migration_id} ({count} rows)" for item, count in apply_pending(eng)
+    ]
+    # Needs the rows the contacts migration copies in, so it runs after it.
+    if (
+        "vendor_contacts.source_url" in report.added_columns
+        or "vendor_contacts" in report.created_tables
+    ):
+        with session(eng) as current:
             backfill_model_contact_sources(current)
+
+    if stored < SCHEMA_VERSION:
+        with eng.begin() as conn:
+            conn.exec_driver_sql(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
     return report
+
+
+def _user_version(eng: Engine) -> int:
+    with eng.connect() as conn:
+        return int(conn.exec_driver_sql("PRAGMA user_version").scalar() or 0)
+
+
+def _schema_behind(eng: Engine) -> bool:
+    """True when a table, column or index the models declare is missing."""
+    inspector = inspect(eng)
+    names = set(inspector.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in names:
+            return True
+        columns = {col["name"] for col in inspector.get_columns(table.name)}
+        if any(column.name not in columns for column in table.columns):
+            return True
+        indexes = {idx["name"] for idx in inspector.get_indexes(table.name)}
+        if any(index.name not in indexes for index in table.indexes):
+            return True
+    return False
 
 
 def _has_text_amounts(eng: Engine) -> bool:
@@ -242,35 +310,74 @@ def _sqlite_path(eng: Engine) -> Path | None:
     return Path(raw)
 
 
-def backup_copy(path: Path, label: str = "bak") -> Path:
-    """A consistent copy of a database next to it: ``<name>.<label>-<time>``.
+def backup_copy(path: Path, label: str = "bak", *, folder: Path | None = None) -> Path:
+    """A consistent, checked copy of a database: ``<folder>/<name>.<label>-<time>``.
 
-    SQLite's own backup reads the write-ahead log too, so the copy holds every
-    committed row even while the file has a ``-wal`` beside it. A copy never
-    overwrites an earlier one.
+    ``folder`` defaults to the database's own directory. SQLite's own backup
+    reads the write-ahead log too, so the copy holds every committed row even
+    while the file has a ``-wal`` beside it. A copy never overwrites an earlier
+    one, and one that fails ``PRAGMA integrity_check`` raises.
     """
+    path = Path(path)
+    base = Path(folder) if folder is not None else path.parent
+    base.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    target = path.with_name(f"{path.name}.{label}-{stamp}")
-    serial = 1
-    while target.exists():
-        serial += 1
-        target = path.with_name(f"{path.name}.{label}-{stamp}-{serial}")
+    name = f"{path.name}.{label}-{stamp}"
+    # Above every serial already used this second, so a copy is never named as
+    # older than one taken before it, even after retention removed the first.
+    same_second = re.compile(rf"^{re.escape(name)}(?:-(\d+))?$")
+    taken = [
+        int(found.group(1) or 1)
+        for found in (same_second.match(item.name) for item in base.iterdir())
+        if found
+    ]
+    target = base / (f"{name}-{max(taken) + 1}" if taken else name)
     source = sqlite3.connect(path)
     copy = sqlite3.connect(target)
     try:
         source.backup(copy)
+        verdict = copy.execute("PRAGMA integrity_check").fetchone()
     finally:
         copy.close()
         source.close()
     if not target.is_file():
         raise RuntimeError(f"Could not copy {path} to {target}.")
+    if verdict != ("ok",):
+        raise RuntimeError(
+            f"The copy {target} failed SQLite's integrity check "
+            f"({verdict[0] if verdict else 'no answer'}). The database was not changed."
+        )
     return target
 
 
-def _convert_text_amounts(eng: Engine) -> tuple[str, list[str]]:
+def backup_dir(path: Path) -> Path:
+    """``backups/`` beside the database. Gitignored with the rest of ``data/``."""
+    return Path(path).parent / "backups"
+
+
+def rolling_backup(path: Path, label: str) -> Path:
+    """A checked copy in `backup_dir`. Keeps the newest `BACKUP_KEEP` with this label."""
+    path = Path(path)
+    target = backup_copy(path, label, folder=backup_dir(path))
+    named = re.compile(rf"^{re.escape(path.name)}\.{re.escape(label)}-(\d{{8}}-\d{{6}})(?:-(\d+))?$")
+    copies = []
+    for item in backup_dir(path).iterdir():
+        found = named.match(item.name)
+        if found:
+            # Oldest first: by time, then by the serial a same-second copy got.
+            copies.append(((found.group(1), int(found.group(2) or 1)), item))
+    copies.sort()
+    for _key, old in copies[:-BACKUP_KEEP]:
+        for item in (old, old.with_name(old.name + "-wal"), old.with_name(old.name + "-shm")):
+            item.unlink(missing_ok=True)
+    return target
+
+
+def _convert_text_amounts(eng: Engine, backup: str = "") -> tuple[str, list[str]]:
     """Rebuild ``tenders`` and ``awards`` with amounts as hundredths. Every row is kept.
 
-    Returns the backup written first and one line per rebuilt table. A date
+    ``backup`` is a copy already taken; without one, one is written first.
+    Returns the backup and one line per rebuilt table. A date
     the reader cannot parse stays as written; an amount it cannot parse is
     left empty and counted, since an integer column cannot hold the text.
     """
@@ -283,7 +390,8 @@ def _convert_text_amounts(eng: Engine) -> tuple[str, list[str]]:
         drop_all(eng)
         create_all(eng)
         return "", []
-    backup = backup_copy(path)
+    if not backup:
+        backup = str(backup_copy(path))
     eng.dispose()
     con = sqlite3.connect(path, isolation_level=None, timeout=BUSY_TIMEOUT_MS / 1000)
     con.row_factory = sqlite3.Row
@@ -332,7 +440,7 @@ def _convert_text_amounts(eng: Engine) -> tuple[str, list[str]]:
         con.execute("PRAGMA legacy_alter_table=OFF")
         con.execute("PRAGMA foreign_keys=ON")
         con.close()
-    return str(backup), done
+    return backup, done
 
 
 def _hundredths(value: object) -> tuple[int | None, str | None, int]:
