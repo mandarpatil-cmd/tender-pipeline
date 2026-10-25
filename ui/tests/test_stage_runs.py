@@ -7,7 +7,6 @@ from pipeline_core.db import engine, ensure_schema, session
 from pipeline_core.models import UiJob
 from pipeline_core.queries import (
     mark_enriched,
-    record_llm_run,
     replace_awards,
     upsert_tender,
     upsert_vendor,

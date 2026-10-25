@@ -445,7 +445,7 @@ def test_a_kept_address_names_its_page_and_its_run():
 
 
 def test_the_prompt_uses_the_newest_tender_and_names_it():
-    from pipeline_core.queries import replace_awards, upsert_tender, utcnow
+    from pipeline_core.queries import replace_awards, upsert_tender
 
     with session() as current:
         vendor_id = upsert_vendor(current, name_raw="Repeat Winner")

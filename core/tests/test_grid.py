@@ -957,7 +957,7 @@ def test_to_send_and_mail_messages_agree_on_edge_addresses(bind):
     """The SQL filter and the Python mail list must name the same awards."""
     from pipeline_core.grid import filtered_award_keys
     from pipeline_core.models import OUTREACH_SENDING, OUTREACH_SENT, VendorContact
-    from pipeline_core.queries import mail_messages, record_pdf_contacts, set_do_not_mail
+    from pipeline_core.queries import mail_messages, set_do_not_mail
 
     cases = {
         "Pdf Elsewhere Ltd": [("pdf", "OTHER", "loa@elsewhere.example", 1)],
